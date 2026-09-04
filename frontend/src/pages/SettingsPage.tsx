@@ -9,6 +9,14 @@ export function SettingsPage() {
   const [saved, setSaved] = useState(false)
   const healthQuery = useHealthQuery()
 
+  const ollamaStatus = !healthQuery.data?.ollama_enabled
+    ? 'disabled'
+    : !healthQuery.data.ollama_reachable
+      ? 'unreachable'
+      : healthQuery.data.ollama_model_available
+        ? `${healthQuery.data.ollama_model} ready`
+        : `${healthQuery.data.ollama_model} not installed`
+
   function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setApiBaseUrl(apiBaseUrl)
@@ -58,7 +66,7 @@ export function SettingsPage() {
             ) : (
               <div className="mt-2 space-y-1 text-sm" style={{ color: 'var(--text-muted)' }}>
                 <p>Service: <strong>{healthQuery.data?.service}</strong> ({healthQuery.data?.environment})</p>
-                <p>Ollama: {healthQuery.data?.ollama_enabled ? 'enabled' : 'disabled'}</p>
+                <p>Ollama: {ollamaStatus}</p>
                 <p>URL: <code>{getApiBaseUrl()}</code></p>
               </div>
             )}

@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ArchitectureFlow } from '../components/diagrams/ArchitectureFlow'
 import { StatePanel } from '../components/workspace/StatePanel'
 import { ADRTimeline } from '../components/workspace/ADRTimeline'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage, formatMetricName } from '../lib/utils'
-import type { ArchitectureOption, ArchitectureDecisionRecord, Workspace } from '../types/api'
+import type { ArchitectureDecisionRecord, Workspace } from '../types/api'
 
 interface TimelineEntry {
   adr: ArchitectureDecisionRecord
@@ -35,8 +35,8 @@ export function ArchitectureStudioPage() {
     if (workspace.adr.id === lastAdrIdRef.current) return
     lastAdrIdRef.current = workspace.adr.id
     setTimelineEntries((prev) => [...prev, { adr: workspace.adr!, snapshot: workspace }])
-    setActiveTimelineIndex((prev) => prev + 1)
-  }, [workspace])
+    setActiveTimelineIndex(timelineEntries.length)
+  }, [workspace, timelineEntries.length])
 
   if (workspaceQuery.isLoading) {
     return <StatePanel badge="Loading" title="Loading architecture" description="Preparing the view." />

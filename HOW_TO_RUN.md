@@ -1,193 +1,129 @@
-# How to Run ArchAI
+# How to Run ArchAI on Windows
 
-> A copy-paste-friendly guide so you never have to ask an AI to start the project again.
+Use PowerShell in the repository root:
 
----
-
-## Prerequisites
-
-| Tool       | Minimum Version | Check with             |
-|------------|-----------------|------------------------|
-| Node.js    | 18+             | `node -v`              |
-| npm        | 9+              | `npm -v`               |
-| Python     | 3.12+           | `python3 --version`    |
-| Ollama     | *(optional)*    | `ollama --version`     |
-| Docker     | *(optional)*    | `docker --version`     |
-
----
-
-## 1 · First-Time Setup (do this once)
-
-Open a terminal **in the project root** (`software-project/`).
-
-### 1.1 — Install root dependencies (concurrently)
-
-```bash
-npm install
+```powershell
+Set-Location 'D:\sw project\Smart-Software-Architect'
 ```
 
-### 1.2 — Create the Python virtual environment & install backend packages
+## First-Time Setup
 
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cd ..
+Required tools:
+
+- Node.js 18 or newer: `node --version`
+- npm 9 or newer: `npm --version`
+- Python 3.12 or newer: `python --version`
+- Ollama: `ollama --version`
+
+Install the JavaScript packages, create `backend\.venv`, and install the Python packages:
+
+```powershell
+npm run setup
 ```
 
-### 1.3 — Install frontend packages
+Install the configured Ollama model once:
 
-```bash
-cd frontend
-npm install
-cd ..
+```powershell
+ollama pull qwen3:1.7b
 ```
 
-### 1.4 — Set up environment variables
+If the terminal was open while Ollama was installed and `ollama` is not found, close it and open a new PowerShell window. Ollama's Windows app normally starts its local server automatically.
 
-The repo already ships a `.env` inside `backend/`. If you ever need to reset it:
+Verify Ollama directly:
 
-```bash
-cp .env.example .env
-cp .env.example backend/.env
+```powershell
+Invoke-RestMethod http://127.0.0.1:11434/api/tags
 ```
 
-Default config uses **SQLite** (zero setup) and **Ollama disabled**. Edit `backend/.env` to change that:
+ArchAI uses SQLite locally, so PostgreSQL is not required. For known domains, ArchAI can use its built-in blueprints. For unseen domains, Ollama analyzes the raw brief before any fallback and returns schema-validated requirements, actors, entities, workflows, integrations, data characteristics, and open questions. If Ollama is stopped, unseen-domain generation remains available but intentionally returns a conservative extraction with unresolved details instead of pretending a generic template is accurate.
 
-```dotenv
-# Toggle AI features (requires Ollama running locally)
-ARCHAI_OLLAMA_ENABLED=true        # set to false to skip Ollama
-ARCHAI_OLLAMA_BASE_URL=http://localhost:11434
-ARCHAI_OLLAMA_MODEL=qwen3:8b
-```
+## Daily Run
 
----
+The recommended workflow uses one terminal. Run this only from the repository root:
 
-## 2 · Run the Project (daily workflow)
-
-### Option A — Single command (recommended)
-
-From the project root, make sure the backend venv's Python is on your PATH, then:
-
-```bash
-# Activate the backend venv first so uvicorn is found
-source backend/.venv/bin/activate
-
-# Start both backend + frontend together
+```powershell
 npm run dev
 ```
 
-This launches:
-- **Backend  (FastAPI)** → http://127.0.0.1:8000
-- **Frontend (Vite/React)** → http://127.0.0.1:5173
+It starts both services:
 
-Press `Ctrl+C` to stop both.
+- Frontend: `http://127.0.0.1:5173`
+- Backend API: `http://127.0.0.1:8010`
+- API docs: `http://127.0.0.1:8010/api/v1/docs`
+- Ollama: `http://127.0.0.1:11434`
 
-### Option B — Run backend & frontend in separate terminals
+Press `Ctrl+C` once to stop the frontend and backend.
 
-**Terminal 1 — Backend:**
+## Two-Terminal Alternative
 
-```bash
-cd backend
-source .venv/bin/activate
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+Use this only when you want separate logs. Both commands still run from the repository root.
+
+Terminal 1:
+
+```powershell
+npm run dev:backend
 ```
 
-**Terminal 2 — Frontend:**
+Terminal 2:
 
-```bash
-cd frontend
-npm run dev -- --host 127.0.0.1 --port 5173
+```powershell
+npm run dev:frontend
 ```
 
-### Option C — Docker Compose (full stack with PostgreSQL)
+Do not run `npm run dev` in both terminals because each invocation starts both services.
+For backend hot reload while using separate terminals, run `npm run dev:backend:reload` in Terminal 1.
 
-```bash
-docker compose up --build
-```
+## Test Everything
 
-This starts:
-- **PostgreSQL** on port `5432`
-- **Backend** on port `8000`
-- **Frontend** on port `3000`
+Keep `npm run dev` running, then use a second terminal:
 
----
-
-## 3 · Running Tests
-
-```bash
-# All tests
-npm run test
-
-# Backend only
-cd backend
-source .venv/bin/activate
-pytest
-
-# Frontend only
-cd frontend
-npm run test -- --run
-```
-
-### Smoke test (end-to-end API check)
-
-With both servers running in another terminal:
-
-```bash
+```powershell
+npm test
+npm run lint
+npm run build
 npm run smoke
 ```
 
----
+`npm run smoke` creates a real workspace, submits clarification answers, applies a change, reloads the workspace, and verifies Markdown and PDF exports.
 
-## 4 · Other Useful Commands
+## Ollama Status
 
-| Command                    | What it does                          |
-|----------------------------|---------------------------------------|
-| `npm run build`            | Production build of the frontend      |
-| `npm run lint`             | Lint the frontend code                |
-| `npm run serve:frontend`   | Serve the production frontend build   |
+Open `http://127.0.0.1:5173/settings`. The Backend Health panel distinguishes these states:
 
----
+- `qwen3:1.7b ready`: Ollama is running and the model is installed.
+- `unreachable`: start the Ollama Windows app.
+- `qwen3:1.7b not installed`: run `ollama pull qwen3:1.7b`.
+- `disabled`: set `ARCHAI_OLLAMA_ENABLED=true` in `backend\.env`.
 
-## 5 · Troubleshooting
+The local backend configuration is read from `backend\.env`. A fresh copy can be created with:
 
-### "command not found: uvicorn"
-You forgot to activate the virtual environment:
-```bash
-source backend/.venv/bin/activate
+```powershell
+Copy-Item .env.example backend\.env
 ```
 
-### Port already in use
-Kill whatever is using the port:
-```bash
-# Find what's on port 8000
-lsof -i :8000
-# or force-kill it
-kill -9 $(lsof -ti :8000)
+The frontend defaults to port `8010`. To override it, create `frontend\.env.local` containing:
+
+```dotenv
+VITE_API_BASE_URL=http://127.0.0.1:8010/api/v1
 ```
 
-### Frontend blank page / API errors
-Make sure the backend is running **before** you open the frontend. The frontend proxies API calls to `http://127.0.0.1:8000`.
+## Port Checks
 
-### Ollama not connecting
-1. Make sure Ollama is running: `ollama serve`
-2. Pull the model: `ollama pull qwen3:8b`
-3. Set `ARCHAI_OLLAMA_ENABLED=true` in `backend/.env`
+To see which processes own the local ports:
 
----
-
-## Quick Reference (TL;DR)
-
-```bash
-# --- First time ---
-npm install
-cd backend && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && cd ..
-cd frontend && npm install && cd ..
-
-# --- Every time ---
-source backend/.venv/bin/activate
-npm run dev
-
-# Open http://127.0.0.1:5173 in your browser
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 5173,8010,11434 |
+  Select-Object LocalPort, OwningProcess
 ```
+
+If a port is occupied, stop the known application that owns it or change the matching backend and frontend configuration together. Do not terminate an unknown process blindly.
+
+## Docker
+
+Docker is optional:
+
+```powershell
+docker compose up --build
+```
+
+The Docker deployment uses frontend port `3000` and backend port `8000`; those ports are intentionally different from the local development configuration.

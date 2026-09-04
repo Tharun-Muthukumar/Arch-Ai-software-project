@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { FileText, Image, Layers3, Network } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
@@ -13,8 +12,6 @@ import {
 import { formatUpdatedAt, getActiveWorkspace, getErrorMessage } from '../lib/utils'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import type { Workspace, WorkspaceCreatePayload } from '../types/api'
-
-type FocusTarget = 'clarifications' | null
 
 const resultLinks = [
   { to: '/wizard', label: 'Requirements', icon: Layers3 },
@@ -32,20 +29,6 @@ export function DashboardPage() {
     workspaceQuery.data,
     searchParams.get('workspace'),
   )
-  const [focusTarget, setFocusTarget] = useState<FocusTarget>(null)
-
-  useEffect(() => {
-    if (!workspace || !focusTarget) {
-      return
-    }
-
-    const target = document.getElementById(focusTarget)
-    if (target) {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-    setFocusTarget(null)
-  }, [focusTarget, workspace])
-
   const createMutation = useMutation({
     mutationFn: (payload: WorkspaceCreatePayload) => createWorkspace(payload),
     onSuccess: (nextWorkspace) => {
@@ -59,12 +42,6 @@ export function DashboardPage() {
         },
       )
       void queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-      if (nextWorkspace.clarification_plan.questions.length > 0) {
-        navigate(`/dashboard?workspace=${nextWorkspace.id}`)
-        setFocusTarget('clarifications')
-        return
-      }
-
       navigate(`/wizard?workspace=${nextWorkspace.id}`)
     },
   })

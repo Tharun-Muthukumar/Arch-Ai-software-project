@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from 'react'
+import { LoaderCircle, WandSparkles } from 'lucide-react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { sampleProject } from '../../lib/sampleProject'
 import type { WorkspaceCreatePayload } from '../../types/api'
 
@@ -11,13 +12,27 @@ const initialValues = {
   title: '',
   description: '',
   business_context: '',
-  budget: 'medium',
-  preferred_cloud: 'AWS',
+  budget: '',
+  preferred_cloud: '',
   constraints: '',
 }
 
 export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
   const [values, setValues] = useState(initialValues)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+
+  useEffect(() => {
+    if (!isPending) {
+      setElapsedSeconds(0)
+      return
+    }
+
+    const startedAt = Date.now()
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [isPending])
 
   function updateField(field: keyof typeof initialValues, value: string) {
     setValues((currentValues) => ({ ...currentValues, [field]: value }))
@@ -29,8 +44,8 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
       title: values.title.trim(),
       description: values.description.trim(),
       business_context: values.business_context.trim(),
-      budget: values.budget,
-      preferred_cloud: values.preferred_cloud,
+      budget: values.budget || undefined,
+      preferred_cloud: values.preferred_cloud || undefined,
       constraints: values.constraints
         .split(',')
         .map((constraint) => constraint.trim())
@@ -52,7 +67,8 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
   return (
     <form className="panel" onSubmit={handleSubmit}>
       <div className="mb-4">
-        <h3 className="section-title">Project brief</h3>
+        <span className="pill">Phase 1</span>
+        <h3 className="section-title mt-2">Project brief</h3>
         <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
           Enter the brief once and ArchAI will generate the workspace.
         </p>
@@ -93,7 +109,7 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
           />
         </label>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-4 sm:grid-cols-2">
           <label className="block space-y-1">
             <span className="text-sm font-medium">Budget</span>
             <select
@@ -101,6 +117,7 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
               onChange={(event) => updateField('budget', event.target.value)}
               className="input-shell"
             >
+              <option value="">Not specified</option>
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
@@ -114,6 +131,7 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
               onChange={(event) => updateField('preferred_cloud', event.target.value)}
               className="input-shell"
             >
+              <option value="">Not specified</option>
               <option value="AWS">AWS</option>
               <option value="Azure">Azure</option>
               <option value="GCP">GCP</option>
@@ -134,6 +152,22 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
         </label>
       </div>
 
+      {isPending && (
+        <div
+          className="mt-5 flex items-start gap-3 rounded-lg border p-3"
+          style={{ borderColor: 'var(--card-border)', background: 'var(--bg)' }}
+          role="status"
+        >
+          <LoaderCircle className="mt-0.5 h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />
+          <div className="min-w-0 text-sm">
+            <p className="font-medium">Analyzing the brief</p>
+            <p className="mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              {elapsedSeconds}s elapsed. Unseen domains use local Ollama/Qwen before the remaining designs are generated.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="mt-5 flex items-center justify-between">
         <button
           type="button"
@@ -145,9 +179,14 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
         <button
           type="submit"
           disabled={isPending}
-          className="button-brand"
+          className="button-brand gap-2"
         >
-          {isPending ? 'Generating...' : 'Generate'}
+          {isPending ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <WandSparkles className="h-4 w-4" aria-hidden="true" />
+          )}
+          {isPending ? 'Analyzing...' : 'Generate'}
         </button>
       </div>
     </form>

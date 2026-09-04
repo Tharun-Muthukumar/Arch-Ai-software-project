@@ -1,8 +1,23 @@
+import re
+
 from app.schemas.domain import ApiDesign, ApiEndpoint, ApiGroup, DatabaseDesign, RequirementModel
 
 
 class ApiGenerator:
     def generate(self, requirements: RequirementModel, database_design: DatabaseDesign) -> ApiDesign:
+        if requirements.analysis_source == "conservative-fallback":
+            return ApiDesign(
+                style="Unknown; select after workflows and integration protocols are clarified",
+                authentication_strategy="Unknown; clarify actors and trust boundaries first.",
+                groups=[],
+                validation_rules=[
+                    "Do not publish endpoint contracts until domain commands and invariants are known."
+                ],
+                openapi_summary=["API design is intentionally deferred pending clarification."],
+            )
+        if requirements.analysis_source == "ollama-pretrained" and requirements.domain_workflows:
+            return self._generate_from_workflows(requirements)
+
         lower_domain = requirements.domain.lower()
         groups = [
             ApiGroup(
@@ -262,3 +277,65 @@ class ApiGenerator:
             validation_rules=validation_rules,
             openapi_summary=openapi_summary,
         )
+
+    def _generate_from_workflows(self, requirements: RequirementModel) -> ApiDesign:
+        requirement_text = " ".join(
+            requirements.functional_requirements
+            + requirements.non_functional_requirements
+            + requirements.constraints
+        ).lower()
+        identity_is_explicit = any(
+            token in requirement_text
+            for token in ("authenticate", "authorization", "permission", "access control", "identity")
+        )
+        groups: list[ApiGroup] = []
+        for workflow in requirements.domain_workflows:
+            method = self._workflow_method(workflow.name)
+            path = f"/api/v1/{self._slug(workflow.name)}"
+            groups.append(
+                ApiGroup(
+                    name=workflow.name,
+                    description=workflow.description,
+                    endpoints=[
+                        ApiEndpoint(
+                            method=method,
+                            path=path,
+                            purpose=workflow.description,
+                            auth_required=True if identity_is_explicit else None,
+                            request_example={},
+                            response_example={},
+                        )
+                    ],
+                )
+            )
+
+        return ApiDesign(
+            style="REST candidate; confirm command, query, streaming, and device protocols per workflow",
+            authentication_strategy=(
+                "Authorization is required by the brief; exact identity mechanism remains open."
+                if identity_is_explicit
+                else "Unknown; clarify actor identity, trust boundaries, and machine credentials."
+            ),
+            groups=groups,
+            validation_rules=[
+                "Validate identifiers, state transitions, and domain invariants at the boundary.",
+                "Define idempotency and concurrency behavior for every state-changing workflow.",
+                "Treat request and response examples as unknown until payload contracts are clarified.",
+            ],
+            openapi_summary=[
+                "Operations are derived from validated domain workflows, not a generic CRUD template.",
+                "Protocol-specific integrations require separate contracts when the brief justifies them.",
+            ],
+        )
+
+    def _workflow_method(self, name: str) -> str:
+        first_word = name.strip().split(maxsplit=1)[0].lower() if name.strip() else ""
+        if first_word in {"find", "get", "inspect", "list", "monitor", "retrieve", "search", "view"}:
+            return "GET"
+        if first_word in {"amend", "edit", "update"}:
+            return "PATCH"
+        return "POST"
+
+    def _slug(self, value: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+        return slug[:100] or "domain-operation"

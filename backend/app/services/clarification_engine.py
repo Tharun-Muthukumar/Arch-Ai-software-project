@@ -10,6 +10,21 @@ class ClarificationEngine:
         answers = answers or {}
         questions: list[ClarificationQuestion] = []
 
+        for index, question in enumerate(requirements.open_questions):
+            key = f"domain_open_{index + 1}"
+            if answers.get(key):
+                continue
+            questions.append(
+                ClarificationQuestion(
+                    key=key,
+                    category="domain",
+                    question=question,
+                    rationale="The raw brief does not provide this architecture-critical detail.",
+                    priority="high",
+                    options=[],
+                )
+            )
+
         prompts = {
             "auth": (
                 "security",
@@ -17,35 +32,29 @@ class ClarificationEngine:
                 "Authentication influences API design, authorization, and deployment hardening.",
                 ["Email/password", "SSO/SAML", "Social login", "Passwordless"],
             ),
-            "payments": (
-                "commerce",
-                "Are payments or billing flows part of the first release?",
-                "Payment support affects database entities, APIs, and compliance controls.",
-                ["Yes", "No", "Planned later"],
-            ),
             "preferred_cloud": (
                 "deployment",
                 "Do you have a preferred cloud provider or hosting model?",
                 "Cloud preference changes deployment architecture and managed service choices.",
-                ["AWS", "Azure", "GCP", "On-premise", "No preference"],
+                ["Cloud", "On-premise", "Hybrid", "No preference"],
             ),
             "sla": (
                 "operations",
                 "What availability target or SLA should the platform meet?",
                 "Availability expectations drive redundancy, monitoring, and failover design.",
-                ["99.5%", "99.9%", "99.95%", "Undecided"],
+                ["Business hours", "Always available", "Undecided"],
             ),
             "scale": (
                 "scalability",
                 "What peak concurrent traffic should the system be designed for?",
                 "Peak traffic is a major signal for architecture style and data strategy.",
-                ["<5k users", "5k-50k users", "50k-250k users", "250k+ users"],
+                ["Known workload", "Pilot workload", "Undecided"],
             ),
             "retention": (
                 "data",
                 "How long should business and audit data be retained?",
                 "Retention affects storage cost, indexing, and compliance reporting.",
-                ["30 days", "1 year", "7 years", "Custom"],
+                ["Short-lived", "Long-term", "Regulated", "Undecided"],
             ),
         }
 
@@ -64,23 +73,38 @@ class ClarificationEngine:
                     )
                 )
 
-        completeness = max(20, int(((len(prompts) - len(missing_areas)) / len(prompts)) * 100))
-
-        if "payment" not in " ".join(requirements.functional_requirements).lower():
+        requirement_text = " ".join(requirements.functional_requirements).lower()
+        if any(
+            token in requirement_text
+            for token in ("payment", "billing", "checkout", "refund", "invoice")
+        ) and not answers.get("payments"):
+            missing_areas.append("payments")
             questions.append(
                 ClarificationQuestion(
-                    key="payment_channels",
+                    key="payments",
                     category="commerce",
-                    question="If payments are included later, which channels should be prioritized?",
-                    rationale="Planning payment extensibility early avoids API and schema rework.",
-                    priority="low",
-                    options=["Cards", "UPI", "Wallets", "Bank transfer"],
+                    question="Which payment or transaction boundaries are in scope?",
+                    rationale="Transaction ownership affects consistency, security, and recovery design.",
+                    priority="high",
+                    options=["In scope", "External system", "Not in scope", "Undecided"],
                 )
             )
 
+        unresolved_domain = [
+            f"domain_open_{index + 1}"
+            for index in range(len(requirements.open_questions))
+            if not answers.get(f"domain_open_{index + 1}")
+        ]
+        unresolved_count = len(unresolved_domain) + len(missing_areas)
+        answered_count = len([value for value in answers.values() if value])
+        completeness = int(100 * answered_count / max(answered_count + unresolved_count, 1))
+
         return ClarificationPlan(
             completeness_score=completeness,
-            missing_areas=missing_areas,
-            questions=questions[:6],
+            missing_areas=[
+                *unresolved_domain,
+                *missing_areas,
+            ],
+            questions=questions[:8],
         )
 

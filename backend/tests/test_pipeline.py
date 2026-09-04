@@ -1,4 +1,7 @@
-def test_workspace_pipeline_and_change_request(client):
+from app.services.requirement_analyzer import RequirementAnalyzer
+
+
+def test_workspace_pipeline_and_change_request(client, monkeypatch):
     create_response = client.post(
         "/api/v1/workspaces",
         json={
@@ -16,6 +19,11 @@ def test_workspace_pipeline_and_change_request(client):
     assert workspace["recommendation"]["recommended_architecture_name"]
     assert "## Recommendation" in workspace["documentation_markdown"]
 
+    def fail_if_reanalyzed(*args, **kwargs):
+        raise AssertionError("Clarification updates must not rerun requirement extraction")
+
+    monkeypatch.setattr(RequirementAnalyzer, "analyze", fail_if_reanalyzed)
+
     clarification_response = client.post(
         f"/api/v1/workspaces/{workspace['id']}/clarifications",
         json={"answers": {"auth": "SSO/SAML", "scale": "250k+ users", "sla": "99.9%"}},
@@ -23,6 +31,7 @@ def test_workspace_pipeline_and_change_request(client):
     assert clarification_response.status_code == 200
     clarified = clarification_response.json()
     assert clarified["answers"]["auth"] == "SSO/SAML"
+    assert "Use SSO/SAML for user authentication." in clarified["requirements"]["functional_requirements"]
 
     change_response = client.post(
         f"/api/v1/workspaces/{workspace['id']}/changes",

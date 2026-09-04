@@ -1,4 +1,4 @@
-const apiBase = (process.env.ARCHAI_API_BASE ?? 'http://127.0.0.1:8000/api/v1').replace(
+const apiBase = (process.env.ARCHAI_API_BASE ?? 'http://127.0.0.1:8010/api/v1').replace(
   /\/$/,
   '',
 )
@@ -114,6 +114,125 @@ async function main() {
   )
   log('Workspace created', workspace.id)
 
+  const comparisonMatrix = Object.fromEntries(
+    workspace.comparison.scorecards.map((scorecard) => [
+      scorecard.architecture_id,
+      Object.fromEntries(
+        scorecard.metric_scores.map((metric) => [metric.metric, metric.score]),
+      ),
+    ]),
+  )
+  const recommended = workspace.architectures.find(
+    (architecture) =>
+      architecture.id === workspace.recommendation.recommended_architecture_id,
+  )
+  assert(recommended, 'Recommended architecture was not present in the shortlist')
+
+  const reweighted = await request('/analysis/reweight', {
+    method: 'POST',
+    body: JSON.stringify({
+      matrix: comparisonMatrix,
+      weights: { weights: workspace.comparison.weights },
+    }),
+  })
+  assert(
+    reweighted.length === workspace.architectures.length,
+    'Architecture reweighting returned an incomplete shortlist',
+  )
+  log('Architecture reweighting', `${reweighted.length} scorecards`)
+
+  const failedComponent = recommended.components[0]?.name
+  assert(failedComponent, 'Recommended architecture did not contain components')
+  const blastResult = await request('/analysis/blast-radius', {
+    method: 'POST',
+    body: JSON.stringify({
+      architecture: recommended,
+      failed_component: failedComponent,
+      comparison_matrix: comparisonMatrix,
+    }),
+  })
+  assert(
+    blastResult.failed_component === failedComponent &&
+      blastResult.statuses.length === recommended.components.length,
+    'Blast-radius simulation returned an invalid result',
+  )
+
+  const mitigations = await request('/analysis/resilience-recommendations', {
+    method: 'POST',
+    body: JSON.stringify({ blast_result: blastResult, architecture: recommended }),
+  })
+  assert(mitigations.length > 0, 'No resilience recommendations were returned')
+
+  const mitigatedResult = await request('/analysis/blast-radius/apply-mitigations', {
+    method: 'POST',
+    body: JSON.stringify({
+      blast_result: blastResult,
+      selected_mitigation_ids: [mitigations[0].id],
+      architecture: recommended,
+    }),
+  })
+  assert(
+    mitigatedResult.severity_score <= blastResult.severity_score,
+    'Applying a mitigation increased blast-radius severity',
+  )
+  log('Blast radius and mitigations', `${blastResult.severity_score} -> ${mitigatedResult.severity_score}`)
+
+  const projectConstraints = {
+    team_size: 6,
+    budget_level: 'medium',
+    expected_scale: workspace.requirements.scale_profile,
+    timeline_weeks: 12,
+  }
+  const deploymentStack = workspace.deployment_plan.target_stack
+
+  const teamFit = await request('/conway-fit', {
+    method: 'POST',
+    body: JSON.stringify({
+      architecture: recommended,
+      entities: workspace.database_design.entities.map((entity) => entity.name),
+      constraints: projectConstraints,
+    }),
+  })
+  assert(teamFit.fit_score >= 0, 'Team-fit analysis did not return a score')
+
+  const twins = await request('/twin-match', {
+    method: 'POST',
+    body: JSON.stringify({
+      comparison_matrix: comparisonMatrix,
+      recommended_architecture_id: recommended.id,
+      deployment_stack: deploymentStack,
+      weights: workspace.comparison.weights,
+    }),
+  })
+  assert(twins.length > 0, 'Industry-twin matching returned no results')
+
+  const budgetRequest = {
+    architecture: recommended,
+    deployment_stack: deploymentStack,
+    constraints: projectConstraints,
+  }
+  const budget = await request('/budget-estimate', {
+    method: 'POST',
+    body: JSON.stringify(budgetRequest),
+  })
+  assert(budget.budgets_by_scale.length > 0, 'Budget estimate returned no scale tiers')
+
+  const budgetComparison = await request('/budget-compare', {
+    method: 'POST',
+    body: JSON.stringify({
+      architectures: workspace.architectures,
+      deployment_stacks: Object.fromEntries(
+        workspace.architectures.map((architecture) => [architecture.id, deploymentStack]),
+      ),
+      constraints: projectConstraints,
+    }),
+  })
+  assert(
+    Object.keys(budgetComparison).length === workspace.architectures.length,
+    'Budget comparison returned an incomplete architecture set',
+  )
+  log('Team, twin, and budget insights', 'ok')
+
   const clarificationAnswers = Object.fromEntries(
     (workspace.clarification_plan?.questions ?? [])
       .filter((question) => question.options?.length)
@@ -153,6 +272,20 @@ async function main() {
     'Change request did not record impact history',
   )
   log('Change request applied', `${changedWorkspace.impact_history.length} impact entry`)
+
+  assert(changedWorkspace.adr, 'Change request did not generate an ADR')
+  const adrResponse = await fetchWithRetry(`${apiBase}/analysis/export-adrs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adrs: [changedWorkspace.adr] }),
+  })
+  assert(adrResponse.ok, `ADR export failed with ${adrResponse.status}`)
+  const adrBytes = Buffer.from(await adrResponse.arrayBuffer())
+  assert(
+    adrBytes.subarray(0, 2).toString('utf8') === 'PK',
+    'ADR export did not return a ZIP file signature',
+  )
+  log('ADR export', `${adrBytes.length} bytes`)
 
   const workspaceDetails = await request(`/workspaces/${workspace.id}`)
   assert(workspaceDetails.id === workspace.id, 'Workspace lookup failed after update')

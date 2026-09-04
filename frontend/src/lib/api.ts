@@ -12,25 +12,36 @@ function resolveDefaultApiBaseUrl() {
   }
 
   if (typeof window !== 'undefined') {
-    return `${window.location.protocol}//${window.location.hostname}:8000/api/v1`
+    return `${window.location.protocol}//${window.location.hostname}:8010/api/v1`
   }
 
-  return 'http://127.0.0.1:8000/api/v1'
+  return 'http://127.0.0.1:8010/api/v1'
 }
 
 const DEFAULT_API_BASE_URL = resolveDefaultApiBaseUrl()
+
+function normalizeApiBaseUrl(value: string) {
+  return value.trim().replace(/\/+$/, '')
+}
 
 export function getApiBaseUrl() {
   if (typeof window === 'undefined') {
     return DEFAULT_API_BASE_URL
   }
 
-  return window.localStorage.getItem(STORAGE_KEY) || DEFAULT_API_BASE_URL
+  return normalizeApiBaseUrl(
+    window.localStorage.getItem(STORAGE_KEY) || DEFAULT_API_BASE_URL,
+  )
 }
 
 export function setApiBaseUrl(value: string) {
   if (typeof window !== 'undefined') {
-    window.localStorage.setItem(STORAGE_KEY, value)
+    const normalizedValue = normalizeApiBaseUrl(value)
+    if (normalizedValue) {
+      window.localStorage.setItem(STORAGE_KEY, normalizedValue)
+    } else {
+      window.localStorage.removeItem(STORAGE_KEY)
+    }
   }
 }
 

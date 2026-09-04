@@ -43,17 +43,20 @@ export function DocsPage() {
     )
   }
 
+  const workspaceId = workspace.id
+  const workspaceTitle = workspace.title
+
   async function handleMarkdownDownload() {
-    const markdown = await downloadMarkdown(workspace.id)
+    const markdown = await downloadMarkdown(workspaceId)
     downloadBlob(
       new Blob([markdown], { type: 'text/markdown;charset=utf-8' }),
-      `${workspace.title}.md`,
+      `${workspaceTitle}.md`,
     )
   }
 
   async function handlePdfDownload() {
-    const pdf = await downloadPdf(workspace.id)
-    downloadBlob(pdf, `${workspace.title}.pdf`)
+    const pdf = await downloadPdf(workspaceId)
+    downloadBlob(pdf, `${workspaceTitle}.pdf`)
   }
 
   return (

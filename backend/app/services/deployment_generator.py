@@ -9,7 +9,9 @@ class DeploymentGenerator:
         answers: dict[str, str] | None = None,
     ) -> DeploymentPlan:
         answers = answers or {}
-        cloud = answers.get("preferred_cloud", "AWS, Azure, or a managed Kubernetes provider")
+        cloud = answers.get("preferred_cloud")
+        if cloud and cloud.casefold() == "no preference":
+            cloud = None
         arch_id = recommendation.recommended_architecture_id
 
         docker_services = [
@@ -71,6 +73,10 @@ class DeploymentGenerator:
                 "Enforce TLS termination, CORS policy, and content security controls.",
                 "Apply database backups, retention, and audit-log protection policies.",
             ],
-            cloud_recommendation=f"Prefer {cloud} with managed PostgreSQL and centralized observability services.",
+            cloud_recommendation=(
+                f"Evaluate {cloud} using the confirmed data, availability, and integration constraints."
+                if cloud
+                else "Hosting model is unknown; select it after residency, connectivity, availability, and operations constraints are clarified."
+            ),
         )
 

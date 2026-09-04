@@ -5,4 +5,7 @@ def test_health_check(client):
     body = response.json()
     assert body["status"] == "ok"
     assert body["service"] == "ArchAI"
+    assert body["ollama_enabled"] is False
+    assert body["ollama_reachable"] is False
+    assert body["ollama_model_available"] is False
 

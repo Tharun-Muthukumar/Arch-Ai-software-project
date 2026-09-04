@@ -32,8 +32,8 @@ export function ComparisonPage() {
     if (workspace.adr.id === lastAdrIdRef.current) return
     lastAdrIdRef.current = workspace.adr.id
     setTimelineEntries((prev) => [...prev, { adr: workspace.adr!, snapshot: workspace }])
-    setActiveTimelineIndex((prev) => prev + 1)
-  }, [workspace])
+    setActiveTimelineIndex(timelineEntries.length)
+  }, [workspace, timelineEntries.length])
 
   const activeSnapshot = useMemo(() => {
     if (timelineEntries.length === 0) return workspace
@@ -77,24 +77,26 @@ export function ComparisonPage() {
     )
   }
 
+  const comparison = (activeSnapshot ?? workspace).comparison
+
   return (
     <div className="space-y-4">
       <div className="grid gap-4 lg:grid-cols-2">
-        <RadarComparisonChart comparison={activeSnapshot.comparison} />
+        <RadarComparisonChart comparison={comparison} />
         <div className="panel">
           <span className="pill">Scoring rationale</span>
           <ul className="mt-3 space-y-1.5 text-sm">
-            {activeSnapshot.comparison.reasoning.map((reason) => (
+            {comparison.reasoning.map((reason) => (
               <li key={reason}>{reason}</li>
             ))}
           </ul>
         </div>
       </div>
 
-      <ComparisonTable comparison={activeSnapshot.comparison} />
+      <ComparisonTable comparison={comparison} />
 
       <WhatIfPlayground
-        comparison={activeSnapshot.comparison}
+        comparison={comparison}
         onRankingChange={handleRankingChange}
       />
 

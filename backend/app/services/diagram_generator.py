@@ -39,6 +39,9 @@ class DiagramGenerator:
         if requirements.domain == "EV Charging Booking Platform":
             mermaid = "\n".join(
                 [
+                    "---",
+                    "title: EV CHARGING STATION BOOKING SYSTEM",
+                    "---",
                     "flowchart TD",
                     "    classDef actor fill:transparent,stroke:transparent,color:#7a5a3e,font-weight:bold;",
                     "    classDef usecase fill:#fff7ef,stroke:#af7743,color:#2d1d11,stroke-width:1.4px;",
@@ -162,6 +165,9 @@ class DiagramGenerator:
         if requirements.domain == "Online Pharmacy":
             mermaid = "\n".join(
                 [
+                    "---",
+                    "title: ONLINE PHARMACY SYSTEM",
+                    "---",
                     "flowchart TD",
                     "    classDef actor fill:transparent,stroke:transparent,color:#7a5a3e,font-weight:bold;",
                     "    classDef usecase fill:#fff7ef,stroke:#af7743,color:#2d1d11,stroke-width:1.4px;",

@@ -41,7 +41,7 @@ ArchAI is a web application that takes a plain-English project brief and automat
 | ReportLab | 4.4 | PDF generation |
 | httpx | 0.28 | HTTP client (Ollama integration) |
 | pytest | 8.4 | Testing |
-| Ollama (qwen3:8b) | Optional | LLM refinement of generated outputs |
+| Ollama (qwen3:1.7b) | Optional | Schema-validated extraction from raw briefs for unseen domains |
 
 ### Database
 - **Development:** SQLite (zero-config, file-based)
@@ -77,13 +77,13 @@ The system recognizes four domains out of the box:
 - **EV Charging Booking Platform** - stations, chargers, bookings, sessions, payments
 - **Online Pharmacy** - products, prescriptions, orders, inventory, shipments
 - **E-Commerce** - products, orders, payments, shipments
-- **Generic Digital Platform** - fallback for any other domain
+- **Learning Platform** - courses, enrollments, lessons, submissions, notifications
 
-Each domain has pre-built templates for requirements, database entities, API endpoints, and diagrams. For unrecognized domains, the system uses a generic fallback that adapts based on keywords in the brief.
+Known domains use built-in requirement knowledge. An unrecognized brief is sent raw to Ollama before any fallback is constructed. Qwen returns a constrained JSON structure containing the domain, requirements, actors, entities, workflows, integrations, data characteristics, assumptions, and open questions. Pydantic validates that response, and grounding guards remove unsupported numeric constraints and unsolicited named technologies. The validated model then drives the same architecture, scoring, database, API, diagram, deployment, and documentation pipeline. No new domain file is needed.
 
-### Optional LLM Refinement
+### Ollama Extraction and Fallback
 
-If Ollama is running locally with the `qwen3:8b` model, ArchAI sends the rule-based outputs to the LLM for optional refinement (improving specificity and detail). If Ollama is unavailable, the system works perfectly on rule-based generation alone.
+If Ollama is running locally with the `qwen3:1.7b` model, unknown-domain extraction uses temperature zero, a fixed seed, and a Pydantic-derived JSON schema. Explicit restrictions and integration clauses from the source text are preserved after extraction. If Ollama is unavailable or its output fails validation, ArchAI retains the raw user requirement, marks the domain and scale as unknown, and asks clarification questions instead of substituting a generic digital-platform blueprint.
 
 ---
 
@@ -268,22 +268,17 @@ Single `workspaces` table stores everything as JSON columns:
 ## Running the Project
 
 ### Development (without Docker)
-```bash
-# Terminal 1 - Backend
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```powershell
+# First run only
+npm run setup
+ollama pull qwen3:1.7b
 
-# Terminal 2 - Frontend
-cd frontend
-npm install
+# Daily development: starts frontend and backend together
 npm run dev
 ```
 
-Frontend: http://localhost:5173
-Backend API: http://localhost:8000
+Frontend: http://127.0.0.1:5173
+Backend API: http://127.0.0.1:8010
 
 ### Production (with Docker)
 ```bash
@@ -296,11 +291,8 @@ PostgreSQL: localhost:5432
 
 ### Running Tests
 ```bash
-# Backend tests
-cd backend && python -m pytest
-
-# Frontend tests
-cd frontend && npm test
+# Backend and frontend tests
+npm test
 
 # Full smoke test
 npm run smoke
@@ -310,7 +302,7 @@ npm run smoke
 
 ## Key Design Decisions
 
-1. **Rule-based generation as primary, LLM as optional refinement** - The system works without any AI model. Templates and keyword matching generate complete outputs. Ollama improves specificity but is never required.
+1. **Known blueprints plus raw-input LLM extraction** - Known domains use curated blueprints. Unknown domains go directly from the raw brief to schema-validated Ollama extraction. Without Ollama, the system remains usable but intentionally leaves domain details unresolved.
 
 2. **Single-table JSON storage** - All workspace data lives in one table with JSON columns. This simplifies the schema and makes it easy to serialize/deserialize complex nested structures.
 
@@ -318,7 +310,7 @@ npm run smoke
 
 4. **Dual diagram syntax** - Every diagram is generated in both Mermaid (for in-browser rendering) and PlantUML (for external tooling).
 
-5. **Domain-aware templates** - Pre-built blueprints for EV Charging, Online Pharmacy, and E-Commerce domains produce more accurate outputs than generic generation.
+5. **Domain-aware generation without unknown-domain files** - Pre-built blueprints cover EV Charging, Online Pharmacy, E-Commerce, and Learning. Unseen domains use Qwen's pretrained knowledge and source-grounding safeguards rather than a generic template.
 
 ---
 
@@ -330,7 +322,7 @@ npm run smoke
 | `ARCHAI_ENVIRONMENT` | development | Environment label |
 | `ARCHAI_DATABASE_URL` | sqlite:///./archai.db | Database connection string |
 | `ARCHAI_ALLOWED_ORIGINS` | localhost:5173,4173,3000 | CORS allowed origins |
-| `ARCHAI_OLLAMA_ENABLED` | true | Enable LLM refinement |
+| `ARCHAI_OLLAMA_ENABLED` | true | Enable raw-input unseen-domain extraction and known-domain narrative refinement |
 | `ARCHAI_OLLAMA_BASE_URL` | http://localhost:11434 | Ollama server URL |
-| `ARCHAI_OLLAMA_MODEL` | qwen3:8b | Model to use for refinement |
+| `ARCHAI_OLLAMA_MODEL` | qwen3:1.7b | Model to use for structured extraction |
 | `ARCHAI_LOG_LEVEL` | INFO | Logging level |

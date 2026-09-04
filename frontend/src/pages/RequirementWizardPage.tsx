@@ -1,4 +1,5 @@
-import { useSearchParams } from 'react-router-dom'
+import { MessageSquareText } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { StatePanel } from '../components/workspace/StatePanel'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage } from '../lib/utils'
@@ -48,15 +49,33 @@ export function RequirementWizardPage() {
       <div className="panel">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <span className="pill">{requirements.domain}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="pill">{requirements.domain}</span>
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {requirements.analysis_source === 'ollama-pretrained'
+                  ? 'Extracted from the raw brief by Ollama'
+                  : requirements.analysis_source === 'predefined-blueprint'
+                    ? 'Matched predefined domain knowledge'
+                    : 'Conservative fallback'}
+              </span>
+            </div>
             <h2 className="mt-1 text-lg font-semibold">{workspace.title}</h2>
           </div>
-          <div className="flex gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+          <div className="flex flex-wrap items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
             <span>{requirements.actors.length} actors</span>
             <span>&middot;</span>
             <span>{requirements.functional_requirements.length} functional</span>
             <span>&middot;</span>
             <span>{workspace.clarification_plan.completeness_score}% complete</span>
+            {workspace.clarification_plan.questions.length > 0 && (
+              <Link
+                to={`/dashboard?workspace=${workspace.id}#clarifications`}
+                className="button-secondary gap-1.5 text-xs"
+              >
+                <MessageSquareText className="h-3.5 w-3.5" aria-hidden="true" />
+                Answer {workspace.clarification_plan.questions.length} questions
+              </Link>
+            )}
           </div>
         </div>
       </div>
@@ -73,6 +92,9 @@ export function RequirementWizardPage() {
               </li>
             ))}
           </ul>
+          {requirements.actors.length === 0 && (
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Actors are not yet known.</p>
+          )}
         </div>
 
         <div className="panel">
@@ -85,6 +107,11 @@ export function RequirementWizardPage() {
               </li>
             ))}
           </ul>
+          {requirements.functional_requirements.length === 0 && (
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              No functional requirements were confirmed. Add more detail to the brief.
+            </p>
+          )}
         </div>
       </div>
 
@@ -100,6 +127,11 @@ export function RequirementWizardPage() {
               </li>
             ))}
           </ul>
+          {requirements.non_functional_requirements.length === 0 && (
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              No non-functional requirements were confirmed yet.
+            </p>
+          )}
         </div>
 
         <div className="panel">
@@ -112,6 +144,11 @@ export function RequirementWizardPage() {
               </li>
             ))}
           </ul>
+          {requirements.constraints.length === 0 && (
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              No constraints were specified.
+            </p>
+          )}
 
           {requirements.assumptions.length > 0 && (
             <>
@@ -128,6 +165,44 @@ export function RequirementWizardPage() {
           )}
         </div>
       </div>
+
+      {(requirements.domain_entities.length > 0
+        || requirements.integrations.length > 0
+        || requirements.data_characteristics.length > 0) && (
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="panel">
+            <h3 className="mb-2 text-sm font-semibold">Domain Entities</h3>
+            <ul className="space-y-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+              {requirements.domain_entities.map((entity) => <li key={entity.name}>{entity.name}</li>)}
+            </ul>
+          </div>
+          <div className="panel">
+            <h3 className="mb-2 text-sm font-semibold">Integrations</h3>
+            {requirements.integrations.length > 0 ? (
+              <ul className="space-y-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+                {requirements.integrations.map((integration) => <li key={integration}>{integration}</li>)}
+              </ul>
+            ) : <p className="text-sm" style={{ color: 'var(--text-muted)' }}>None confirmed.</p>}
+          </div>
+          <div className="panel">
+            <h3 className="mb-2 text-sm font-semibold">Data Characteristics</h3>
+            {requirements.data_characteristics.length > 0 ? (
+              <ul className="space-y-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+                {requirements.data_characteristics.map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            ) : <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Not specified.</p>}
+          </div>
+        </div>
+      )}
+
+      {requirements.analysis_warnings.length > 0 && (
+        <div className="panel border-amber-500/50">
+          <h3 className="mb-2 text-sm font-semibold">Extraction Warnings</h3>
+          <ul className="space-y-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+            {requirements.analysis_warnings.map((warning) => <li key={warning}>{warning}</li>)}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

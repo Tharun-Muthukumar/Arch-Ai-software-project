@@ -107,9 +107,14 @@ class ComparisonEngine:
                 )
             )
 
+        scale_reasoning = (
+            f"The `{requirements.scale_profile}` profile adjusts scalability, reliability, and availability weights."
+            if requirements.scale_profile != "unknown"
+            else "Workload scale is unknown, so scale-sensitive weights remain neutral."
+        )
         reasoning = [
-            "Scores are rule-based and derived from scale profile, delivery speed, and operational posture.",
-            f"Scale profile `{requirements.scale_profile}` increases weight on scalability, reliability, and availability.",
+            "Scores are rule-based and derived from confirmed requirements and the available operational context.",
+            scale_reasoning,
             "Cost and complexity metrics favor simpler deployment topologies when the brief does not justify distributed systems overhead.",
         ]
 
@@ -186,11 +191,12 @@ class ComparisonEngine:
         architecture_name: str,
         requirements: RequirementModel,
     ) -> str:
-        scale_reason = (
-            "the high-scale brief rewards horizontal elasticity"
-            if requirements.scale_profile == "high-scale"
-            else "the current brief rewards controlled complexity"
-        )
+        if requirements.scale_profile == "high-scale":
+            scale_reason = "the confirmed high-scale brief rewards horizontal elasticity"
+        elif requirements.scale_profile == "unknown":
+            scale_reason = "unknown workload scale keeps the weighting neutral"
+        else:
+            scale_reason = "the confirmed scale profile rewards controlled complexity"
         return (
             f"{architecture_name} scores {score}/10 for {metric.replace('_', ' ')} because "
             f"{scale_reason} and this option balances that against delivery and operations trade-offs."

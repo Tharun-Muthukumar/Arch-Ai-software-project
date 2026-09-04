@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Clock, Download, RotateCcw } from 'lucide-react'
+import { Download, RotateCcw } from 'lucide-react'
 import { exportAdrs } from '../../lib/api'
 import { downloadBlob } from '../../lib/utils'
 import type { ArchitectureDecisionRecord, Workspace } from '../../types/api'

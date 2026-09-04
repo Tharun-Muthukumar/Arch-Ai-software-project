@@ -415,6 +415,17 @@ def simulate_failure(
 
 MITIGATION_CATALOG: list[dict] = [
     {
+        "id": "multi-region-static-delivery",
+        "name": "Multi-Region Static Delivery",
+        "category": "redundancy",
+        "description": "Replicates the web client across independent edge origins so a failed deployment can fall back to the last known good release.",
+        "applicable_roles": ["client"],
+        "severity_reduction": 1.5,
+        "status_transformations": {
+            "client": ("degraded", "secondary edge origin serving the last known good client"),
+        },
+    },
+    {
         "id": "circuit-breaker",
         "name": "Circuit Breaker",
         "category": "isolation",

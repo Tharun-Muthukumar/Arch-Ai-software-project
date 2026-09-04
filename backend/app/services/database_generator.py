@@ -1,3 +1,5 @@
+import re
+
 from app.schemas.domain import (
     DatabaseDesign,
     DatabaseEntity,
@@ -9,6 +11,21 @@ from app.schemas.domain import (
 
 class DatabaseGenerator:
     def generate(self, requirements: RequirementModel) -> DatabaseDesign:
+        if requirements.analysis_source == "conservative-fallback":
+            return DatabaseDesign(
+                database_engine="Unknown; select after the domain model is clarified",
+                entities=[],
+                relationships=[],
+                indexes=[],
+                normalization_notes=[
+                    "No domain entities are invented when structured extraction is unavailable."
+                ],
+                sql_schema="-- Database schema pending domain clarification.",
+                sample_inserts="-- Sample records pending domain clarification.",
+            )
+        if requirements.analysis_source == "ollama-pretrained" and requirements.domain_entities:
+            return self._generate_from_hints(requirements)
+
         lower_text = " ".join(requirements.functional_requirements).lower()
         entities = [
             DatabaseEntity(
@@ -374,6 +391,132 @@ class DatabaseGenerator:
             sql_schema=sql_schema,
             sample_inserts=sample_inserts,
         )
+
+    def _generate_from_hints(self, requirements: RequirementModel) -> DatabaseDesign:
+        entities: list[DatabaseEntity] = []
+        relationships: list[DatabaseRelationship] = []
+        indexes: list[str] = []
+
+        for hint in requirements.domain_entities:
+            entity_name = self._identifier(hint.name)
+            if not entity_name or any(entity.name == entity_name for entity in entities):
+                continue
+            fields = [DatabaseField(name="id", data_type="UUID", description="Primary key")]
+            seen_fields = {"id"}
+            for attribute in hint.attributes[:8]:
+                field_name = self._identifier(attribute)
+                if not field_name or field_name in seen_fields:
+                    continue
+                seen_fields.add(field_name)
+                fields.append(
+                    DatabaseField(
+                        name=field_name,
+                        data_type=self._field_type(field_name),
+                        nullable=True,
+                        indexed=field_name.endswith("_id")
+                        or field_name in {"status", "state", "code"},
+                        description=attribute,
+                    )
+                )
+                if fields[-1].indexed:
+                    indexes.append(
+                        f"CREATE INDEX idx_{entity_name}_{field_name} ON {entity_name}({field_name});"
+                    )
+            if len(fields) == 1:
+                fields.append(
+                    DatabaseField(
+                        name="details",
+                        data_type="JSONB",
+                        nullable=True,
+                        description="Attributes to finalize after domain clarification.",
+                    )
+                )
+            entities.append(
+                DatabaseEntity(
+                    name=entity_name,
+                    description=hint.description or f"Domain record for {hint.name}.",
+                    fields=fields,
+                )
+            )
+
+        entity_names = {entity.name for entity in entities}
+        singular_lookup = {
+            self._singular(entity_name): entity_name for entity_name in entity_names
+        }
+        for entity in entities:
+            for field in entity.fields:
+                if not field.name.endswith("_id"):
+                    continue
+                target = singular_lookup.get(field.name[:-3])
+                if target and target != entity.name:
+                    relationships.append(
+                        DatabaseRelationship(
+                            source=entity.name,
+                            target=target,
+                            relationship="many-to-one",
+                            description=f"{entity.name} references {target}.",
+                        )
+                    )
+
+        return DatabaseDesign(
+            database_engine="PostgreSQL (architecture recommendation)",
+            entities=entities,
+            relationships=relationships,
+            indexes=self._dedupe(indexes),
+            normalization_notes=[
+                "Entity names and candidate attributes come from the validated requirement extraction.",
+                "Attribute types and relationships are provisional until the open data-model questions are answered.",
+                "Use object storage alongside the relational model if binary or high-volume data requires it.",
+            ],
+            sql_schema=self._render_dynamic_sql(entities),
+            sample_inserts="-- Sample records are intentionally omitted until domain values are confirmed.",
+        )
+
+    def _render_dynamic_sql(self, entities: list[DatabaseEntity]) -> str:
+        statements: list[str] = []
+        for entity in entities:
+            columns: list[str] = []
+            for field in entity.fields:
+                suffix = " PRIMARY KEY DEFAULT gen_random_uuid()" if field.name == "id" else ""
+                nullable = "" if field.nullable else " NOT NULL"
+                columns.append(f"  {field.name} {field.data_type}{suffix}{nullable}")
+            statements.extend(
+                [f"CREATE TABLE {entity.name} (", ",\n".join(columns), ");", ""]
+            )
+        return "\n".join(statements).rstrip()
+
+    def _identifier(self, value: str) -> str:
+        identifier = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+        return identifier[:63]
+
+    def _singular(self, value: str) -> str:
+        if value.endswith("ies"):
+            return value[:-3] + "y"
+        if value.endswith("s") and not value.endswith("ss"):
+            return value[:-1]
+        return value
+
+    def _field_type(self, field_name: str) -> str:
+        if field_name.endswith("_id"):
+            return "UUID"
+        if field_name.endswith("_at") or "timestamp" in field_name or field_name.endswith("_time"):
+            return "TIMESTAMPTZ"
+        if field_name.endswith("_date"):
+            return "DATE"
+        if field_name.startswith(("is_", "has_")):
+            return "BOOLEAN"
+        if any(token in field_name for token in ("count", "quantity", "sequence", "version")):
+            return "INTEGER"
+        if any(token in field_name for token in ("measurement", "value", "amount")):
+            return "NUMERIC"
+        if any(token in field_name for token in ("metadata", "coordinates", "geometry", "data")):
+            return "JSONB"
+        if any(token in field_name for token in ("uri", "url", "path", "description", "notes")):
+            return "TEXT"
+        return "VARCHAR(255)"
+
+    def _dedupe(self, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(values))
 
     def _render_sql(
         self, entities: list[DatabaseEntity], relationships: list[DatabaseRelationship]

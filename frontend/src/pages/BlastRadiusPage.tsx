@@ -5,7 +5,7 @@ import { StatePanel } from '../components/workspace/StatePanel'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage } from '../lib/utils'
 import { simulateBlastRadius, fetchResilienceRecommendations, applyMitigations } from '../lib/api'
-import type { BlastRadiusResult, ResilienceRecommendation, Workspace } from '../types/api'
+import type { BlastRadiusResult, ResilienceRecommendation } from '../types/api'
 
 const CATEGORY_COLORS: Record<string, string> = {
   isolation: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
@@ -231,8 +231,6 @@ export function BlastRadiusPage() {
         {recommended.components.map(component => {
           const r = overrideResult
           const isLoading = !overrideResult && loadingComponent === component.name
-          const hasResult = !!r
-          const isClickable = !hasResult || r?.failed_component !== component.name
 
           return (
             <div

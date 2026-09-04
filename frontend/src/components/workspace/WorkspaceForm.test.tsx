@@ -15,16 +15,18 @@ describe('WorkspaceForm', () => {
     fireEvent.change(screen.getByLabelText(/project brief/i), {
       target: { value: 'Build a learning platform for 50,000 users.' },
     })
-    fireEvent.change(screen.getByLabelText(/explicit constraints/i), {
+    fireEvent.change(screen.getByLabelText(/^constraints$/i), {
       target: { value: 'SSO, PostgreSQL' },
     })
     fireEvent.click(
-      screen.getByRole('button', { name: /generate workspace/i }),
+      screen.getByRole('button', { name: /^generate$/i }),
     )
 
     expect(handleSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'ArchAI Demo',
+        budget: undefined,
+        preferred_cloud: undefined,
         constraints: ['SSO', 'PostgreSQL'],
       }),
     )
@@ -33,9 +35,7 @@ describe('WorkspaceForm', () => {
   it('loads the sample project brief', () => {
     render(<WorkspaceForm isPending={false} onSubmit={vi.fn()} />)
 
-    fireEvent.click(
-      screen.getAllByRole('button', { name: /load sample brief/i })[0],
-    )
+    fireEvent.click(screen.getByRole('button', { name: /load sample/i }))
 
     expect(screen.getByLabelText(/project title/i)).toHaveValue(
       sampleProject.title,

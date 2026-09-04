@@ -6,7 +6,7 @@ ArchAI is a production-style software architecture decision engine that turns a 
 
 - Frontend: React, TypeScript, TailwindCSS, Mermaid, React Flow
 - Backend: FastAPI, SQLAlchemy, Pydantic
-- AI integration: Ollama with `qwen3:8b` fallback-friendly structured prompting
+- AI integration: Ollama with `qwen3:1.7b` and schema-validated raw-brief extraction for unseen domains
 - Persistence: PostgreSQL-ready with zero-friction SQLite local fallback
 - Documentation: Markdown and PDF export
 
@@ -24,13 +24,13 @@ docs/        Supporting project documentation
 ### From the repository root
 
 ```bash
-npm install
+npm run setup
 npm run dev
 ```
 
 This starts:
 
-- FastAPI on `http://127.0.0.1:8000`
+- FastAPI on `http://127.0.0.1:8010`
 - React on `http://127.0.0.1:5173`
 
 Once both servers are up, run this end-to-end API smoke test from a second terminal:
@@ -39,22 +39,18 @@ Once both servers are up, run this end-to-end API smoke test from a second termi
 npm run smoke
 ```
 
-### Backend
+### Backend (separate terminal)
 
 ```bash
-cd backend
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install -r requirements.txt
-uvicorn app.main:app --reload
+npm run dev:backend
 ```
 
-### Frontend
+Use `npm run dev:backend:reload` when running the backend by itself during active backend development.
+
+### Frontend (separate terminal)
 
 ```bash
-cd frontend
-npm install
-npm run dev
+npm run dev:frontend
 ```
 
 ### Optional full stack with Docker
@@ -63,7 +59,7 @@ npm run dev
 docker compose up --build
 ```
 
-The backend will run even when Ollama is unavailable. When Ollama is running locally, ArchAI uses it to refine structured outputs produced by the rule-based pipeline.
+The backend will run when Ollama is unavailable, but unseen domains then use a deliberately conservative result based on the user's text and clarification questions. With Ollama enabled, known domains may use their built-in blueprints while unseen domains are extracted directly from the raw brief. Start Ollama and run `ollama pull qwen3:1.7b` once. The Settings page reports whether Ollama and the configured model are ready.
 
 ## Key capabilities
 

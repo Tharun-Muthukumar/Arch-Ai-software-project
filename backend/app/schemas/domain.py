@@ -9,6 +9,19 @@ class Actor(BaseModel):
     description: str
 
 
+class DomainEntityHint(BaseModel):
+    name: str
+    description: str
+    attributes: list[str] = Field(default_factory=list)
+
+
+class DomainWorkflowHint(BaseModel):
+    name: str
+    description: str
+    primary_actor: str
+    related_entities: list[str] = Field(default_factory=list)
+
+
 class RequirementModel(BaseModel):
     summary: str
     domain: str
@@ -18,6 +31,15 @@ class RequirementModel(BaseModel):
     actors: list[Actor] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+    domain_entities: list[DomainEntityHint] = Field(default_factory=list)
+    domain_workflows: list[DomainWorkflowHint] = Field(default_factory=list)
+    integrations: list[str] = Field(default_factory=list)
+    data_characteristics: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    analysis_source: Literal[
+        "predefined-blueprint", "ollama-pretrained", "conservative-fallback", "legacy"
+    ] = "legacy"
+    analysis_warnings: list[str] = Field(default_factory=list)
 
 
 class ClarificationQuestion(BaseModel):
@@ -135,7 +157,7 @@ class ApiEndpoint(BaseModel):
     method: str
     path: str
     purpose: str
-    auth_required: bool
+    auth_required: bool | None
     request_example: dict = Field(default_factory=dict)
     response_example: dict = Field(default_factory=dict)
 

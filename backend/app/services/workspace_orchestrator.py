@@ -95,11 +95,16 @@ class WorkspaceOrchestrator:
             return None
 
         merged_answers = {**(workspace.answers_json or {}), **answers}
-        requirements = self.requirement_analyzer.analyze(
-            title=workspace.title,
-            description=workspace.original_prompt,
-            business_context=workspace.business_context,
-            answers=merged_answers,
+        requirements = RequirementModel.model_validate(workspace.requirements_json)
+        question_text = {
+            item.get("key", ""): item.get("question", "")
+            for item in (workspace.clarification_json or {}).get("questions", [])
+            if item.get("key")
+        }
+        requirements = self.requirement_analyzer.apply_clarifications(
+            requirements,
+            answers,
+            question_text,
         )
         generated = self._generate_all(
             workspace.title,
@@ -107,6 +112,7 @@ class WorkspaceOrchestrator:
             workspace.business_context,
             merged_answers,
             requirements,
+            refine_architecture=False,
         )
 
         workspace.answers_json = merged_answers
@@ -204,9 +210,15 @@ class WorkspaceOrchestrator:
         business_context: str | None,
         answers: dict[str, str],
         requirements: RequirementModel,
+        *,
+        refine_architecture: bool = False,
     ) -> dict:
         clarification = self.clarification_engine.generate(requirements, answers)
-        architectures = self.architecture_generator.generate(requirements, answers)
+        architectures = self.architecture_generator.generate(
+            requirements,
+            answers,
+            refine_with_ai=refine_architecture,
+        )
         comparison = self.comparison_engine.compare(requirements, architectures, answers)
         recommendation = self.recommendation_engine.recommend(requirements, architectures, comparison)
         database_design = self.database_generator.generate(requirements)

@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from 'react'
+import { LoaderCircle, Send } from 'lucide-react'
+import { useEffect, useState, type FormEvent } from 'react'
 import type { Workspace } from '../../types/api'
 
 interface ClarificationPanelProps {
@@ -13,6 +14,10 @@ export function ClarificationPanel({
   onSubmit,
 }: ClarificationPanelProps) {
   const [answers, setAnswers] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    setAnswers({})
+  }, [workspace.id])
 
   if (!workspace.clarification_plan.questions.length) {
     return (
@@ -32,12 +37,15 @@ export function ClarificationPanel({
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    onSubmit(
-      Object.fromEntries(
-        Object.entries(answers).filter(([, value]) => value.trim().length > 0),
-      ),
+    const completedAnswers = Object.fromEntries(
+      Object.entries(answers).filter(([, value]) => value.trim().length > 0),
     )
+    if (Object.keys(completedAnswers).length > 0) {
+      onSubmit(completedAnswers)
+    }
   }
+
+  const hasAnswers = Object.values(answers).some((value) => value.trim().length > 0)
 
   return (
     <form className="panel" onSubmit={handleSubmit}>
@@ -65,18 +73,30 @@ export function ClarificationPanel({
               </span>
             </div>
             <p className="mt-2 font-medium text-sm">{question.question}</p>
-            <select
-              className="input-shell mt-2"
-              value={answers[question.key] ?? ''}
-              onChange={(event) => updateAnswer(question.key, event.target.value)}
-            >
-              <option value="">Select an answer</option>
-              {question.options.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
+            {question.options.length > 0 ? (
+              <select
+                aria-label={question.question}
+                className="input-shell mt-2"
+                value={answers[question.key] ?? ''}
+                onChange={(event) => updateAnswer(question.key, event.target.value)}
+              >
+                <option value="">Select an answer</option>
+                {question.options.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <textarea
+                aria-label={question.question}
+                className="input-shell mt-2 resize-y"
+                rows={2}
+                value={answers[question.key] ?? ''}
+                onChange={(event) => updateAnswer(question.key, event.target.value)}
+                placeholder="Type an answer, or enter 'unknown'"
+              />
+            )}
           </div>
         ))}
       </div>
@@ -84,10 +104,15 @@ export function ClarificationPanel({
       <div className="mt-4 flex justify-end">
         <button
           type="submit"
-          disabled={isPending}
-          className="button-brand text-sm"
+          disabled={isPending || !hasAnswers}
+          className="button-brand gap-2 text-sm"
         >
-          {isPending ? 'Updating...' : 'Update Results'}
+          {isPending ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Send className="h-4 w-4" aria-hidden="true" />
+          )}
+          {isPending ? 'Refreshing results...' : 'Apply answers'}
         </button>
       </div>
     </form>

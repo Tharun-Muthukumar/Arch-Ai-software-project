@@ -10,6 +10,8 @@ class ArchitectureGenerator:
         self,
         requirements: RequirementModel,
         answers: dict[str, str] | None = None,
+        *,
+        refine_with_ai: bool = False,
     ) -> list[ArchitectureOption]:
         answers = answers or {}
         options = [
@@ -17,38 +19,81 @@ class ArchitectureGenerator:
             self._event_driven_microservices(requirements),
             self._serverless(requirements, answers),
         ]
-        refined = self.ai_client.refine(
-            "architecture-generation", {"architectures": [item.model_dump() for item in options]}
-        )
+        if not refine_with_ai or requirements.analysis_source == "ollama-pretrained":
+            return options
+        refinable_fields = {"overview"}
+        refinement_seed = {
+            "architectures": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    **{
+                        field: getattr(item, field)
+                        for field in refinable_fields
+                    },
+                }
+                for item in options
+            ]
+        }
+        refined = self.ai_client.refine("architecture-generation", refinement_seed)
         if refined and isinstance(refined.get("architectures"), list):
             try:
-                return [ArchitectureOption.model_validate(item) for item in refined["architectures"]]
-            except Exception:
+                patches = {
+                    item["id"]: item
+                    for item in refined["architectures"]
+                    if isinstance(item, dict) and isinstance(item.get("id"), str)
+                }
+                return [
+                    ArchitectureOption.model_validate(
+                        {
+                            **option.model_dump(),
+                            **{
+                                field: patches.get(option.id, {}).get(
+                                    field,
+                                    getattr(option, field),
+                                )
+                                for field in refinable_fields
+                            },
+                        }
+                    )
+                    for option in options
+                ]
+            except (KeyError, TypeError, ValueError):
                 return options
         return options
 
     def _shared_components(self, requirements: RequirementModel) -> list[ArchitectureComponent]:
-        domain_service = requirements.domain.replace(" ", "")
-        return [
+        actors = ", ".join(actor.name for actor in requirements.actors[:4]) or "actors to clarify"
+        components = [
             ArchitectureComponent(
-                name="Web Client",
-                responsibility="Hosts the requirement wizard, dashboards, diagrams, and exports.",
-                technologies=["React", "TypeScript", "TailwindCSS"],
-                interactions=["Calls ArchAI API endpoints", "Renders Mermaid diagrams"],
+                name="User and Operator Interface",
+                responsibility=f"Supports the confirmed workflows for {actors}.",
+                technologies=["Web or native client (recommendation)"],
+                interactions=["Invokes domain operations", "Presents workflow state"],
             ),
             ArchitectureComponent(
-                name="API Layer",
-                responsibility="Handles validation, orchestration, and CRUD style workspace flows.",
-                technologies=["FastAPI", "Pydantic"],
-                interactions=["Invokes AI pipeline services", "Persists project workspaces"],
+                name="Domain API",
+                responsibility="Validates domain commands and queries while enforcing workflow invariants.",
+                technologies=["Versioned HTTP or protocol adapters (recommendation)"],
+                interactions=["Routes validated operations", "Coordinates integration boundaries"],
             ),
             ArchitectureComponent(
-                name=f"{domain_service} Core",
-                responsibility="Encapsulates domain rules, analysis, scoring, and recommendation logic.",
-                technologies=["Python services", "Rule engine"],
-                interactions=["Uses structured JSON contracts", "Generates downstream artifacts"],
+                name=f"{requirements.domain} Core",
+                responsibility=requirements.summary,
+                technologies=["Domain services (recommendation)"],
+                interactions=[workflow.name for workflow in requirements.domain_workflows[:3]],
             ),
         ]
+        if requirements.integrations:
+            components.append(
+                ArchitectureComponent(
+                    name="Integration Adapters",
+                    responsibility="Isolates the external interfaces explicitly identified in the brief.",
+                    technologies=["Protocol adapters (recommendation)"],
+                    interactions=requirements.integrations[:4],
+                )
+            )
+        return components
 
     def _modular_monolith(self, requirements: RequirementModel) -> ArchitectureOption:
         components = self._shared_components(requirements)
@@ -56,33 +101,32 @@ class ArchitectureGenerator:
             [
                 ArchitectureComponent(
                     name="PostgreSQL",
-                    responsibility="Stores workspaces, generated artifacts, and audit history.",
+                    responsibility=f"Stores transactional records for {requirements.domain}.",
                     technologies=["PostgreSQL", "JSONB"],
-                    interactions=["Receives transactional writes from the API layer"],
-                ),
-                ArchitectureComponent(
-                    name="Background Jobs",
-                    responsibility="Runs document exports, long-running comparisons, and notifications.",
-                    technologies=["FastAPI background tasks", "Redis-ready queue adapter"],
-                    interactions=["Consumes generation requests asynchronously"],
+                    interactions=["Receives transactional writes from the domain core"],
                 ),
             ]
         )
+        if self._requires_event_processing(requirements):
+            components.append(
+                ArchitectureComponent(
+                    name="Event and Background Processing",
+                    responsibility="Handles justified realtime, streaming, or long-running domain work outside request threads.",
+                    technologies=["Durable queue or stream (recommendation)"],
+                    interactions=["Consumes domain events", "Updates durable workflow state"],
+                )
+            )
 
         return ArchitectureOption(
             id="modular-monolith",
             name="Modular Monolith",
             style="Layered / Clean Architecture",
-            overview="A single deployable service with clear module boundaries, ideal for fast delivery and disciplined evolution.",
+            overview=f"A cohesive {requirements.domain} application with modules aligned to the extracted entities and workflows.",
             components=components,
-            data_flow=[
-                "Client submits project brief to the API layer.",
-                "Requirement, comparison, and recommendation modules process the brief inside one deployable boundary.",
-                "Artifacts are stored in PostgreSQL and returned to the frontend immediately or via background refresh.",
-            ],
-            technology_stack=["React", "FastAPI", "PostgreSQL", "Redis (optional)", "Ollama"],
-            database="Single PostgreSQL cluster with JSONB artifact storage and relational metadata.",
-            api_style="REST with OpenAPI documentation and async export endpoints.",
+            data_flow=self._data_flow(requirements),
+            technology_stack=["Client appropriate to confirmed actors", "Domain API", "PostgreSQL"],
+            database="Relational system of record, with additional storage selected only for confirmed data characteristics.",
+            api_style="Versioned domain APIs; protocol details remain subject to integration clarification.",
             deployment="Containerized application deployed behind NGINX with horizontal replicas.",
             advantages=[
                 "Lowest operational overhead while preserving strong module boundaries.",
@@ -103,11 +147,14 @@ class ArchitectureGenerator:
         )
 
     def _event_driven_microservices(self, requirements: RequirementModel) -> ArchitectureOption:
+        primary_entity = (
+            requirements.domain_entities[0].name if requirements.domain_entities else requirements.domain
+        )
         return ArchitectureOption(
             id="event-driven-microservices",
             name="Event-Driven Microservices",
             style="Microservices / Event Driven",
-            overview="Decomposes analysis, diagramming, scoring, and reporting into independent services with async event choreography.",
+            overview=f"Separates {requirements.domain} workflows into independently operated services connected by durable events.",
             components=[
                 ArchitectureComponent(
                     name="API Gateway",
@@ -116,43 +163,39 @@ class ArchitectureGenerator:
                     interactions=["Handles authentication, rate limiting, and aggregation"],
                 ),
                 ArchitectureComponent(
-                    name="Requirement Service",
-                    responsibility="Owns requirement extraction and clarification state.",
-                    technologies=["FastAPI", "Pydantic"],
-                    interactions=["Publishes domain events after updates"],
+                    name=f"{primary_entity} Service",
+                    responsibility=f"Owns the lifecycle and invariants for {primary_entity}.",
+                    technologies=["Independent domain service"],
+                    interactions=["Publishes state changes after successful transactions"],
                 ),
                 ArchitectureComponent(
-                    name="Decision Engine Service",
-                    responsibility="Generates architectures, scores alternatives, and recommends an approach.",
-                    technologies=["FastAPI", "Rule engine"],
-                    interactions=["Consumes requirement events and emits decision snapshots"],
+                    name="Workflow Coordination Service",
+                    responsibility="Coordinates the cross-entity workflows identified in the requirement extraction.",
+                    technologies=["Domain service", "Workflow state machine"],
+                    interactions=[workflow.name for workflow in requirements.domain_workflows[:3]],
                 ),
                 ArchitectureComponent(
-                    name="Artifact Service",
-                    responsibility="Produces diagrams, API contracts, schema assets, and PDFs.",
-                    technologies=["FastAPI", "Mermaid", "ReportLab"],
-                    interactions=["Listens to decision updates and rebuild requests"],
+                    name="Integration Service",
+                    responsibility="Owns external-system and device boundaries that require independent lifecycle management.",
+                    technologies=["Protocol adapters"],
+                    interactions=requirements.integrations[:4] or ["No external integration confirmed"],
                 ),
                 ArchitectureComponent(
                     name="Event Backbone",
-                    responsibility="Decouples long-running workflows and partial regeneration paths.",
+                    responsibility="Decouples independently scalable domain workflows where asynchronous behavior is justified.",
                     technologies=["Kafka or Redis Streams"],
-                    interactions=["Carries architecture-changed and documentation-changed events"],
+                    interactions=["Carries versioned domain events", "Supports retry and replay policies"],
                 ),
                 ArchitectureComponent(
                     name="Polyglot Persistence",
-                    responsibility="Stores transactional state, generated artifacts, and operational telemetry.",
+                    responsibility="Stores transactional state and any confirmed high-volume or binary domain data.",
                     technologies=["PostgreSQL", "Redis"],
                     interactions=["Supports service-local read/write patterns"],
                 ),
             ],
-            data_flow=[
-                "Gateway forwards the project brief to the Requirement Service.",
-                "Requirement updates publish events that trigger comparison, recommendation, and artifact pipelines.",
-                "Artifact Service rebuilds only impacted outputs and stores versioned snapshots.",
-            ],
-            technology_stack=["React", "FastAPI", "PostgreSQL", "Redis", "Kafka", "Ollama"],
-            database="Service-owned PostgreSQL schemas plus Redis for caching and event coordination.",
+            data_flow=self._data_flow(requirements, event_driven=True),
+            technology_stack=["API gateway", "Domain services", "PostgreSQL", "Event backbone"],
+            database="Service-owned transactional schemas; stream and object storage are recommendations only when justified.",
             api_style="REST externally, async events internally, versioned contracts between services.",
             deployment="Kubernetes-based deployment with service autoscaling and event infrastructure.",
             advantages=[
@@ -176,30 +219,32 @@ class ArchitectureGenerator:
     def _serverless(
         self, requirements: RequirementModel, answers: dict[str, str]
     ) -> ArchitectureOption:
-        cloud = answers.get("preferred_cloud", "AWS or Azure")
+        cloud = answers.get("preferred_cloud")
+        if not cloud or cloud.casefold() == "no preference":
+            cloud = "a suitable hosting platform"
         return ArchitectureOption(
             id="serverless-platform",
             name="Serverless Platform",
             style="Serverless / Managed Services",
-            overview="Uses managed compute, storage, and event services to minimize operational burden and absorb unpredictable traffic.",
+            overview=f"Implements bounded {requirements.domain} operations with managed compute and workflow services.",
             components=[
                 ArchitectureComponent(
                     name="Static Web App",
-                    responsibility="Delivers the frontend through a CDN-backed static hosting layer.",
+                    responsibility="Delivers the confirmed user and operator interactions.",
                     technologies=["Vite build", "CDN", "Object storage"],
                     interactions=["Calls managed API endpoints over HTTPS"],
                 ),
                 ArchitectureComponent(
                     name="Managed API",
-                    responsibility="Runs stateless orchestration logic and secure HTTP endpoints.",
+                    responsibility="Runs stateless domain commands and queries behind managed endpoints.",
                     technologies=["Serverless functions", "API Gateway"],
-                    interactions=["Invokes AI and generation pipelines on demand"],
+                    interactions=[workflow.name for workflow in requirements.domain_workflows[:3]],
                 ),
                 ArchitectureComponent(
                     name="Workflow Orchestrator",
-                    responsibility="Coordinates long-running document, diagram, and comparison jobs.",
+                    responsibility="Coordinates long-running or asynchronous domain workflows.",
                     technologies=["Managed workflow engine", "Event bus"],
-                    interactions=["Triggers partial regeneration steps asynchronously"],
+                    interactions=["Tracks durable workflow state", "Invokes integration adapters"],
                 ),
                 ArchitectureComponent(
                     name="Managed Data Layer",
@@ -208,13 +253,9 @@ class ArchitectureGenerator:
                     interactions=["Supports autoscaling reads and transactional writes"],
                 ),
             ],
-            data_flow=[
-                "CDN-hosted frontend sends generation requests to serverless APIs.",
-                "Managed workflows fan out architecture, schema, and documentation tasks.",
-                "Artifacts are written to managed storage and surfaced back through the API layer.",
-            ],
-            technology_stack=["React", "Serverless functions", "Managed PostgreSQL", "Managed queues", "Ollama bridge"],
-            database="Managed PostgreSQL with read replicas and object storage for heavy exports.",
+            data_flow=self._data_flow(requirements, event_driven=True),
+            technology_stack=["Managed API", "Serverless functions", "Managed relational storage", "Managed workflow service"],
+            database="Managed relational storage plus object storage only when confirmed data characteristics require it.",
             api_style="REST backed by function endpoints and event-triggered background tasks.",
             deployment=f"Cloud-native deployment on {cloud} with managed autoscaling and CDN edge delivery.",
             advantages=[
@@ -233,5 +274,37 @@ class ArchitectureGenerator:
             estimated_complexity="Medium to high",
             estimated_cost="Usage-based medium",
             maintenance="Moderate, with less infra maintenance but more vendor-specific architecture decisions.",
+        )
+
+    def _data_flow(
+        self, requirements: RequirementModel, event_driven: bool = False
+    ) -> list[str]:
+        flows: list[str] = []
+        for workflow in requirements.domain_workflows[:3]:
+            mode = "publishes a durable event after" if event_driven else "processes"
+            flows.append(
+                f"{workflow.primary_actor} {mode} {workflow.name.lower()}, involving "
+                f"{', '.join(workflow.related_entities) or 'the confirmed domain records'}."
+            )
+        if requirements.integrations:
+            flows.append(
+                "Integration adapters exchange validated data with: "
+                + ", ".join(requirements.integrations[:4])
+                + "."
+            )
+        return flows or ["The domain flow remains provisional until workflow questions are answered."]
+
+    def _requires_event_processing(self, requirements: RequirementModel) -> bool:
+        text = " ".join(
+            requirements.functional_requirements
+            + requirements.non_functional_requirements
+            + requirements.data_characteristics
+        ).lower()
+        return any(
+            token in text
+            for token in (
+                "as they arrive", "event", "immediate", "real-time", "realtime", "sensor",
+                "stream", "telemetry",
+            )
         )
 

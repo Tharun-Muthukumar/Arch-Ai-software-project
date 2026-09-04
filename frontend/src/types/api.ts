@@ -3,6 +3,19 @@ export interface Actor {
   description: string
 }
 
+export interface DomainEntityHint {
+  name: string
+  description: string
+  attributes: string[]
+}
+
+export interface DomainWorkflowHint {
+  name: string
+  description: string
+  primary_actor: string
+  related_entities: string[]
+}
+
 export interface RequirementModel {
   summary: string
   domain: string
@@ -12,6 +25,13 @@ export interface RequirementModel {
   actors: Actor[]
   constraints: string[]
   assumptions: string[]
+  domain_entities: DomainEntityHint[]
+  domain_workflows: DomainWorkflowHint[]
+  integrations: string[]
+  data_characteristics: string[]
+  open_questions: string[]
+  analysis_source: 'predefined-blueprint' | 'ollama-pretrained' | 'conservative-fallback' | 'legacy'
+  analysis_warnings: string[]
 }
 
 export interface ClarificationQuestion {
@@ -129,7 +149,7 @@ export interface ApiEndpoint {
   method: string
   path: string
   purpose: string
-  auth_required: boolean
+  auth_required: boolean | null
   request_example: Record<string, unknown>
   response_example: Record<string, unknown>
 }

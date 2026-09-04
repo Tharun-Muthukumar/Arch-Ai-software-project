@@ -48,6 +48,11 @@ textarea {
   font: inherit;
 }
 
+select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
 #root {
   min-height: 100vh;
 }
