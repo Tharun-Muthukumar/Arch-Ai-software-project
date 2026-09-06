@@ -5,6 +5,7 @@ import { ComparisonTable } from '../components/workspace/ComparisonTable'
 import { StatePanel } from '../components/workspace/StatePanel'
 import { WhatIfPlayground } from '../components/workspace/WhatIfPlayground'
 import { ADRTimeline } from '../components/workspace/ADRTimeline'
+import { CounterfactualSimulator } from '../components/workspace/CounterfactualSimulator'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage } from '../lib/utils'
 import type { Workspace, ArchitectureDecisionRecord, ArchitectureScorecard } from '../types/api'
@@ -99,6 +100,8 @@ export function ComparisonPage() {
         comparison={comparison}
         onRankingChange={handleRankingChange}
       />
+
+      <CounterfactualSimulator workspace={workspace} />
 
       {timelineEntries.length > 0 && (
         <ADRTimeline

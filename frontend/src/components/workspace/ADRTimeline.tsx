@@ -151,7 +151,7 @@ export function ADRTimeline({ entries, activeIndex, onSelect }: ADRTimelineProps
                         className="button-secondary mt-3 flex items-center gap-1.5 text-xs"
                       >
                         <RotateCcw className="h-3 w-3" />
-                        Revert to this point
+                        View this decision
                       </button>
                     )}
                   </div>

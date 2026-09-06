@@ -63,7 +63,18 @@ class ArchitectureGenerator:
         return options
 
     def _shared_components(self, requirements: RequirementModel) -> list[ArchitectureComponent]:
-        actors = ", ".join(actor.name for actor in requirements.actors[:4]) or "actors to clarify"
+        machine_markers = ("controller", "device", "instrument", "sensor")
+        human_actors = [
+            actor
+            for actor in requirements.actors
+            if not any(marker in actor.name.casefold() for marker in machine_markers)
+        ]
+        machine_actors = [
+            actor
+            for actor in requirements.actors
+            if any(marker in actor.name.casefold() for marker in machine_markers)
+        ]
+        actors = ", ".join(actor.name for actor in human_actors[:4]) or "human roles to clarify"
         components = [
             ArchitectureComponent(
                 name="User and Operator Interface",
@@ -75,7 +86,9 @@ class ArchitectureGenerator:
                 name="Domain API",
                 responsibility="Validates domain commands and queries while enforcing workflow invariants.",
                 technologies=["Versioned HTTP or protocol adapters (recommendation)"],
-                interactions=["Routes validated operations", "Coordinates integration boundaries"],
+                interactions=[
+                    workflow.name for workflow in requirements.domain_workflows[:4]
+                ] or ["Routes validated operations", "Coordinates integration boundaries"],
             ),
             ArchitectureComponent(
                 name=f"{requirements.domain} Core",
@@ -84,6 +97,16 @@ class ArchitectureGenerator:
                 interactions=[workflow.name for workflow in requirements.domain_workflows[:3]],
             ),
         ]
+        if machine_actors:
+            machine_names = ", ".join(actor.name for actor in machine_actors[:4])
+            components.append(
+                ArchitectureComponent(
+                    name="Machine Interface Adapters",
+                    responsibility=f"Validates input and commands exchanged with {machine_names}.",
+                    technologies=["Device protocol adapters (recommendation)"],
+                    interactions=[actor.description for actor in machine_actors[:4]],
+                )
+            )
         if requirements.integrations:
             components.append(
                 ArchitectureComponent(

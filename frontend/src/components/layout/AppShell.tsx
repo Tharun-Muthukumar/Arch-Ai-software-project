@@ -11,6 +11,7 @@ import {
   Building2,
   DollarSign,
   Zap,
+  GitBranch,
 } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { cn } from '../../lib/utils'
@@ -20,6 +21,7 @@ const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/wizard', label: 'Requirements', icon: ClipboardList },
   { to: '/architecture', label: 'Architecture', icon: Network },
+  { to: '/causal-graph', label: 'Causal Graph', icon: GitBranch },
   { to: '/comparison', label: 'Comparison', icon: BarChart3 },
   { to: '/blast-radius', label: 'Blast Radius', icon: Zap },
   { to: '/team-fit', label: 'Team Fit', icon: Users },

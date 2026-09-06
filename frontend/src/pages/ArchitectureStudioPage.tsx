@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ArchitectureFlow } from '../components/diagrams/ArchitectureFlow'
 import { StatePanel } from '../components/workspace/StatePanel'
@@ -22,21 +22,19 @@ export function ArchitectureStudioPage() {
   const recommendedId = workspace?.recommendation.recommended_architecture_id ?? ''
   const [selectedId, setSelectedId] = useState(recommendedId)
 
-  const [timelineEntries, setTimelineEntries] = useState<TimelineEntry[]>([])
   const [activeTimelineIndex, setActiveTimelineIndex] = useState(0)
-  const lastAdrIdRef = useRef<string | null>(null)
+  const timelineEntries = useMemo<TimelineEntry[]>(
+    () => (workspace?.adrs ?? []).map((adr) => ({ adr, snapshot: workspace! })),
+    [workspace],
+  )
 
   useEffect(() => {
     if (recommendedId) setSelectedId(recommendedId)
   }, [recommendedId, workspace?.id])
 
   useEffect(() => {
-    if (!workspace?.adr) return
-    if (workspace.adr.id === lastAdrIdRef.current) return
-    lastAdrIdRef.current = workspace.adr.id
-    setTimelineEntries((prev) => [...prev, { adr: workspace.adr!, snapshot: workspace }])
-    setActiveTimelineIndex(timelineEntries.length)
-  }, [workspace, timelineEntries.length])
+    if (timelineEntries.length > 0) setActiveTimelineIndex(timelineEntries.length - 1)
+  }, [timelineEntries.length, workspace?.id])
 
   if (workspaceQuery.isLoading) {
     return <StatePanel badge="Loading" title="Loading architecture" description="Preparing the view." />
@@ -164,7 +162,12 @@ export function ArchitectureStudioPage() {
 
           <div className="grid gap-4 lg:grid-cols-3">
             <div className="lg:col-span-2">
-              <ArchitectureFlow architecture={selected} />
+              <ArchitectureFlow
+                architecture={selected}
+                whyHref={(component) =>
+                  `/causal-graph?workspace=${encodeURIComponent(workspace.id)}&architecture=${encodeURIComponent(selected.id)}&component=${encodeURIComponent(component.name)}`
+                }
+              />
             </div>
             <div className="space-y-4">
               <div className="panel">

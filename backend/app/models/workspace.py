@@ -30,6 +30,8 @@ class Workspace(Base):
     database_design_json: Mapped[dict] = mapped_column(JSON, default=dict)
     api_design_json: Mapped[dict] = mapped_column(JSON, default=dict)
     deployment_plan_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    causal_graph_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    adrs_json: Mapped[list] = mapped_column(JSON, default=list)
     documentation_markdown: Mapped[str] = mapped_column(Text, default="")
     impact_history_json: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

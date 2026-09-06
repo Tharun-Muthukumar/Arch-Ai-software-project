@@ -11,6 +11,7 @@ import { SettingsPage } from './pages/SettingsPage'
 import { TeamFitPage } from './pages/TeamFitPage'
 import { IndustryTwinsPage } from './pages/IndustryTwinsPage'
 import { BudgetPage } from './pages/BudgetPage'
+import { CausalGraphPage } from './pages/CausalGraphPage'
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/wizard" element={<RequirementWizardPage />} />
         <Route path="/architecture" element={<ArchitectureStudioPage />} />
+        <Route path="/causal-graph" element={<CausalGraphPage />} />
         <Route path="/comparison" element={<ComparisonPage />} />
         <Route path="/blast-radius" element={<BlastRadiusPage />} />
         <Route path="/team-fit" element={<TeamFitPage />} />

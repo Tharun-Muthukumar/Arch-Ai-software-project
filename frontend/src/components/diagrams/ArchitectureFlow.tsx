@@ -1,10 +1,13 @@
-import type { ArchitectureOption } from '../../types/api'
+import { CircleHelp } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import type { ArchitectureComponent, ArchitectureOption } from '../../types/api'
 
 interface ArchitectureFlowProps {
   architecture: ArchitectureOption
+  whyHref?: (component: ArchitectureComponent) => string
 }
 
-export function ArchitectureFlow({ architecture }: ArchitectureFlowProps) {
+export function ArchitectureFlow({ architecture, whyHref }: ArchitectureFlowProps) {
   return (
     <div className="panel">
       <div className="mb-4">
@@ -45,6 +48,15 @@ export function ArchitectureFlow({ architecture }: ArchitectureFlowProps) {
                     </span>
                   ))}
                 </div>
+                {whyHref && (
+                  <Link
+                    to={whyHref(component)}
+                    className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-amber-300 hover:text-amber-200"
+                  >
+                    <CircleHelp className="h-3.5 w-3.5" />
+                    Why does this exist?
+                  </Link>
+                )}
               </div>
             </div>
           </div>

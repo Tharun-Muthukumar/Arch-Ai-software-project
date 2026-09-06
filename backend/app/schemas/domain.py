@@ -1,7 +1,100 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+CausalNodeType = Literal[
+    "user_requirement",
+    "functional_requirement",
+    "non_functional_requirement",
+    "constraint",
+    "assumption",
+    "technical_characteristic",
+    "architecture_decision",
+    "architecture_component",
+    "service_module",
+    "api",
+    "database_entity",
+    "integration",
+    "infrastructure",
+    "risk",
+    "cost",
+    "adr",
+    "diagram",
+]
+
+CausalRelationshipType = Literal[
+    "requires",
+    "satisfies",
+    "caused_by",
+    "implemented_by",
+    "depends_on",
+    "stores_in",
+    "exposed_by",
+    "deployed_on",
+    "mitigates",
+    "constrained_by",
+    "affects",
+]
+
+
+class CausalGraphNode(BaseModel):
+    id: str
+    type: CausalNodeType
+    name: str
+    description: str
+    source: str
+    version: str = "1"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    metadata: dict = Field(default_factory=dict)
+
+
+class CausalGraphEdge(BaseModel):
+    id: str
+    source_node_id: str
+    target_node_id: str
+    relationship: CausalRelationshipType
+    reason: str
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class CausalGraph(BaseModel):
+    version: str = "1"
+    nodes: list[CausalGraphNode] = Field(default_factory=list)
+    edges: list[CausalGraphEdge] = Field(default_factory=list)
+    orphan_node_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_graph_integrity(self):
+        node_ids = [node.id for node in self.nodes]
+        if len(node_ids) != len(set(node_ids)):
+            raise ValueError("Causal graph node IDs must be unique")
+
+        edge_ids = [edge.id for edge in self.edges]
+        if len(edge_ids) != len(set(edge_ids)):
+            raise ValueError("Causal graph edge IDs must be unique")
+
+        known_nodes = set(node_ids)
+        for edge in self.edges:
+            if edge.source_node_id not in known_nodes or edge.target_node_id not in known_nodes:
+                raise ValueError(f"Causal graph edge {edge.id} references an unknown node")
+            if edge.source_node_id == edge.target_node_id:
+                raise ValueError(f"Causal graph edge {edge.id} cannot reference itself")
+
+        if not set(self.orphan_node_ids).issubset(known_nodes):
+            raise ValueError("Causal graph orphan IDs must reference graph nodes")
+        return self
+
+
+class CausalGraphTrace(BaseModel):
+    selected_node: CausalGraphNode
+    why_it_exists: list[str] = Field(default_factory=list)
+    requirements: list[CausalGraphNode] = Field(default_factory=list)
+    upstream: list[CausalGraphNode] = Field(default_factory=list)
+    downstream: list[CausalGraphNode] = Field(default_factory=list)
+    related_adrs: list[CausalGraphNode] = Field(default_factory=list)
+    affected_artifacts: list[str] = Field(default_factory=list)
 
 
 class Actor(BaseModel):
@@ -193,6 +286,9 @@ class ImpactAssessment(BaseModel):
     impacted_modules: list[str] = Field(default_factory=list)
     reasoning: list[str] = Field(default_factory=list)
     regenerated_sections: list[str] = Field(default_factory=list)
+    directly_affected_node_ids: list[str] = Field(default_factory=list)
+    indirectly_affected_node_ids: list[str] = Field(default_factory=list)
+    affected_artifacts: list[str] = Field(default_factory=list)
 
 
 class CriteriaWeights(BaseModel):
@@ -461,6 +557,79 @@ class ChangeRequest(BaseModel):
     change_request: str
 
 
+CounterfactualVariable = Literal[
+    "expected_users",
+    "peak_traffic_multiplier",
+    "availability_percent",
+    "latency_ms",
+    "budget_level",
+    "monthly_budget_change_percent",
+    "team_size",
+    "geographic_regions",
+    "realtime_required",
+    "compliance_level",
+    "data_volume_multiplier",
+    "growth_rate_percent",
+]
+CounterfactualValue = str | float | int | bool | None
+
+
+class CounterfactualChange(BaseModel):
+    variable: CounterfactualVariable
+    original_value: CounterfactualValue = None
+    hypothetical_value: CounterfactualValue
+    source: Literal["structured", "scenario"] = "structured"
+
+
+class CounterfactualSimulationRequest(BaseModel):
+    scenario: str | None = Field(default=None, max_length=1000)
+    changes: list[CounterfactualChange] = Field(default_factory=list, max_length=12)
+
+
+class CounterfactualArchitectureRank(BaseModel):
+    architecture_id: str
+    architecture_name: str
+    rank: int = Field(ge=1)
+    suitability_score: float = Field(ge=0, le=100)
+    team_fit_score: float | None = Field(default=None, ge=0, le=10)
+
+
+class CounterfactualSnapshot(BaseModel):
+    architecture_id: str
+    architecture_name: str
+    suitability_score: float = Field(ge=0, le=100)
+    rank: int = Field(ge=1)
+    monthly_cost_estimate_usd: float | None = Field(default=None, ge=0)
+    resilience_score: float = Field(ge=0, le=10)
+    risk_score: float = Field(ge=0, le=10)
+    risk_level: Literal["Low", "Medium", "High"]
+    team_fit_score: float | None = Field(default=None, ge=0, le=10)
+    operational_complexity_score: float = Field(ge=0, le=10)
+
+
+class CounterfactualSimulationResult(BaseModel):
+    simulation_id: str
+    workspace_id: str
+    current_architecture_version: str
+    scenario: str | None = None
+    changed_variables: list[CounterfactualChange] = Field(default_factory=list)
+    directly_affected_node_ids: list[str] = Field(default_factory=list)
+    indirectly_affected_node_ids: list[str] = Field(default_factory=list)
+    affected_components: list[str] = Field(default_factory=list)
+    before: CounterfactualSnapshot
+    after: CounterfactualSnapshot
+    before_ranking: list[CounterfactualArchitectureRank] = Field(default_factory=list)
+    after_ranking: list[CounterfactualArchitectureRank] = Field(default_factory=list)
+    current_architecture_still_suitable: bool
+    recommended_architecture_id: str
+    recommended_architecture_name: str
+    recommended_evolution_path: list[str] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+    explanation: list[str] = Field(default_factory=list)
+    confidence: Literal["Low", "Medium", "High"]
+    estimate_notes: list[str] = Field(default_factory=list)
+
+
 class WorkspaceResponse(BaseModel):
     id: str
     title: str
@@ -479,5 +648,7 @@ class WorkspaceResponse(BaseModel):
     documentation_markdown: str
     impact_history: list[ImpactAssessment] = Field(default_factory=list)
     adr: ArchitectureDecisionRecord | None = None
+    adrs: list[ArchitectureDecisionRecord] = Field(default_factory=list)
+    causal_graph: CausalGraph | None = None
     created_at: datetime
     updated_at: datetime

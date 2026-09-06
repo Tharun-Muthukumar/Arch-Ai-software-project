@@ -185,6 +185,148 @@ export interface ImpactAssessment {
   impacted_modules: string[]
   reasoning: string[]
   regenerated_sections: string[]
+  directly_affected_node_ids: string[]
+  indirectly_affected_node_ids: string[]
+  affected_artifacts: string[]
+}
+
+export type CausalNodeType =
+  | 'user_requirement'
+  | 'functional_requirement'
+  | 'non_functional_requirement'
+  | 'constraint'
+  | 'assumption'
+  | 'technical_characteristic'
+  | 'architecture_decision'
+  | 'architecture_component'
+  | 'service_module'
+  | 'api'
+  | 'database_entity'
+  | 'integration'
+  | 'infrastructure'
+  | 'risk'
+  | 'cost'
+  | 'adr'
+  | 'diagram'
+
+export type CausalRelationshipType =
+  | 'requires'
+  | 'satisfies'
+  | 'caused_by'
+  | 'implemented_by'
+  | 'depends_on'
+  | 'stores_in'
+  | 'exposed_by'
+  | 'deployed_on'
+  | 'mitigates'
+  | 'constrained_by'
+  | 'affects'
+
+export interface CausalGraphNode {
+  id: string
+  type: CausalNodeType
+  name: string
+  description: string
+  source: string
+  version: string
+  confidence?: number | null
+  metadata: Record<string, unknown>
+}
+
+export interface CausalGraphEdge {
+  id: string
+  source_node_id: string
+  target_node_id: string
+  relationship: CausalRelationshipType
+  reason: string
+  confidence?: number | null
+}
+
+export interface CausalGraph {
+  version: string
+  nodes: CausalGraphNode[]
+  edges: CausalGraphEdge[]
+  orphan_node_ids: string[]
+}
+
+export interface CausalGraphTrace {
+  selected_node: CausalGraphNode
+  why_it_exists: string[]
+  requirements: CausalGraphNode[]
+  upstream: CausalGraphNode[]
+  downstream: CausalGraphNode[]
+  related_adrs: CausalGraphNode[]
+  affected_artifacts: string[]
+}
+
+export type CounterfactualVariable =
+  | 'expected_users'
+  | 'peak_traffic_multiplier'
+  | 'availability_percent'
+  | 'latency_ms'
+  | 'budget_level'
+  | 'monthly_budget_change_percent'
+  | 'team_size'
+  | 'geographic_regions'
+  | 'realtime_required'
+  | 'compliance_level'
+  | 'data_volume_multiplier'
+  | 'growth_rate_percent'
+
+export interface CounterfactualChange {
+  variable: CounterfactualVariable
+  original_value?: string | number | boolean | null
+  hypothetical_value: string | number | boolean
+  source?: 'structured' | 'scenario'
+}
+
+export interface CounterfactualSimulationRequest {
+  scenario?: string
+  changes: CounterfactualChange[]
+}
+
+export interface CounterfactualArchitectureRank {
+  architecture_id: string
+  architecture_name: string
+  rank: number
+  suitability_score: number
+  team_fit_score?: number | null
+}
+
+export interface CounterfactualSnapshot {
+  architecture_id: string
+  architecture_name: string
+  suitability_score: number
+  rank: number
+  monthly_cost_estimate_usd?: number | null
+  resilience_score: number
+  risk_score: number
+  risk_level: 'Low' | 'Medium' | 'High'
+  team_fit_score?: number | null
+  operational_complexity_score: number
+}
+
+export interface CounterfactualSimulationResult {
+  simulation_id: string
+  workspace_id: string
+  current_architecture_version: string
+  scenario?: string | null
+  changed_variables: CounterfactualChange[]
+  directly_affected_node_ids: string[]
+  indirectly_affected_node_ids: string[]
+  affected_components: string[]
+  before: CounterfactualSnapshot
+  after: CounterfactualSnapshot
+  before_ranking: CounterfactualArchitectureRank[]
+  after_ranking: CounterfactualArchitectureRank[]
+  current_architecture_still_suitable: boolean
+  recommended_architecture_id: string
+  recommended_architecture_name: string
+  recommended_evolution_path: string[]
+  conflicts: string[]
+  explanation: string[]
+  confidence: 'Low' | 'Medium' | 'High'
+  estimate_notes: string[]
 }
 
 export interface ArchitectureDecisionRecord {
@@ -380,6 +522,8 @@ export interface Workspace {
   documentation_markdown: string
   impact_history: ImpactAssessment[]
   adr?: ArchitectureDecisionRecord | null
+  adrs: ArchitectureDecisionRecord[]
+  causal_graph?: CausalGraph | null
   created_at: string
   updated_at: string
 }

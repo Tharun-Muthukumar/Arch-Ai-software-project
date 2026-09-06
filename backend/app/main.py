@@ -10,6 +10,7 @@ from app.api.routes.architecture_insights import router as architecture_insights
 from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.core.logging import configure_logging
+from app.core.schema_compat import ensure_workspace_columns
 import app.models  # noqa: F401
 
 configure_logging()
@@ -19,6 +20,7 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    ensure_workspace_columns(engine)
     yield
 
 

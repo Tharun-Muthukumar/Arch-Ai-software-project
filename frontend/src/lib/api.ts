@@ -1,8 +1,9 @@
-import type { Workspace, WorkspaceCreatePayload, ReweightRequest, ExportAdrsRequest, BlastRadiusRequest } from '../types/api'
+import type { Workspace, WorkspaceCreatePayload, ReweightRequest, ExportAdrsRequest, BlastRadiusRequest, CausalGraph, CausalGraphTrace } from '../types/api'
 import type { ArchitectureScorecard, BlastRadiusResult } from '../types/api'
 import type { ResilienceRecommendationsRequest, ApplyMitigationsRequest, ResilienceRecommendation } from '../types/api'
 import type { BudgetCompareRequest, BudgetEstimate, BudgetEstimateRequest, ConwayFitRequest, ConwayFitResult, TwinMatch, TwinMatchRequest } from '../types/api'
 import type { HealthStatus } from '../types/client'
+import type { CounterfactualSimulationRequest, CounterfactualSimulationResult } from '../types/api'
 
 const STORAGE_KEY = 'archai-api-base'
 
@@ -99,6 +100,26 @@ export function applyChangeRequest(workspaceId: string, changeRequest: string) {
     method: 'POST',
     body: JSON.stringify({ change_request: changeRequest }),
   })
+}
+
+export function getCausalGraph(workspaceId: string) {
+  return request<CausalGraph>(`/workspaces/${workspaceId}/causal-graph`)
+}
+
+export function explainCausalNode(workspaceId: string, nodeId: string) {
+  return request<CausalGraphTrace>(
+    `/workspaces/${workspaceId}/causal-graph/nodes/${encodeURIComponent(nodeId)}`,
+  )
+}
+
+export function simulateCounterfactual(
+  workspaceId: string,
+  payload: CounterfactualSimulationRequest,
+) {
+  return request<CounterfactualSimulationResult>(
+    `/workspaces/${workspaceId}/counterfactual/simulate`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  )
 }
 
 export async function downloadMarkdown(workspaceId: string) {

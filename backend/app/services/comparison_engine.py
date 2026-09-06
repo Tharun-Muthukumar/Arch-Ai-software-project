@@ -1,3 +1,5 @@
+import re
+
 from app.schemas.domain import (
     ArchitectureOption,
     ArchitectureScorecard,
@@ -159,7 +161,10 @@ class ComparisonEngine:
         answers: dict[str, str],
     ) -> dict[str, int]:
         lower_requirements = " ".join(
-            requirements.functional_requirements + requirements.non_functional_requirements
+            requirements.functional_requirements
+            + requirements.non_functional_requirements
+            + requirements.constraints
+            + requirements.data_characteristics
         ).lower()
 
         if requirements.scale_profile == "high-scale":
@@ -167,7 +172,31 @@ class ComparisonEngine:
                 profile["scalability"] += 1
                 profile["availability"] += 1
             if architecture_id == "modular-monolith":
+                profile["scalability"] -= 2
+                profile["availability"] -= 1
                 profile["fault_isolation"] -= 1
+            if architecture_id == "serverless-platform":
+                profile["scalability"] += 1
+        if any(marker in lower_requirements for marker in ("realtime", "real-time", "event processing")):
+            if architecture_id == "event-driven-microservices":
+                profile["scalability"] += 1
+                profile["performance"] += 1
+            elif architecture_id == "modular-monolith":
+                profile["scalability"] -= 1
+            elif architecture_id == "serverless-platform":
+                profile["scalability"] += 1
+        if any(marker in lower_requirements for marker in ("99.99", "four nines", "strict availability")):
+            if architecture_id == "modular-monolith":
+                profile["availability"] -= 2
+                profile["fault_isolation"] -= 1
+            else:
+                profile["availability"] += 1
+        latency_match = re.search(r"(?:latency|response time)[^\d]{0,20}(\d+)\s*ms", lower_requirements)
+        if latency_match and int(latency_match.group(1)) <= 100:
+            if architecture_id == "modular-monolith":
+                profile["performance"] += 1
+            else:
+                profile["performance"] -= 1
         if "audit" in lower_requirements or "compliance" in lower_requirements:
             profile["security"] += 1
             if architecture_id == "serverless-platform":
@@ -182,6 +211,26 @@ class ComparisonEngine:
                 profile["development_time"] -= 1
             if architecture_id == "modular-monolith":
                 profile["cost"] += 1
+        regions = int(answers.get("geographic_regions", "0") or 0)
+        if regions > 1:
+            if architecture_id == "modular-monolith":
+                profile["availability"] -= 1
+                profile["deployment_complexity"] -= 2
+            elif architecture_id == "event-driven-microservices":
+                profile["availability"] += 1
+            else:
+                profile["availability"] += 1
+                profile["deployment_complexity"] += 1
+        team_size = int(answers.get("team_size", "0") or 0)
+        if 0 < team_size <= 6:
+            if architecture_id == "event-driven-microservices":
+                profile["operational_complexity"] -= 2
+                profile["deployment_complexity"] -= 1
+                profile["learning_curve"] -= 1
+                profile["development_time"] -= 1
+            elif architecture_id == "modular-monolith":
+                profile["operational_complexity"] += 1
+                profile["development_time"] += 1
         return {metric: max(1, min(10, score)) for metric, score in profile.items()}
 
     def _explain(

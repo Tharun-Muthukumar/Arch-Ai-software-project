@@ -33,6 +33,14 @@ class DocumentationGenerator:
             f"- {group.name}: {len(group.endpoints)} endpoints"
             for group in workspace.api_design.groups
         )
+        graph = workspace.causal_graph
+        graph_lines = ["- Causal graph not available"]
+        if graph is not None:
+            graph_lines = [
+                f"- {len(graph.nodes)} traceable nodes",
+                f"- {len(graph.edges)} validated relationships",
+                f"- {len(graph.orphan_node_ids)} unjustified architecture components",
+            ]
 
         return "\n".join(
             [
@@ -79,6 +87,11 @@ class DocumentationGenerator:
                 "",
                 "## Diagrams",
                 diagrams,
+                "",
+                "## Requirement-to-Architecture Traceability",
+                *graph_lines,
+                "",
+                "Relationships are derived from validated requirements and generated artifacts; semantic confidence is recorded where matching is approximate.",
             ]
         )
 

@@ -1,6 +1,5 @@
 import re
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -36,6 +35,41 @@ class UnknownDomainExtraction(BaseModel):
     explicit_constraints: list[str] = Field(default_factory=list, max_length=8)
     assumptions: list[str] = Field(default_factory=list, max_length=6)
     open_questions: list[str] = Field(min_length=1, max_length=8)
+
+
+UNKNOWN_ANSWER_VALUES = {
+    "n/a",
+    "needs discussion",
+    "no preference",
+    "not applicable",
+    "not specified",
+    "not specified yet",
+    "undecided",
+    "unknown",
+}
+
+UNCERTAIN_TOPIC_MARKERS = (
+    ("cloud hosting", ("cloud", "hosting", "provider"), ("cloud", "hosting", "provider")),
+    (
+        "workload scale",
+        ("user count", "users", "traffic", "workload"),
+        ("concurrency", "scale", "traffic", "user count", "user volume", "workload"),
+    ),
+    ("latency", ("latency", "response time"), ("latency", "response time")),
+    (
+        "availability",
+        ("availability", "recovery", "sla", "uptime"),
+        ("availability", "recovery", "sla", "uptime"),
+    ),
+    ("retention", ("retention",), ("retention", "retain", "retained")),
+    ("budget", ("budget", "cost"), ("budget", "cost")),
+    ("team size", ("team", "team size"), ("staff", "team", "team size")),
+    (
+        "deployment regions",
+        ("geography", "region", "regions"),
+        ("data residency", "geography", "multi-region", "region", "regional"),
+    ),
+)
 
 
 BLUEPRINTS = (
@@ -180,6 +214,10 @@ SPECIAL_CHARACTERISTICS = {
         ("multi-region", "multiple regions", "regional replication"),
         ("global", "multi-region", "multiple regions", "region", "regional"),
     ),
+    "centralized synchronization": (
+        ("central server", "centralized server", "central service"),
+        ("central server", "centralized server", "central service"),
+    ),
 }
 
 ACTION_FAMILIES = {
@@ -190,7 +228,9 @@ ACTION_FAMILIES = {
     "import": ("import", "imported", "importing"),
     "notification": ("notify", "notified", "notifies", "notification", "notifications"),
     "rejection": ("reject", "rejected", "rejecting", "rejection"),
-    "synchronization": ("sync", "synchronize", "synchronized", "synchronization"),
+    "synchronization": (
+        "sync", "synchronize", "synchronized", "synchronizing", "synchronization"
+    ),
     "upload": ("upload", "uploaded", "uploading"),
 }
 
@@ -280,20 +320,26 @@ class RequirementAnalyzer:
             return fallback
 
         non_functional = self._filter_grounded_items(
-            [
-                *extraction.non_functional_requirements,
-                *self._extract_explicit_quality_requirements(description, business_context),
-            ],
+            extraction.non_functional_requirements,
             source_text,
             warnings,
             "non-functional requirement",
         )
+        explicit_quality = self._filter_grounded_items(
+            self._extract_explicit_quality_requirements(description, business_context),
+            source_text,
+            warnings,
+            "non-functional requirement",
+        )
+        non_functional = self._merge_explicit_items(non_functional, explicit_quality)
         model_constraints = [
             item
             for item in self._filter_grounded_items(
                 extraction.explicit_constraints, source_text, warnings, "constraint"
             )
             if self._has_meaningful_overlap(item, source_text)
+            and "do not assume" not in item.casefold()
+            and "don't assume" not in item.casefold()
         ]
         actors = [
             Actor(
@@ -333,12 +379,6 @@ class RequirementAnalyzer:
                 "Ollama output lacked grounded actors, entities, or workflows required by the pipeline."
             )
             return fallback
-        non_functional = self._ensure_non_functional_requirements(
-            non_functional,
-            actors,
-            entities,
-            workflows,
-        )
         assumptions = [
             f"Assumption: {item.removeprefix('Assumption:').strip()}"
             for item in self._filter_grounded_items(
@@ -355,9 +395,9 @@ class RequirementAnalyzer:
             *self._extract_explicit_constraints(description, business_context),
             *model_constraints,
         ]
-        if budget := answers.get("budget"):
+        if (budget := answers.get("budget")) and self._answer_is_known(budget):
             explicit_constraints.append(f"User-specified budget posture: {budget}.")
-        if (cloud := answers.get("preferred_cloud")) and cloud.casefold() != "no preference":
+        if (cloud := answers.get("preferred_cloud")) and self._answer_is_known(cloud):
             explicit_constraints.append(f"User-specified hosting preference: {cloud}.")
 
         summary = self._strip_unsupported_claims(extraction.summary, source_text)
@@ -384,7 +424,31 @@ class RequirementAnalyzer:
             description,
             business_context,
         )
-        functional = self._preserve_uncovered_terms(functional, description)
+        workflows = self._build_workflow_hints(
+            extraction.domain_workflows,
+            functional,
+            actors,
+            entities,
+            source_text,
+        )
+        non_functional = self._ensure_non_functional_requirements(
+            non_functional,
+            actors,
+            entities,
+            workflows,
+        )
+        functional = self._dedupe(functional)
+        functional_keys = {self._requirement_key(item) for item in functional}
+        distinct_non_functional = [
+            item
+            for item in self._dedupe(non_functional)
+            if self._requirement_key(item) not in functional_keys
+        ]
+        if len(distinct_non_functional) != len(self._dedupe(non_functional)):
+            warnings.append(
+                "Removed requirement text duplicated across functional and non-functional categories."
+            )
+        non_functional = distinct_non_functional
 
         domain = self._strip_unsupported_claims(extraction.domain, source_text)
         if not domain:
@@ -395,15 +459,15 @@ class RequirementAnalyzer:
             summary=summary,
             domain=domain,
             scale_profile=self._infer_scale_profile(source_text, answers, unknown_default=True),
-            functional_requirements=self._dedupe(functional),
-            non_functional_requirements=self._dedupe(non_functional),
+            functional_requirements=functional,
+            non_functional_requirements=non_functional,
             actors=actors,
             constraints=self._dedupe(explicit_constraints),
             assumptions=self._dedupe(assumptions),
             domain_entities=entities,
             domain_workflows=workflows,
             integrations=self._dedupe(integrations),
-            data_characteristics=self._dedupe(
+            data_characteristics=self._dedupe_characteristics(
                 self._filter_grounded_items(
                     [
                         *extraction.data_characteristics,
@@ -418,13 +482,18 @@ class RequirementAnalyzer:
                 )
             ),
             open_questions=self._dedupe(
-                self._filter_grounded_items(
-                    extraction.open_questions,
-                    source_text,
-                    warnings,
-                    "open question",
-                    allow_inference=True,
-                )
+                [
+                    *self._filter_grounded_items(
+                        extraction.open_questions,
+                        source_text,
+                        warnings,
+                        "open question",
+                        allow_inference=True,
+                    ),
+                    *self._extract_explicit_unknown_questions(
+                        description, business_context
+                    ),
+                ]
             ),
             analysis_source="ollama-pretrained",
             analysis_warnings=self._dedupe(warnings),
@@ -445,14 +514,8 @@ class RequirementAnalyzer:
                 continue
 
             lower_value = value.casefold()
-            is_unknown = lower_value in {
-                "undecided",
-                "unknown",
-                "not specified",
-                "not specified yet",
-                "needs discussion",
-            }
-            if key == "preferred_cloud" and lower_value != "no preference":
+            is_unknown = not self._answer_is_known(value)
+            if key == "preferred_cloud" and not is_unknown:
                 updates.constraints.append(f"User-specified hosting preference: {value}.")
             elif key == "auth" and not is_unknown:
                 updates.functional_requirements.append(
@@ -527,9 +590,9 @@ class RequirementAnalyzer:
         domain_constraints = [f"Respect {item}." for item in blueprint.compliance]
         domain_constraints.extend(constraints)
         domain_constraints.extend(self._constraints_from_answers(answers))
-        if budget := answers.get("budget"):
+        if (budget := answers.get("budget")) and self._answer_is_known(budget):
             domain_constraints.append(f"User-specified budget posture: {budget}.")
-        if (cloud := answers.get("preferred_cloud")) and cloud.casefold() != "no preference":
+        if (cloud := answers.get("preferred_cloud")) and self._answer_is_known(cloud):
             domain_constraints.append(f"User-specified hosting preference: {cloud}.")
 
         assumptions = []
@@ -590,23 +653,10 @@ class RequirementAnalyzer:
 
     def append_change(self, requirements: RequirementModel, change_request: str) -> RequirementModel:
         updates = requirements.model_copy(deep=True)
-        lower_change = change_request.lower()
-        if "notification" in lower_change:
-            updates.functional_requirements.append(
-                "Support notification preferences and asynchronous delivery tracking."
-            )
-            updates.non_functional_requirements.append(
-                "Notification workflows should remain eventually consistent and retry-safe."
-            )
-        if "analytics" in lower_change or "report" in lower_change:
-            updates.functional_requirements.append(
-                "Expose analytics dashboards and exportable reporting workflows."
-            )
-        if "payment" in lower_change:
-            updates.functional_requirements.append(
-                "Integrate secure payment authorization, capture, and refund workflows."
-            )
-        updates.assumptions.append(f"Change request considered: {change_request}.")
+        normalized_change = " ".join(change_request.split()).strip()
+        if normalized_change:
+            updates.functional_requirements.append(normalized_change.rstrip(".") + ".")
+        updates.functional_requirements = self._dedupe(updates.functional_requirements)
         return RequirementModel.model_validate(updates.model_dump())
 
     def _pick_blueprint(self, text: str) -> DomainBlueprint | None:
@@ -700,12 +750,14 @@ class RequirementAnalyzer:
     ) -> list[str]:
         markers = (
             " must ", " must not ", " never ", " only ", " cannot ", " required ",
-            " require ", " does not ", " do not ", " without ",
+            " require ", " does not ", " do not ",
         )
         return [
             re.sub(r"^and\s+", "", clause, flags=re.IGNORECASE)
-            for clause in self._source_clauses(description, business_context)
+            for clause in self._source_clauses(description, None)
             if any(marker in f" {clause.lower()} " for marker in markers)
+            and "do not assume" not in clause.lower()
+            and "don't assume" not in clause.lower()
         ]
 
     def _extract_explicit_quality_requirements(
@@ -720,6 +772,8 @@ class RequirementAnalyzer:
             clause
             for clause in self._source_clauses(description, business_context)
             if any(marker in clause.lower() for marker in quality_markers)
+            and "do not assume" not in clause.lower()
+            and "don't assume" not in clause.lower()
         ]
 
     def _extract_explicit_data_characteristics(
@@ -732,8 +786,13 @@ class RequirementAnalyzer:
                 "Geospatial data": ("geospatial", "coordinates", "map"),
                 "File-based data exchange": ("file", "import", "export"),
                 "Incremental or streaming data": ("as they arrive", "stream", "telemetry"),
-                "Immutable or lineage-preserving data": ("immutable", "lineage", "provenance"),
+                "Provenance and lineage data": ("immutable", "lineage", "provenance", "tamper-evident"),
                 "Versioned or conflict-aware data": ("conflict", "sequence", "version"),
+                "Instrument or sensor observations": (
+                    "controller", "humidity", "measurement", "reading", "sensor", "ultraviolet"
+                ),
+                "User-defined operating rules": ("-defined", "configurable threshold"),
+                "Reversibility-sensitive records": ("reversible", "reversibility"),
             }
             for label, markers in categories.items():
                 if any(marker in lower_clause for marker in markers):
@@ -777,11 +836,12 @@ class RequirementAnalyzer:
         business_context: str | None,
     ) -> tuple[list[str], list[str], list[str]]:
         represented_text = " ".join([*functional, *constraints, *integrations])
-        for clause in self._source_clauses(description, business_context):
-            lower_clause = clause.lower()
-            if lower_clause.startswith(("build ", "create ", "develop ")):
+        for source_clause in self._source_clauses(description, None):
+            clause = self._authoritative_requirement_clause(source_clause)
+            if not clause:
                 continue
-            if self._clause_coverage(clause, represented_text) >= 0.55:
+            lower_clause = clause.lower()
+            if self._clause_coverage(clause, represented_text) >= 0.85:
                 continue
             if any(
                 re.search(pattern, lower_clause)
@@ -796,57 +856,89 @@ class RequirementAnalyzer:
                 marker in f" {lower_clause} "
                 for marker in (
                     " must ", " never ", " only ", " cannot ", " require ",
-                    " does not ", " do not ", " without ",
+                    " does not ", " do not ",
                 )
-            ):
+            ) and "do not assume" not in lower_clause and "don't assume" not in lower_clause:
                 constraints.append(clause)
+            elif self._looks_like_capability(clause):
+                best_index = None
+                best_score = 0.0
+                for index, requirement in enumerate(functional):
+                    score = max(
+                        self._clause_coverage(clause, requirement),
+                        self._clause_coverage(requirement, clause),
+                    )
+                    if score > best_score:
+                        best_index = index
+                        best_score = score
+                if best_index is not None and best_score >= 0.3:
+                    functional[best_index] = clause
+                else:
+                    functional.append(clause)
             represented_text += f" {clause}"
         return self._dedupe(functional), self._dedupe(constraints), self._dedupe(integrations)
 
-    def _preserve_uncovered_terms(
-        self, functional: list[str], description: str
-    ) -> list[str]:
-        stop_words = {
-            "allow", "allows", "and", "available", "build", "can", "create",
-            "develop", "for", "from", "launch", "need", "needs", "see", "should",
-            "software", "system", "that", "the", "their", "them", "they", "this",
-            "through", "user", "users", "view", "with", "would", "yes",
-        }
-        source_terms = {
-            self._normalize_token(token)
-            for token in re.findall(r"[a-z][a-z0-9-]+", description.casefold())
-            if len(token) >= 4 and token not in stop_words
-        }
-        represented_terms = {
-            self._normalize_token(token)
-            for token in re.findall(
-                r"[a-z][a-z0-9-]+", " ".join(functional).casefold()
-            )
-        }
+    def _authoritative_requirement_clause(self, clause: str) -> str | None:
+        framing = re.match(
+            r"^(?:build|create|develop)\b.+?\bwhere\s+(.+)$",
+            clause.rstrip("."),
+            flags=re.IGNORECASE,
+        )
+        if framing:
+            clause = framing.group(1)
+        elif clause.casefold().startswith(("build ", "create ", "develop ")):
+            return None
+        cleaned = clause.strip().rstrip(".")
+        return cleaned[:1].upper() + cleaned[1:] + "." if cleaned else None
 
-        uncovered = [
-            term
-            for term in sorted(source_terms)
-            if not any(
-                SequenceMatcher(None, term, represented).ratio() >= 0.75
-                for represented in represented_terms
-            )
-        ]
-        for term in uncovered[:3]:
-            functional.append(
-                f"Support the explicitly mentioned {term} in the relevant workflow; exact behavior requires clarification."
-            )
-        return self._dedupe(functional)
+    def _looks_like_capability(self, clause: str) -> bool:
+        return re.search(
+            r"\b(?:allow|approve|capture|continue|coordinate|create|export|import|ingest|maintain|manage|monitor|pause|process|record|register|review|search|synchronize|track|update|view)\w*\b",
+            clause,
+            flags=re.IGNORECASE,
+        ) is not None
 
     def _source_clauses(
         self, description: str, business_context: str | None
     ) -> list[str]:
         text = " ".join(part for part in (description, business_context or "") if part)
-        return [
-            clause.strip().rstrip(".;!?") + "."
-            for clause in re.split(r"(?<=[.!?;])\s+", text)
-            if clause.strip()
-        ]
+        clauses: list[str] = []
+        for sentence in re.split(r"(?<=[.!?;])\s+", text):
+            if not sentence.strip():
+                continue
+            lower_sentence = sentence.casefold()
+            parts = (
+                [sentence]
+                if "do not assume" in lower_sentence or "don't assume" in lower_sentence
+                else re.split(r",\s+", sentence)
+            )
+            for part in parts:
+                cleaned = re.sub(
+                    r"^and\s+", "", part.strip(), flags=re.IGNORECASE
+                ).rstrip(".;!?")
+                if cleaned:
+                    clauses.append(cleaned[:1].upper() + cleaned[1:] + ".")
+        return clauses
+
+    def _extract_explicit_unknown_questions(
+        self, description: str, business_context: str | None
+    ) -> list[str]:
+        text = " ".join(part for part in (description, business_context or "") if part)
+        lower_text = text.casefold()
+        if "do not assume" not in lower_text and "don't assume" not in lower_text:
+            return []
+
+        candidates = (
+            (("cloud", "hosting", "provider"), "Which hosting environment or cloud provider, if any, is required?"),
+            (("user count", "users", "traffic", "workload"), "What user volume, workload, and growth should the architecture support?"),
+            (("latency", "response time"), "What latency or response-time targets apply to critical workflows?"),
+            (("availability", "uptime", "sla"), "What availability and recovery targets are required?"),
+            (("retention",), "How long must operational and audit data be retained?"),
+            (("budget", "cost"), "What budget or cost constraints apply?"),
+            (("team size", "team"), "What team size and operational skills are available?"),
+            (("region", "geography"), "Which deployment regions or data-residency boundaries apply?"),
+        )
+        return [question for markers, question in candidates if any(marker in lower_text for marker in markers)]
 
     def _clause_coverage(self, clause: str, represented_text: str) -> float:
         stop_words = {
@@ -894,11 +986,17 @@ class RequirementAnalyzer:
                 value, source_text
             )
             unsupported_actions = self._unsupported_actions(value, source_text)
+            unsupported_unknown_claims = (
+                []
+                if label == "open question"
+                else self._unsupported_unknown_claims(value, source_text)
+            )
             if (
                 unsupported_numbers
                 or unsupported_technologies
                 or unsupported_characteristics
                 or unsupported_actions
+                or unsupported_unknown_claims
             ):
                 details = ", ".join(
                     [
@@ -906,12 +1004,13 @@ class RequirementAnalyzer:
                         *unsupported_technologies,
                         *unsupported_characteristics,
                         *unsupported_actions,
+                        *unsupported_unknown_claims,
                     ]
                 )
                 warnings.append(f"Removed ungrounded {label}: {details}.")
                 continue
             if label == "non-functional requirement" and not self._has_meaningful_overlap(
-                value, source_text, threshold=0.2
+                value, source_text, threshold=0.5
             ):
                 warnings.append("Removed weakly grounded non-functional requirement.")
                 continue
@@ -931,6 +1030,8 @@ class RequirementAnalyzer:
             return ""
         if self._unsupported_actions(value, source_text):
             return ""
+        if self._unsupported_unknown_claims(value, source_text):
+            return ""
         return " ".join(value.split()).strip()
 
     def _label_is_safe(self, value: str, source_text: str) -> bool:
@@ -940,7 +1041,9 @@ class RequirementAnalyzer:
             value, source_text
         ) and not self._unsupported_characteristics(
             value, source_text
-        ) and not self._unsupported_actions(value, source_text)
+        ) and not self._unsupported_actions(
+            value, source_text
+        ) and not self._unsupported_unknown_claims(value, source_text)
 
     def _unsupported_numbers(self, value: str, source_text: str) -> list[str]:
         output_numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?%?\b", value.lower()))
@@ -975,6 +1078,23 @@ class RequirementAnalyzer:
             for action, markers in ACTION_FAMILIES.items()
             if any(re.search(rf"\b{re.escape(marker)}\b", lower_value) for marker in markers)
             and not any(re.search(rf"\b{re.escape(marker)}\b", lower_source) for marker in markers)
+        ]
+
+    def _unsupported_unknown_claims(self, value: str, source_text: str) -> list[str]:
+        directives = " ".join(
+            re.findall(
+                r"(?:do not assume|don't assume)\s+([^.!?]+)",
+                source_text.casefold(),
+            )
+        )
+        if not directives or value.rstrip().endswith("?"):
+            return []
+        lower_value = value.casefold()
+        return [
+            topic
+            for topic, source_markers, output_markers in UNCERTAIN_TOPIC_MARKERS
+            if any(marker in directives for marker in source_markers)
+            and any(marker in lower_value for marker in output_markers)
         ]
 
     def _ensure_non_functional_requirements(
@@ -1030,20 +1150,38 @@ class RequirementAnalyzer:
         return bool(value_tokens) and len(value_tokens & source_tokens) / len(value_tokens) >= threshold
 
     def _actor_is_active(self, name: str, source_text: str) -> bool:
-        actor = re.escape(self._normalize_token(name.casefold()))
+        normalized_name = " ".join(
+            self._normalize_token(token)
+            for token in re.findall(r"[a-z][a-z0-9-]+", name.casefold())
+        )
         normalized_source = " ".join(
             self._normalize_token(token)
             for token in re.findall(r"[a-z][a-z0-9-]+", source_text.casefold())
         )
+        actor_tokens = set(normalized_name.split())
+        if not actor_tokens or not actor_tokens.issubset(set(normalized_source.split())):
+            return False
+
+        actor = re.escape(normalized_name)
         passive_reference = re.search(
             rf"\b(?:browse|choose|find|search|see|select|view)\s+(?:available\s+)?{actor}\b",
             normalized_source,
         )
         explicit_action = re.search(
-            rf"\b{actor}\s+(?:can|may|must|should|will|approve|book|cancel|create|enter|manage|monitor|operate|provide|record|reschedule|review|submit|update|use)(?:s|d|ed|ing)?\b",
+            rf"\b{actor}\s+(?:can|may|must|should|will|approve|book|cancel|continue|create|enter|ingest|maintain|manage|monitor|operate|pause|provide|record|register|reschedule|review|submit|sync|update|use)(?:s|d|ed|ing)?\b",
             normalized_source,
         )
-        return not passive_reference or explicit_action is not None
+        enabled_action = re.search(
+            rf"\b(?:allow|enable|let)(?:s|d)?\s+(?:the\s+)?{actor}\s+(?:to\s+)?\w+",
+            normalized_source,
+        )
+        machine_actor = any(
+            marker in actor_tokens
+            for marker in ("controller", "device", "instrument", "sensor")
+        )
+        if passive_reference and not explicit_action and not enabled_action:
+            return False
+        return explicit_action is not None or enabled_action is not None or machine_actor
 
     def _actor_description(self, name: str, functional: list[str]) -> str:
         for requirement in functional:
@@ -1053,43 +1191,22 @@ class RequirementAnalyzer:
 
     def _build_workflow_hints(
         self,
-        names: list[str],
+        _names: list[str],
         functional: list[str],
         actors: list[Actor],
         entities: list[DomainEntityHint],
         source_text: str,
     ) -> list[DomainWorkflowHint]:
-        candidate_names = [
-            name.strip()
-            for name in names
-            if name.strip()
-            and self._label_is_safe(name, source_text)
-            and self._has_meaningful_overlap(name, source_text)
-        ]
-        for requirement in functional:
-            if len(candidate_names) >= 2:
-                break
-            name = re.sub(
-                r"^[A-Za-z][A-Za-z ]{0,40}\s+(?:can|must|should|will)\s+",
-                "",
-                requirement.rstrip("."),
-                flags=re.IGNORECASE,
-            )
-            candidate_names.append(" ".join(name.split()[:8]).title())
-
         workflows: list[DomainWorkflowHint] = []
-        for name in self._dedupe(candidate_names):
-            matching_requirement = max(
-                functional,
-                key=lambda requirement: self._clause_coverage(name, requirement),
-            )
-            actor = next(
-                (
-                    item
-                    for item in actors
-                    if self._clause_coverage(item.name, matching_requirement) > 0
+        for matching_requirement in functional[:6]:
+            name = self._workflow_name(matching_requirement)
+            actor = max(
+                actors,
+                key=lambda item: max(
+                    self._clause_coverage(item.name, matching_requirement),
+                    self._clause_coverage(matching_requirement, item.description),
                 ),
-                actors[0] if actors else None,
+                default=None,
             )
             if actor is None:
                 continue
@@ -1111,6 +1228,61 @@ class RequirementAnalyzer:
             )
         return self._dedupe_workflows(workflows)
 
+    def _workflow_name(self, requirement: str) -> str:
+        value = requirement.rstrip(".").strip()
+        passive = re.match(
+            r"(.+?)\s+(?:can|must|should|will)?\s*be\s+([a-z]+)\b",
+            value,
+            flags=re.IGNORECASE,
+        )
+        if passive:
+            action = self._base_verb(passive.group(2))
+            value = f"{action} {passive.group(1)}"
+        else:
+            maintained = re.match(
+                r"(.+?)\s+(?:is|are)\s+([a-z]+)\b",
+                value,
+                flags=re.IGNORECASE,
+            )
+            if maintained:
+                value = f"{self._base_verb(maintained.group(2))} {maintained.group(1)}"
+            else:
+                value = re.sub(
+                    r"^[A-Za-z][A-Za-z ]{0,40}\s+(?:can|may|must|should|will)\s+",
+                    "",
+                    value,
+                    flags=re.IGNORECASE,
+                )
+                value = re.sub(r"^system\s+", "", value, flags=re.IGNORECASE)
+                words = value.split()
+                if words:
+                    words[0] = self._base_verb(words[0])
+                    value = " ".join(words)
+        value = re.sub(r"\s*\([^)]*$", "", value)
+        return " ".join(value.split()[:10]).title()
+
+    def _base_verb(self, value: str) -> str:
+        lower = value.casefold()
+        common_past = {
+            "approved": "approve",
+            "created": "create",
+            "maintained": "maintain",
+            "operated": "operate",
+            "paused": "pause",
+            "preserved": "preserve",
+            "registered": "register",
+            "updated": "update",
+        }
+        if lower in common_past:
+            return common_past[lower]
+        if lower.endswith("ies") and len(lower) > 4:
+            return lower[:-3] + "y"
+        if lower.endswith("ses") and len(lower) > 4:
+            return lower[:-2]
+        if lower.endswith("s") and not lower.endswith("ss") and len(lower) > 3:
+            return lower[:-1]
+        return lower
+
     def _dedupe(self, values: list[str]) -> list[str]:
         seen: set[str] = set()
         deduped: list[str] = []
@@ -1120,6 +1292,64 @@ class RequirementAnalyzer:
                 deduped.append(value)
                 seen.add(key)
         return deduped
+
+    def _requirement_key(self, value: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+
+    def _dedupe_characteristics(self, values: list[str]) -> list[str]:
+        seen_categories: set[str] = set()
+        result: list[str] = []
+        for value in self._dedupe(values):
+            category = value.split(":", 1)[0].strip().casefold() if ":" in value else value.casefold()
+            if category not in seen_categories:
+                result.append(value)
+                seen_categories.add(category)
+        return result
+
+    def _merge_explicit_items(
+        self, generated: list[str], explicit: list[str]
+    ) -> list[str]:
+        result = list(generated)
+        for source_item in explicit:
+            source_special = {
+                name
+                for name, (_, source_markers) in SPECIAL_CHARACTERISTICS.items()
+                if any(marker in source_item.casefold() for marker in source_markers)
+            }
+            matching_indices: list[int] = []
+            for index, candidate in enumerate(result):
+                score = max(
+                    self._clause_coverage(source_item, candidate),
+                    self._clause_coverage(candidate, source_item),
+                )
+                candidate_special = {
+                    name
+                    for name, (output_markers, _) in SPECIAL_CHARACTERISTICS.items()
+                    if any(marker in candidate.casefold() for marker in output_markers)
+                }
+                if source_special & candidate_special:
+                    score = max(score, 0.75)
+                shared_quality_markers = {
+                    marker
+                    for marker in (
+                        "audit", "conflict", "offline", "privacy", "provenance",
+                        "real-time", "realtime", "recovery", "retention", "safety",
+                        "secure", "tamper-evident",
+                    )
+                    if marker in source_item.casefold() and marker in candidate.casefold()
+                }
+                if shared_quality_markers:
+                    score = max(score, 0.75)
+                if score >= 0.5:
+                    matching_indices.append(index)
+            if matching_indices:
+                matched = set(matching_indices)
+                result = [candidate for index, candidate in enumerate(result) if index not in matched]
+            result.append(source_item)
+        return self._dedupe(result)
+
+    def _answer_is_known(self, value: str) -> bool:
+        return " ".join(value.split()).casefold() not in UNKNOWN_ANSWER_VALUES
 
     def _dedupe_actors(self, values: list[Actor]) -> list[Actor]:
         seen: set[str] = set()

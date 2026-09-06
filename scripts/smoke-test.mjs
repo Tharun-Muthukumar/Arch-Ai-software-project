@@ -112,7 +112,55 @@ async function main() {
     workspace.documentation_markdown?.includes(payload.title),
     'Workspace documentation markdown was not generated',
   )
+  assert(
+    workspace.causal_graph?.nodes?.length > 0 &&
+      workspace.causal_graph?.edges?.length > 0,
+    'Workspace creation did not generate a causal graph',
+  )
+  assert(
+    workspace.adrs?.length === 1,
+    'Workspace creation did not persist its initial ADR',
+  )
   log('Workspace created', workspace.id)
+
+  const causalGraph = await request(`/workspaces/${workspace.id}/causal-graph`)
+  const causalComponent = causalGraph.nodes.find((node) =>
+    ['architecture_component', 'service_module'].includes(node.type),
+  )
+  assert(causalComponent, 'Causal graph did not contain an architecture component')
+  const causalTrace = await request(
+    `/workspaces/${workspace.id}/causal-graph/nodes/${encodeURIComponent(causalComponent.id)}`,
+  )
+  assert(
+    causalTrace.requirements?.length > 0 && causalTrace.why_it_exists?.length > 0,
+    'Architecture component did not trace back to a requirement',
+  )
+  log('Causal trace', `${causalComponent.id} -> ${causalTrace.requirements.length} requirements`)
+
+  const counterfactual = await request(
+    `/workspaces/${workspace.id}/counterfactual/simulate`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        scenario:
+          'What happens if users grow from 100K to 2 million, traffic increases 10x, realtime becomes required, and team size falls from 12 to 5?',
+        changes: [],
+      }),
+    },
+  )
+  assert(
+    counterfactual.changed_variables?.length >= 4 &&
+      counterfactual.directly_affected_node_ids?.length > 0 &&
+      counterfactual.after_ranking?.length === workspace.architectures.length,
+    'Counterfactual simulation did not parse, trace, and re-rank the scenario',
+  )
+  const workspaceAfterSimulation = await request(`/workspaces/${workspace.id}`)
+  assert(
+    JSON.stringify(workspaceAfterSimulation.requirements) === JSON.stringify(workspace.requirements) &&
+      JSON.stringify(workspaceAfterSimulation.causal_graph) === JSON.stringify(workspace.causal_graph),
+    'Counterfactual simulation mutated the persisted workspace',
+  )
+  log('Counterfactual simulation', `${counterfactual.changed_variables.length} changes, isolated`)
 
   const comparisonMatrix = Object.fromEntries(
     workspace.comparison.scorecards.map((scorecard) => [
@@ -270,6 +318,14 @@ async function main() {
     Array.isArray(changedWorkspace.impact_history) &&
       changedWorkspace.impact_history.length > 0,
     'Change request did not record impact history',
+  )
+  assert(
+    changedWorkspace.impact_history.at(-1)?.directly_affected_node_ids?.length > 0,
+    'Change impact did not include direct causal graph nodes',
+  )
+  assert(
+    changedWorkspace.adrs?.length >= 2,
+    'Change request did not persist its ADR history',
   )
   log('Change request applied', `${changedWorkspace.impact_history.length} impact entry`)
 
