@@ -5,6 +5,7 @@ import { BrowserRouter } from 'react-router-dom'
 import 'reactflow/dist/style.css'
 import App from './App'
 import './index.css'
+import { AuthProvider } from './context/AuthContext'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,9 +19,11 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </AuthProvider>
     </QueryClientProvider>
   </StrictMode>,
 )

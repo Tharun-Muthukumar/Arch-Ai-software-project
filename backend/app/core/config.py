@@ -21,8 +21,9 @@ class Settings(BaseSettings):
     allowed_origin_regex: str = r"https?://(localhost|127\.0\.0\.1)(:\d+)?$"
     ollama_enabled: bool = True
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3:1.7b"
-    request_timeout_seconds: int = 90
+    ollama_model: str = "qwen3:8b"
+    request_timeout_seconds: int = 180
+    auth_session_hours: int = 8
     log_level: str = "INFO"
 
     model_config = SettingsConfigDict(

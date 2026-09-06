@@ -6,8 +6,9 @@ ArchAI is a production-style software architecture decision engine that turns a 
 
 - Frontend: React, TypeScript, TailwindCSS, Mermaid, React Flow
 - Backend: FastAPI, SQLAlchemy, Pydantic
-- AI integration: Ollama with `qwen3:1.7b` and schema-validated raw-brief extraction for unseen domains
+- AI integration: Ollama with `qwen3:8b` and schema-validated raw-brief extraction for unseen domains
 - Persistence: PostgreSQL-ready with zero-friction SQLite local fallback
+- Accounts: Argon2 password hashing, revocable cookie sessions, private history, and read-only sharing
 - Documentation: Markdown and PDF export
 
 ## Monorepo layout
@@ -59,7 +60,7 @@ npm run dev:frontend
 docker compose up --build
 ```
 
-The backend will run when Ollama is unavailable, but unseen domains then use a deliberately conservative result based on the user's text and clarification questions. With Ollama enabled, known domains may use their built-in blueprints while unseen domains are extracted directly from the raw brief. Start Ollama and run `ollama pull qwen3:1.7b` once. The Settings page reports whether Ollama and the configured model are ready.
+The backend will run when Ollama is unavailable, but unseen domains then use a deliberately conservative result based on the user's text and clarification questions. With Ollama enabled, known domains may use their built-in blueprints while unseen domains are extracted directly from the raw brief. Start Ollama and run `ollama pull qwen3:8b` once. The Settings page reports whether Ollama and the configured model are ready.
 
 ## Key capabilities
 
@@ -70,6 +71,18 @@ The backend will run when Ollama is unavailable, but unseen domains then use a d
 - Mermaid and PlantUML generation for multiple diagram types
 - Database schema, API design, deployment plan, and documentation generation
 - Incremental impact-aware updates for change requests
+- User profiles and automatically persisted conversation history
+- Owner-controlled, read-only conversation sharing with revocation
+
+## Account data and migrations
+
+SQLite development databases create the account and history tables automatically when the backend starts. For an existing PostgreSQL deployment, apply the additive migration before starting the updated backend:
+
+```bash
+psql "$DATABASE_URL" -f backend/migrations/002_accounts_history.sql
+```
+
+Authentication uses an opaque random session token in an `HttpOnly`, `SameSite=Lax` cookie. Only a SHA-256 hash of the token is stored in the database; passwords are stored as Argon2 hashes.
 
 ## Verification checklist
 

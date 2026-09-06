@@ -24,7 +24,7 @@ npm run setup
 Install the configured Ollama model once:
 
 ```powershell
-ollama pull qwen3:1.7b
+ollama pull qwen3:8b
 ```
 
 If the terminal was open while Ollama was installed and `ollama` is not found, close it and open a new PowerShell window. Ollama's Windows app normally starts its local server automatically.
@@ -84,15 +84,23 @@ npm run build
 npm run smoke
 ```
 
-`npm run smoke` creates a real workspace, submits clarification answers, applies a change, reloads the workspace, and verifies Markdown and PDF exports.
+`npm run smoke` creates and signs into a temporary test account, creates a real workspace, verifies automatic history persistence, submits follow-up requests, checks exports, and confirms logout invalidates the session.
+
+## Account Database Migration
+
+SQLite is migrated automatically on backend startup. For an existing PostgreSQL database, apply the additive account/history migration once:
+
+```powershell
+psql "$env:DATABASE_URL" -f backend/migrations/002_accounts_history.sql
+```
 
 ## Ollama Status
 
 Open `http://127.0.0.1:5173/settings`. The Backend Health panel distinguishes these states:
 
-- `qwen3:1.7b ready`: Ollama is running and the model is installed.
+- `qwen3:8b ready`: Ollama is running and the model is installed.
 - `unreachable`: start the Ollama Windows app.
-- `qwen3:1.7b not installed`: run `ollama pull qwen3:1.7b`.
+- `qwen3:8b not installed`: run `ollama pull qwen3:8b`.
 - `disabled`: set `ARCHAI_OLLAMA_ENABLED=true` in `backend\.env`.
 
 The local backend configuration is read from `backend\.env`. A fresh copy can be created with:

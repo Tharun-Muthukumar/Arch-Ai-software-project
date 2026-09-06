@@ -40,8 +40,10 @@ ArchAI is a web application that takes a plain-English project brief and automat
 | Uvicorn | 0.35 | ASGI server |
 | ReportLab | 4.4 | PDF generation |
 | httpx | 0.28 | HTTP client (Ollama integration) |
+| pwdlib + Argon2 | 0.3 | Secure password hashing |
+| email-validator | 2.3 | Account email validation |
 | pytest | 8.4 | Testing |
-| Ollama (qwen3:1.7b) | Optional | Schema-validated extraction from raw briefs for unseen domains |
+| Ollama (qwen3:8b) | Optional | Schema-validated extraction from raw briefs for unseen domains |
 
 ### Database
 - **Development:** SQLite (zero-config, file-based)
@@ -83,7 +85,7 @@ Known domains use built-in requirement knowledge. An unrecognized brief is sent 
 
 ### Ollama Extraction and Fallback
 
-If Ollama is running locally with the `qwen3:1.7b` model, unknown-domain extraction uses temperature zero, a fixed seed, and a Pydantic-derived JSON schema. Explicit restrictions and integration clauses from the source text are preserved after extraction. If Ollama is unavailable or its output fails validation, ArchAI retains the raw user requirement, marks the domain and scale as unknown, and asks clarification questions instead of substituting a generic digital-platform blueprint.
+If Ollama is running locally with the `qwen3:8b` model, unknown-domain extraction uses temperature zero, a fixed seed, and a Pydantic-derived JSON schema. Explicit restrictions and integration clauses from the source text are preserved after extraction. If Ollama is unavailable or its output fails validation, ArchAI retains the raw user requirement, marks the domain and scale as unknown, and asks clarification questions instead of substituting a generic digital-platform blueprint.
 
 ---
 
@@ -233,7 +235,7 @@ Weights are adjusted based on the project's scale profile:
 
 ## Database Design
 
-Single `workspaces` table stores everything as JSON columns:
+Generated architecture state remains in the `workspaces` JSON document table:
 
 | Column | Contents |
 |---|---|
@@ -249,6 +251,16 @@ Single `workspaces` table stores everything as JSON columns:
 | `documentation_markdown` | Full Markdown report |
 | `impact_history_json` | Change request audit trail |
 
+Account data is normalized into five additive tables:
+
+| Table | Purpose |
+|---|---|
+| `users` | Public profile fields and Argon2 password hash |
+| `auth_sessions` | Revocable sessions with hashed opaque tokens and expiry |
+| `conversations` | User-owned history records linked to generated workspaces |
+| `conversation_messages` | User prompts, ArchAI summaries, timestamps, and result references |
+| `conversation_shares` | Recipient-specific permissions, currently restricted to `VIEW` |
+
 ---
 
 ## Frontend Pages
@@ -261,6 +273,8 @@ Single `workspaces` table stores everything as JSON columns:
 | Comparison | `/comparison` | Radar chart visualization, scoring rationale, full scorecard table |
 | Diagrams | `/diagrams` | 7 diagram types with Mermaid rendering, source toggle, PNG export |
 | Report | `/docs` | Markdown report with Markdown/PDF download buttons |
+| History | `/history` | Owned and shared conversations, messages, result reopening, sharing, and revocation |
+| Profile | `/profile` | Account details and phone number updates |
 | Settings | `/settings` | API URL config, theme toggle, backend health check |
 
 ---
@@ -271,7 +285,7 @@ Single `workspaces` table stores everything as JSON columns:
 ```powershell
 # First run only
 npm run setup
-ollama pull qwen3:1.7b
+ollama pull qwen3:8b
 
 # Daily development: starts frontend and backend together
 npm run dev
@@ -304,7 +318,7 @@ npm run smoke
 
 1. **Known blueprints plus raw-input LLM extraction** - Known domains use curated blueprints. Unknown domains go directly from the raw brief to schema-validated Ollama extraction. Without Ollama, the system remains usable but intentionally leaves domain details unresolved.
 
-2. **Single-table JSON storage** - All workspace data lives in one table with JSON columns. This simplifies the schema and makes it easy to serialize/deserialize complex nested structures.
+2. **Workspace JSON plus normalized accounts** - Generated architecture state stays in one workspace JSON document, while users, sessions, conversation messages, and sharing permissions use normalized relational tables.
 
 3. **Impact-aware regeneration** - Change requests don't regenerate everything. The `ImpactAnalyzer` maps keywords to affected modules and only re-runs those services.
 
@@ -324,5 +338,6 @@ npm run smoke
 | `ARCHAI_ALLOWED_ORIGINS` | localhost:5173,4173,3000 | CORS allowed origins |
 | `ARCHAI_OLLAMA_ENABLED` | true | Enable raw-input unseen-domain extraction and known-domain narrative refinement |
 | `ARCHAI_OLLAMA_BASE_URL` | http://localhost:11434 | Ollama server URL |
-| `ARCHAI_OLLAMA_MODEL` | qwen3:1.7b | Model to use for structured extraction |
+| `ARCHAI_OLLAMA_MODEL` | qwen3:8b | Model to use for structured extraction |
+| `ARCHAI_AUTH_SESSION_HOURS` | 8 | Lifetime of a revocable login session |
 | `ARCHAI_LOG_LEVEL` | INFO | Logging level |

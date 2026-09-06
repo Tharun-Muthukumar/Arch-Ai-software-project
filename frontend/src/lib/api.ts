@@ -4,6 +4,15 @@ import type { ResilienceRecommendationsRequest, ApplyMitigationsRequest, Resilie
 import type { BudgetCompareRequest, BudgetEstimate, BudgetEstimateRequest, ConwayFitRequest, ConwayFitResult, TwinMatch, TwinMatchRequest } from '../types/api'
 import type { HealthStatus } from '../types/client'
 import type { CounterfactualSimulationRequest, CounterfactualSimulationResult } from '../types/api'
+import type {
+  AuthResponse,
+  ConversationDetail,
+  ConversationShare,
+  ConversationSummary,
+  SignInPayload,
+  SignUpPayload,
+  UserLookup,
+} from '../types/account'
 
 const STORAGE_KEY = 'archai-api-base'
 
@@ -46,12 +55,22 @@ export function setApiBaseUrl(value: string) {
   }
 }
 
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
 
   try {
     response = await fetch(`${getApiBaseUrl()}${path}`, {
       ...init,
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         ...(init?.headers ?? {}),
@@ -64,7 +83,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    throw new Error(await response.text())
+    const responseText = await response.text()
+    let message = responseText || `Request failed with status ${response.status}`
+    try {
+      const parsed = JSON.parse(responseText) as { detail?: string | Array<{ msg?: string }> }
+      if (typeof parsed.detail === 'string') {
+        message = parsed.detail
+      } else if (Array.isArray(parsed.detail)) {
+        message = parsed.detail.map((item) => item.msg).filter(Boolean).join('. ')
+      }
+    } catch {
+      // Keep the server response text when it is not JSON.
+    }
+    throw new ApiError(message, response.status)
+  }
+
+  if (response.status === 204) {
+    return undefined as T
   }
 
   return response.json() as Promise<T>
@@ -102,6 +137,71 @@ export function applyChangeRequest(workspaceId: string, changeRequest: string) {
   })
 }
 
+export function signUp(payload: SignUpPayload) {
+  return request<AuthResponse>('/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function signIn(payload: SignInPayload) {
+  return request<AuthResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function signOut() {
+  await request<void>('/auth/logout', { method: 'POST' })
+}
+
+export function getCurrentUser() {
+  return request<AuthResponse>('/auth/me')
+}
+
+export function updateProfile(phoneNumber: string) {
+  return request<AuthResponse>('/auth/profile', {
+    method: 'PATCH',
+    body: JSON.stringify({ phone_number: phoneNumber }),
+  })
+}
+
+export function listHistory() {
+  return request<ConversationSummary[]>('/history')
+}
+
+export function getConversation(conversationId: string) {
+  return request<ConversationDetail>(`/history/${conversationId}`)
+}
+
+export function updateConversationTitle(conversationId: string, title: string) {
+  return request<ConversationSummary>(`/history/${conversationId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  })
+}
+
+export function deleteConversation(conversationId: string) {
+  return request<void>(`/history/${conversationId}`, { method: 'DELETE' })
+}
+
+export function searchUsers(query: string) {
+  return request<UserLookup[]>(`/users/search?q=${encodeURIComponent(query)}`)
+}
+
+export function shareConversation(conversationId: string, recipientId: string) {
+  return request<ConversationShare>(`/history/${conversationId}/shares`, {
+    method: 'POST',
+    body: JSON.stringify({ recipient_id: recipientId, permission: 'VIEW' }),
+  })
+}
+
+export function revokeConversationShare(conversationId: string, recipientId: string) {
+  return request<void>(`/history/${conversationId}/shares/${recipientId}`, {
+    method: 'DELETE',
+  })
+}
+
 export function getCausalGraph(workspaceId: string) {
   return request<CausalGraph>(`/workspaces/${workspaceId}/causal-graph`)
 }
@@ -128,6 +228,7 @@ export async function downloadMarkdown(workspaceId: string) {
   try {
     response = await fetch(
       `${getApiBaseUrl()}/workspaces/${workspaceId}/documentation/markdown`,
+      { credentials: 'include' },
     )
   } catch {
     throw new Error(
@@ -147,6 +248,7 @@ export async function downloadPdf(workspaceId: string) {
   try {
     response = await fetch(
       `${getApiBaseUrl()}/workspaces/${workspaceId}/documentation/pdf`,
+      { credentials: 'include' },
     )
   } catch {
     throw new Error(
@@ -173,6 +275,7 @@ export async function exportAdrs(payload: ExportAdrsRequest) {
   try {
     response = await fetch(`${getApiBaseUrl()}/analysis/export-adrs`, {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })

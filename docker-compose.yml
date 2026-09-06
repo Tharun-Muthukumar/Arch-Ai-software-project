@@ -22,7 +22,7 @@ services:
       ARCHAI_DATABASE_URL: postgresql+psycopg://archai:archai@postgres:5432/archai
       ARCHAI_ALLOWED_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173","http://localhost:3000"]'
       ARCHAI_OLLAMA_BASE_URL: http://host.docker.internal:11434
-      ARCHAI_OLLAMA_MODEL: qwen3:1.7b
+      ARCHAI_OLLAMA_MODEL: qwen3:8b
       ARCHAI_OLLAMA_ENABLED: "true"
     depends_on:
       - postgres

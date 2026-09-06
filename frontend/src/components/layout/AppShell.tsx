@@ -12,8 +12,14 @@ import {
   DollarSign,
   Zap,
   GitBranch,
+  History,
+  LogOut,
+  CircleUserRound,
 } from 'lucide-react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { useState } from 'react'
+import { useAuth } from '../../context/AuthContext'
+import { getErrorMessage } from '../../lib/utils'
 import { cn } from '../../lib/utils'
 
 const navItems = [
@@ -29,6 +35,7 @@ const navItems = [
   { to: '/budget', label: 'Budget', icon: DollarSign },
   { to: '/diagrams', label: 'Diagrams', icon: Image },
   { to: '/docs', label: 'Report', icon: FileText },
+  { to: '/history', label: 'History', icon: History },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
@@ -49,9 +56,28 @@ function NavigationLink({ item, compact = false }: { item: (typeof navItems)[num
 }
 
 export function AppShell() {
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [logoutError, setLogoutError] = useState<string | null>(null)
+
+  async function handleLogout() {
+    if (isLoggingOut) return
+    setLogoutError(null)
+    setIsLoggingOut(true)
+    try {
+      await logout()
+      navigate('/sign-in', { replace: true })
+    } catch (error) {
+      setLogoutError(getErrorMessage(error, 'Logout failed. Please try again.'))
+    } finally {
+      setIsLoggingOut(false)
+    }
+  }
+
   return (
     <div className="flex min-h-screen">
-      <aside className="hidden w-56 shrink-0 border-r p-4 lg:block" style={{ borderColor: 'var(--card-border)', background: 'var(--surface)' }}>
+      <aside className="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r p-4 lg:flex" style={{ borderColor: 'var(--card-border)', background: 'var(--surface)' }}>
         <div className="mb-6">
           <h1 className="text-lg font-bold" style={{ color: 'var(--brand)' }}>ArchAI</h1>
         </div>
@@ -60,20 +86,45 @@ export function AppShell() {
           {navItems.map((item) => <NavigationLink key={item.to} item={item} />)}
         </nav>
 
-        <div className="mt-auto pt-6 text-xs" style={{ color: 'var(--text-muted)' }}>
-          Local development mode
+        <div className="mt-auto border-t pt-4" style={{ borderColor: 'var(--card-border)' }}>
+          <NavLink to="/profile" className="flex min-w-0 items-center gap-2 rounded-md px-2 py-2 hover:bg-white/5">
+            <CircleUserRound className="h-5 w-5 shrink-0 text-amber-400" />
+            <div className="min-w-0"><p className="truncate text-sm font-medium">{user?.username}</p><p className="truncate text-xs text-muted">Profile</p></div>
+          </NavLink>
         </div>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center border-b px-6 py-3" style={{ borderColor: 'var(--card-border)', background: 'var(--surface)' }}>
+        <header className="flex items-center justify-between border-b px-4 py-3 sm:px-6" style={{ borderColor: 'var(--card-border)', background: 'var(--surface)' }}>
           <div className="lg:hidden">
             <h1 className="text-lg font-bold" style={{ color: 'var(--brand)' }}>ArchAI</h1>
           </div>
           <div className="hidden lg:block">
             <h2 className="text-base font-semibold">Design room</h2>
           </div>
+          <div className="flex items-center gap-2">
+            <NavLink to="/profile" className="button-secondary gap-2 px-3 py-2">
+              <CircleUserRound className="h-4 w-4" />
+              <span className="hidden sm:inline">{user?.username}</span>
+            </NavLink>
+            <button
+              type="button"
+              className="button-secondary px-3 py-2"
+              onClick={() => void handleLogout()}
+              disabled={isLoggingOut}
+              title="Log out"
+              aria-label="Log out"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
         </header>
+
+        {logoutError ? (
+          <div className="border-b border-red-800 bg-red-950/50 px-6 py-2 text-sm text-red-300" role="alert">
+            {logoutError}
+          </div>
+        ) : null}
 
         <div className="flex lg:hidden">
           <nav className="flex gap-1 overflow-x-auto px-4 py-2" role="tablist" aria-label="ArchAI sections">

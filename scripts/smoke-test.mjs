@@ -2,6 +2,7 @@ const apiBase = (process.env.ARCHAI_API_BASE ?? 'http://127.0.0.1:8010/api/v1').
   /\/$/,
   '',
 )
+let sessionCookie = ''
 
 function assert(condition, message) {
   if (!condition) {
@@ -32,9 +33,15 @@ async function request(path, init = {}) {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
       ...(init.headers ?? {}),
     },
   })
+
+  const setCookie = response.headers.get('set-cookie')
+  if (setCookie?.startsWith('archai_session=')) {
+    sessionCookie = setCookie.split(';', 1)[0]
+  }
 
   const contentType = response.headers.get('content-type') ?? ''
   const rawBody = await response.text()
@@ -70,6 +77,27 @@ async function main() {
   log('Health check', `${health.service} (${health.environment})`)
 
   const titleSuffix = new Date().toISOString().replace(/[:.]/g, '-')
+  const account = {
+    username: `smoke_${Date.now()}`,
+    email: `smoke.${Date.now()}@example.com`,
+    phone_number: '+1 202 555 0188',
+    password: 'SmokeTest42!',
+    password_confirmation: 'SmokeTest42!',
+  }
+  const signup = await request('/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify(account),
+  })
+  assert(signup.user?.id, 'Sign up did not return a user')
+  const login = await request('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ identifier: account.email, password: account.password }),
+  })
+  assert(login.user?.id === signup.user.id, 'Sign in returned the wrong user')
+  const currentUser = await request('/auth/me')
+  assert(currentUser.user?.username === account.username, 'Authenticated profile lookup failed')
+  log('Account session', currentUser.user.username)
+
   const payload = {
     title: `VoltReserve Smoke ${titleSuffix}`,
     description:
@@ -122,6 +150,64 @@ async function main() {
     'Workspace creation did not persist its initial ADR',
   )
   log('Workspace created', workspace.id)
+
+  const history = await request('/history')
+  const conversation = history.find((item) => item.workspace_id === workspace.id)
+  assert(conversation?.permission === 'OWNER', 'Workspace was not saved to private history')
+  log('History saved', conversation.id)
+
+  const ownerCookie = sessionCookie
+  const recipientAccount = {
+    username: `shared_${Date.now()}`,
+    email: `shared.${Date.now()}@example.com`,
+    phone_number: '+1 202 555 0199',
+    password: 'SharedTest42!',
+    password_confirmation: 'SharedTest42!',
+  }
+  const recipientSignup = await request('/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify(recipientAccount),
+  })
+  const share = await request(`/history/${conversation.id}/shares`, {
+    method: 'POST',
+    body: JSON.stringify({ recipient_id: recipientSignup.user.id, permission: 'VIEW' }),
+  })
+  assert(share.permission === 'VIEW', 'Conversation share was not read-only')
+
+  await request('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({
+      identifier: recipientAccount.email,
+      password: recipientAccount.password,
+    }),
+  })
+  const recipientCookie = sessionCookie
+  const sharedHistory = await request('/history')
+  assert(
+    sharedHistory.some((item) => item.id === conversation.id && item.permission === 'VIEW'),
+    'Recipient did not receive the shared conversation',
+  )
+  const forbiddenEdit = await fetchWithRetry(
+    `${apiBase}/workspaces/${workspace.id}/changes`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: recipientCookie },
+      body: JSON.stringify({ change_request: 'Recipient must not change this workspace.' }),
+    },
+  )
+  assert(forbiddenEdit.status === 403, 'Shared recipient was allowed to edit the workspace')
+
+  sessionCookie = ownerCookie
+  await request(`/history/${conversation.id}/shares/${recipientSignup.user.id}`, {
+    method: 'DELETE',
+  })
+  sessionCookie = recipientCookie
+  const revokedAccess = await fetchWithRetry(`${apiBase}/history/${conversation.id}`, {
+    headers: { Cookie: recipientCookie },
+  })
+  assert(revokedAccess.status === 404, 'Revoked recipient retained conversation access')
+  sessionCookie = ownerCookie
+  log('Sharing permissions', 'view-only access granted and revoked')
 
   const causalGraph = await request(`/workspaces/${workspace.id}/causal-graph`)
   const causalComponent = causalGraph.nodes.find((node) =>
@@ -332,7 +418,10 @@ async function main() {
   assert(changedWorkspace.adr, 'Change request did not generate an ADR')
   const adrResponse = await fetchWithRetry(`${apiBase}/analysis/export-adrs`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+    },
     body: JSON.stringify({ adrs: [changedWorkspace.adr] }),
   })
   assert(adrResponse.ok, `ADR export failed with ${adrResponse.status}`)
@@ -364,6 +453,7 @@ async function main() {
 
   const pdfResponse = await fetchWithRetry(
     `${apiBase}/workspaces/${workspace.id}/documentation/pdf`,
+    { headers: sessionCookie ? { Cookie: sessionCookie } : {} },
   )
   assert(pdfResponse.ok, `PDF export failed with ${pdfResponse.status}`)
   const pdfBytes = Buffer.from(await pdfResponse.arrayBuffer())
@@ -373,6 +463,23 @@ async function main() {
     'PDF export did not return a PDF file signature',
   )
   log('PDF export', `${pdfBytes.length} bytes`)
+
+  const conversationDetails = await request(`/history/${conversation.id}`)
+  assert(
+    conversationDetails.messages?.length >= 6,
+    'Follow-up prompts were not appended to conversation history',
+  )
+  log('History messages', `${conversationDetails.messages.length} persisted`)
+
+  sessionCookie = recipientCookie
+  await request('/auth/logout', { method: 'POST' })
+  sessionCookie = ownerCookie
+  await request('/auth/logout', { method: 'POST' })
+  const afterLogout = await fetchWithRetry(`${apiBase}/auth/me`, {
+    headers: sessionCookie ? { Cookie: sessionCookie } : {},
+  })
+  assert(afterLogout.status === 401, 'Logout did not invalidate the session')
+  log('Logout', 'session invalidated')
 
   log('Smoke test passed', workspace.id)
 }
