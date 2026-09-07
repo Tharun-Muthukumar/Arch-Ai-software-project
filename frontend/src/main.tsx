@@ -6,6 +6,7 @@ import 'reactflow/dist/style.css'
 import App from './App'
 import './index.css'
 import { AuthProvider } from './context/AuthContext'
+import { ToastProvider } from './components/ui/ToastProvider'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,9 +21,11 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <ToastProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </ToastProvider>
       </AuthProvider>
     </QueryClientProvider>
   </StrictMode>,

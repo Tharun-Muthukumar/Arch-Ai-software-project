@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { CalendarDays, LoaderCircle, Mail, Phone, Save, User } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../context/auth'
 import { updateProfile } from '../lib/api'
 import { formatUpdatedAt, getErrorMessage } from '../lib/utils'
 

@@ -3,9 +3,11 @@ import { useSearchParams } from 'react-router-dom'
 import { ArchitectureFlow } from '../components/diagrams/ArchitectureFlow'
 import { StatePanel } from '../components/workspace/StatePanel'
 import { ADRTimeline } from '../components/workspace/ADRTimeline'
+import { WorkspaceEditDialog, type EditField } from '../components/workspace/WorkspaceEditDialog'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage, formatMetricName } from '../lib/utils'
 import type { ArchitectureDecisionRecord, Workspace } from '../types/api'
+import type { ArchitectureComponent, WorkspaceEditRequest } from '../types/api'
 
 interface TimelineEntry {
   adr: ArchitectureDecisionRecord
@@ -23,6 +25,11 @@ export function ArchitectureStudioPage() {
   const [selectedId, setSelectedId] = useState(recommendedId)
 
   const [activeTimelineIndex, setActiveTimelineIndex] = useState(0)
+  const [componentEdit, setComponentEdit] = useState<{
+    title: string
+    edit: WorkspaceEditRequest
+    fields: EditField[]
+  } | null>(null)
   const timelineEntries = useMemo<TimelineEntry[]>(
     () => (workspace?.adrs ?? []).map((adr) => ({ adr, snapshot: workspace! })),
     [workspace],
@@ -55,9 +62,34 @@ export function ArchitectureStudioPage() {
   const selected = workspace.architectures.find(a => a.id === selectedId) ?? workspace.architectures[0]
   const scorecards = workspace.comparison.scorecards
   const metrics = scorecards[0]?.metric_scores ?? []
+  const componentFields: EditField[] = [
+    { key: 'name', label: 'Component name', required: true },
+    { key: 'responsibility', label: 'Responsibility', type: 'textarea', required: true },
+    { key: 'technologies', label: 'Technologies', type: 'tags', help: 'Use only technologies that are decisions or explicit project constraints.' },
+    { key: 'interactions', label: 'Relationships and interactions', type: 'tags' },
+  ]
+
+  function openComponentEdit(operation: 'add' | 'update' | 'delete', component?: ArchitectureComponent, index?: number) {
+    if (!selected) return
+    setComponentEdit({
+      title: `${operation === 'add' ? 'Add' : operation === 'delete' ? 'Delete' : 'Edit'} architecture component`,
+      edit: {
+        target_type: 'architecture_component',
+        operation,
+        parent_id: selected.id,
+        target_id: index === undefined ? undefined : `COMPONENT-${String(index + 1).padStart(3, '0')}`,
+        value: (component ?? { name: '', responsibility: '', technologies: [], interactions: [] }) as unknown as Record<string, unknown>,
+      },
+      fields: operation === 'delete' ? [] : componentFields,
+    })
+  }
 
   return (
-    <div className="space-y-4">
+    <div className="workspace-page">
+      <header className="page-heading">
+        <div><span className="eyebrow">Decision workspace</span><h2>Architecture studio</h2><p>Explore trade-offs, inspect component responsibilities, and safely evolve the design.</p></div>
+        <span className="status-chip status-success">{workspace.recommendation.confidence} confidence</span>
+      </header>
       {/* Comparison table - always visible */}
       <div className="panel overflow-x-auto">
         <h3 className="text-sm font-semibold mb-3">Architecture Comparison</h3>
@@ -167,6 +199,9 @@ export function ArchitectureStudioPage() {
                 whyHref={(component) =>
                   `/causal-graph?workspace=${encodeURIComponent(workspace.id)}&architecture=${encodeURIComponent(selected.id)}&component=${encodeURIComponent(component.name)}`
                 }
+                onAdd={() => openComponentEdit('add')}
+                onEdit={(component, index) => openComponentEdit('update', component, index)}
+                onDelete={(component, index) => openComponentEdit('delete', component, index)}
               />
             </div>
             <div className="space-y-4">
@@ -222,6 +257,17 @@ export function ArchitectureStudioPage() {
           onSelect={(index) => setActiveTimelineIndex(index)}
         />
       )}
+      {componentEdit ? (
+        <WorkspaceEditDialog
+          open
+          workspace={workspace}
+          title={componentEdit.title}
+          description="Dependencies, diagrams, scoring, and causal links are checked before this change is saved."
+          edit={componentEdit.edit}
+          fields={componentEdit.fields}
+          onClose={() => setComponentEdit(null)}
+        />
+      ) : null}
     </div>
   )
 }

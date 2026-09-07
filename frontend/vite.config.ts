@@ -1,8 +1,27 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
+  optimizeDeps: mode === 'test' ? undefined : {
+    // Mermaid loads each diagram renderer dynamically. Pre-bundle the complete
+    // client dependency set up front so its chunk URLs cannot be invalidated by
+    // Vite's incremental dependency discovery after the first page has loaded.
+    noDiscovery: true,
+    include: [
+      '@tanstack/react-query',
+      'clsx',
+      'lucide-react',
+      'mermaid',
+      'react',
+      'react-dom/client',
+      'react-markdown',
+      'react-router-dom',
+      'reactflow',
+      'recharts',
+      'remark-gfm',
+    ],
+  },
   build: {
     chunkSizeWarningLimit: 3200,
     rollupOptions: {
@@ -43,4 +62,4 @@ export default defineConfig({
     css: true,
     pool: 'threads',
   },
-})
+}))

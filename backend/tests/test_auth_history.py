@@ -49,6 +49,10 @@ def workspace_payload(title: str) -> dict:
 
 
 def test_signup_validation_duplicates_login_profile_and_logout(client: TestClient) -> None:
+    anonymous_session = client.get("/api/v1/auth/session")
+    assert anonymous_session.status_code == 200
+    assert anonymous_session.json() == {"authenticated": False, "user": None}
+
     account = account_payload("account")
     signup_response = client.post("/api/v1/auth/signup", json=account)
     assert signup_response.status_code == 201
@@ -88,6 +92,10 @@ def test_signup_validation_duplicates_login_profile_and_logout(client: TestClien
     me_response = client.get("/api/v1/auth/me")
     assert me_response.status_code == 200
     assert me_response.json()["user"]["id"] == public_user["id"]
+    authenticated_session = client.get("/api/v1/auth/session")
+    assert authenticated_session.status_code == 200
+    assert authenticated_session.json()["authenticated"] is True
+    assert authenticated_session.json()["user"]["id"] == public_user["id"]
 
     profile_response = client.patch(
         "/api/v1/auth/profile", json={"phone_number": "+44 20 7946 0958"}

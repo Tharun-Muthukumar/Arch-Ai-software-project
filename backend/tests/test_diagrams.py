@@ -36,11 +36,11 @@ def test_ev_workspace_generates_clear_diagram_artifacts(client):
     er_diagram = workspace["diagrams"]["er"]["mermaid"]
     class_diagram = workspace["diagrams"]["class"]["mermaid"]
 
-    assert "EV CHARGING STATION BOOKING SYSTEM" in use_case
-    assert "Payment Gateway" in use_case
-    assert "View booking<br/>dashboard" in use_case
-    assert "Cancel<br/>booking" in use_case
-    assert "extends" in use_case
+    assert "Confirmed project brief" in use_case
+    assert "FR-001" in use_case
+    assert "Driver" in use_case
+    assert "charging" in use_case.lower()
+    assert "pharmac" not in use_case.lower()
 
     assert "STATION" in er_diagram
     assert "CHARGER" in er_diagram
@@ -85,18 +85,18 @@ def test_pharmacy_workspace_generates_domain_specific_diagrams(client):
     er_diagram = workspace["diagrams"]["er"]["mermaid"]
     class_diagram = workspace["diagrams"]["class"]["mermaid"]
 
-    assert "ONLINE PHARMACY SYSTEM" in use_case
-    assert "Place prescription<br/>order" in use_case
-    assert "Verify<br/>prescription" in use_case
-    assert "View station" not in use_case
+    assert "FR-001" in use_case
+    assert "Customer" in use_case
+    assert "prescription" in use_case.lower()
+    assert "charging" not in use_case.lower()
 
-    assert "Prescription required?" in activity
-    assert "Authorize payment" in activity
-    assert "dispatch shipment" in activity
+    assert "Confirmed requirement model" in activity
+    assert "prescription" in activity.lower()
 
-    assert "Prescription Service" in sequence
-    assert "Inventory Service" in sequence
-    assert "Delivery Service" in sequence
+    assert "System interface" in sequence
+    assert "actor UserParticipant as" in sequence
+    assert "actor Actor as" not in sequence
+    assert any(term in sequence.lower() for term in ("catalog", "medicine", "prescription"))
 
     assert "INVENTORY" in er_diagram
     assert "PRESCRIPTION" in er_diagram

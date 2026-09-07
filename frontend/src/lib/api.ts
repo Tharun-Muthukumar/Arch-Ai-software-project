@@ -1,4 +1,4 @@
-import type { Workspace, WorkspaceCreatePayload, ReweightRequest, ExportAdrsRequest, BlastRadiusRequest, CausalGraph, CausalGraphTrace } from '../types/api'
+import type { Workspace, WorkspaceCreatePayload, ReweightRequest, ExportAdrsRequest, BlastRadiusRequest, CausalGraph, CausalGraphTrace, WorkspaceEditPreview, WorkspaceEditRequest, WorkspaceMutationResponse } from '../types/api'
 import type { ArchitectureScorecard, BlastRadiusResult } from '../types/api'
 import type { ResilienceRecommendationsRequest, ApplyMitigationsRequest, ResilienceRecommendation } from '../types/api'
 import type { BudgetCompareRequest, BudgetEstimate, BudgetEstimateRequest, ConwayFitRequest, ConwayFitResult, TwinMatch, TwinMatchRequest } from '../types/api'
@@ -6,6 +6,7 @@ import type { HealthStatus } from '../types/client'
 import type { CounterfactualSimulationRequest, CounterfactualSimulationResult } from '../types/api'
 import type {
   AuthResponse,
+  AuthSessionResponse,
   ConversationDetail,
   ConversationShare,
   ConversationSummary,
@@ -137,6 +138,32 @@ export function applyChangeRequest(workspaceId: string, changeRequest: string) {
   })
 }
 
+export function previewWorkspaceEdit(workspaceId: string, edit: WorkspaceEditRequest) {
+  return request<WorkspaceEditPreview>(`/workspaces/${workspaceId}/edits/preview`, {
+    method: 'POST',
+    body: JSON.stringify(edit),
+  })
+}
+
+export function applyWorkspaceEdit(workspaceId: string, edit: WorkspaceEditRequest) {
+  return request<WorkspaceMutationResponse>(`/workspaces/${workspaceId}/edits`, {
+    method: 'POST',
+    body: JSON.stringify(edit),
+  })
+}
+
+export function undoWorkspaceEdit(workspaceId: string) {
+  return request<WorkspaceMutationResponse>(`/workspaces/${workspaceId}/edits/undo`, {
+    method: 'POST',
+  })
+}
+
+export function redoWorkspaceEdit(workspaceId: string) {
+  return request<WorkspaceMutationResponse>(`/workspaces/${workspaceId}/edits/redo`, {
+    method: 'POST',
+  })
+}
+
 export function signUp(payload: SignUpPayload) {
   return request<AuthResponse>('/auth/signup', {
     method: 'POST',
@@ -156,7 +183,7 @@ export async function signOut() {
 }
 
 export function getCurrentUser() {
-  return request<AuthResponse>('/auth/me')
+  return request<AuthSessionResponse>('/auth/session')
 }
 
 export function updateProfile(phoneNumber: string) {

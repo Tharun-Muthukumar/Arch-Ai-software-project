@@ -150,6 +150,10 @@ export interface ApiEndpoint {
   path: string
   purpose: string
   auth_required: boolean | null
+  request_description: string
+  response_description: string
+  service?: string | null
+  requirement_ids: string[]
   request_example: Record<string, unknown>
   response_example: Record<string, unknown>
 }
@@ -170,6 +174,10 @@ export interface ApiDesign {
 
 export interface DeploymentPlan {
   deployment_model: string
+  replicas?: number | null
+  regions: string[]
+  deployment_strategy?: string | null
+  availability_configuration?: string | null
   target_stack: string[]
   docker_services: string[]
   kubernetes_modules: string[]
@@ -188,6 +196,73 @@ export interface ImpactAssessment {
   directly_affected_node_ids: string[]
   indirectly_affected_node_ids: string[]
   affected_artifacts: string[]
+}
+
+export type WorkspaceEditTarget =
+  | 'functional_requirement'
+  | 'non_functional_requirement'
+  | 'actor'
+  | 'constraint'
+  | 'assumption'
+  | 'integration'
+  | 'data_characteristic'
+  | 'domain_entity'
+  | 'architecture_component'
+  | 'api_endpoint'
+  | 'database_entity'
+  | 'deployment'
+  | 'diagram_layout'
+
+export type WorkspaceEditOperation = 'add' | 'update' | 'delete' | 'reorder'
+export type ImpactLevel = 'none' | 'minor' | 'moderate' | 'major' | 'visual'
+
+export interface WorkspaceEditRequest {
+  target_type: WorkspaceEditTarget
+  operation: WorkspaceEditOperation
+  target_id?: string
+  parent_id?: string
+  value?: string | Record<string, unknown>
+  destination_index?: number
+  use_ai?: boolean
+  expected_updated_at?: string
+}
+
+export interface WorkspaceImpactItem {
+  area: string
+  level: ImpactLevel
+  summary: string
+}
+
+export interface WorkspaceEditImpact {
+  items: WorkspaceImpactItem[]
+  directly_affected_node_ids: string[]
+  indirectly_affected_node_ids: string[]
+  affected_artifacts: string[]
+  requires_confirmation: boolean
+}
+
+export interface SemanticEditSuggestion {
+  suggested_text: string
+  rationale: string
+  inferred_characteristics: string[]
+  assumptions: string[]
+  clarification_questions: string[]
+  source: 'ollama' | 'deterministic-fallback'
+}
+
+export interface WorkspaceEditPreview {
+  edit: WorkspaceEditRequest
+  normalized_value?: string | Record<string, unknown> | null
+  impact: WorkspaceEditImpact
+  suggestion?: SemanticEditSuggestion | null
+  warnings: string[]
+}
+
+export interface ConsistencyIssue {
+  code: string
+  severity: 'info' | 'warning' | 'error'
+  message: string
+  related_ids: string[]
 }
 
 export type CausalNodeType =
@@ -524,8 +599,19 @@ export interface Workspace {
   adr?: ArchitectureDecisionRecord | null
   adrs: ArchitectureDecisionRecord[]
   causal_graph?: CausalGraph | null
+  diagram_layouts: Record<string, Record<string, unknown>>
+  consistency_issues: ConsistencyIssue[]
+  can_undo: boolean
+  can_redo: boolean
   created_at: string
   updated_at: string
+}
+
+export interface WorkspaceMutationResponse {
+  workspace: Workspace
+  impact: WorkspaceEditImpact
+  consistency_issues: ConsistencyIssue[]
+  message: string
 }
 
 export interface WorkspaceCreatePayload {

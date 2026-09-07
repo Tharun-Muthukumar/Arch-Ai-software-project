@@ -1,3 +1,4 @@
+import copy
 import uuid
 from datetime import datetime, timezone
 
@@ -17,6 +18,11 @@ from app.schemas.domain import (
     ImpactAssessment,
     RecommendationResult,
     RequirementModel,
+    WorkspaceEditImpact,
+    WorkspaceEditPreview,
+    WorkspaceEditRequest,
+    WorkspaceImpactItem,
+    WorkspaceMutationResponse,
     WorkspaceCreateRequest,
     WorkspaceResponse,
 )
@@ -32,6 +38,7 @@ from app.services.documentation_generator import DocumentationGenerator
 from app.services.impact_analyzer import ImpactAnalyzer
 from app.services.recommendation_engine import RecommendationEngine
 from app.services.requirement_analyzer import RequirementAnalyzer
+from app.services.workspace_editor import WorkspaceEditService
 
 
 class WorkspaceOrchestrator:
@@ -49,6 +56,7 @@ class WorkspaceOrchestrator:
         self.diagram_generator = DiagramGenerator()
         self.documentation_generator = DocumentationGenerator()
         self.impact_analyzer = ImpactAnalyzer()
+        self.workspace_editor = WorkspaceEditService()
 
     def list_workspaces(self) -> list[WorkspaceResponse]:
         return [self._to_response(workspace) for workspace in self.repository.list()]
@@ -86,6 +94,8 @@ class WorkspaceOrchestrator:
             deployment_plan_json=generated["deployment_plan"].model_dump(),
             causal_graph_json=generated["causal_graph"].model_dump(),
             adrs_json=[item.model_dump() for item in generated["adrs"]],
+            diagram_layouts_json={},
+            edit_history_json={"past": [], "future": []},
             documentation_markdown=generated["documentation_markdown"],
             impact_history_json=[],
         )
@@ -123,6 +133,71 @@ class WorkspaceOrchestrator:
         workspace.answers_json = merged_answers
         self._apply_generated_content(workspace, generated)
         return self._to_response(self.repository.save(workspace))
+
+    def preview_edit(
+        self, workspace_id: str, edit: WorkspaceEditRequest
+    ) -> WorkspaceEditPreview | None:
+        workspace = self.repository.get(workspace_id)
+        if workspace is None:
+            return None
+        self._check_edit_version(workspace, edit)
+        return self.workspace_editor.preview(self._to_response(workspace), edit)
+
+    def apply_workspace_edit(
+        self, workspace_id: str, edit: WorkspaceEditRequest
+    ) -> WorkspaceMutationResponse | None:
+        workspace = self.repository.get(workspace_id)
+        if workspace is None:
+            return None
+        self._check_edit_version(workspace, edit)
+        current = self._to_response(workspace)
+        applied = self.workspace_editor.apply(current, edit)
+
+        self._record_revision(workspace, applied.description)
+        self._copy_response_state(workspace, applied.workspace)
+        self._regenerate_sections(workspace, applied.regenerated_sections)
+
+        if applied.regenerated_sections:
+            impact = ImpactAssessment(
+                change_request=applied.description,
+                impacted_modules=applied.regenerated_sections,
+                reasoning=[item.summary for item in applied.impact.items if item.level != "none"],
+                regenerated_sections=applied.regenerated_sections,
+                directly_affected_node_ids=applied.impact.directly_affected_node_ids,
+                indirectly_affected_node_ids=applied.impact.indirectly_affected_node_ids,
+                affected_artifacts=applied.impact.affected_artifacts,
+            )
+            workspace.impact_history_json = [
+                *(workspace.impact_history_json or []),
+                impact.model_dump(),
+            ]
+            recommendation = RecommendationResult.model_validate(workspace.recommendation_json)
+            adrs = self._load_adrs(workspace)
+            adrs.append(
+                self._build_adr(
+                    title=applied.description[:80],
+                    context=applied.description,
+                    recommendation=recommendation,
+                    changed_modules=applied.regenerated_sections,
+                )
+            )
+            workspace.adrs_json = [item.model_dump() for item in adrs]
+            self._rebuild_graph_and_documentation(workspace)
+
+        saved = self.repository.save(workspace)
+        response = self._to_response(saved)
+        return WorkspaceMutationResponse(
+            workspace=response,
+            impact=applied.impact,
+            consistency_issues=response.consistency_issues,
+            message="Workspace updated and dependent artifacts synchronized.",
+        )
+
+    def undo_workspace_edit(self, workspace_id: str) -> WorkspaceMutationResponse | None:
+        return self._restore_revision(workspace_id, direction="undo")
+
+    def redo_workspace_edit(self, workspace_id: str) -> WorkspaceMutationResponse | None:
+        return self._restore_revision(workspace_id, direction="redo")
 
     def apply_change_request(
         self, workspace_id: str, change_request: str
@@ -368,6 +443,184 @@ class WorkspaceOrchestrator:
         workspace.adrs_json = [item.model_dump() for item in generated["adrs"]]
         workspace.documentation_markdown = generated["documentation_markdown"]
 
+    def _copy_response_state(
+        self, workspace: Workspace, response: WorkspaceResponse
+    ) -> None:
+        workspace.requirements_json = response.requirements.model_dump()
+        workspace.architectures_json = [item.model_dump() for item in response.architectures]
+        workspace.comparison_json = response.comparison.model_dump()
+        workspace.recommendation_json = response.recommendation.model_dump()
+        workspace.diagrams_json = {
+            key: value.model_dump() for key, value in response.diagrams.items()
+        }
+        workspace.database_design_json = response.database_design.model_dump()
+        workspace.api_design_json = response.api_design.model_dump()
+        workspace.deployment_plan_json = response.deployment_plan.model_dump()
+        workspace.diagram_layouts_json = copy.deepcopy(response.diagram_layouts)
+
+    def _regenerate_sections(
+        self, workspace: Workspace, sections: list[str]
+    ) -> None:
+        section_set = set(sections)
+        requirements = RequirementModel.model_validate(workspace.requirements_json)
+        architectures = [
+            ArchitectureOption.model_validate(item) for item in workspace.architectures_json
+        ]
+        comparison = ComparisonResult.model_validate(workspace.comparison_json)
+        recommendation = RecommendationResult.model_validate(workspace.recommendation_json)
+        database_design = DatabaseDesign.model_validate(workspace.database_design_json)
+        api_design = ApiDesign.model_validate(workspace.api_design_json)
+        deployment_plan = DeploymentPlan.model_validate(workspace.deployment_plan_json)
+
+        if "clarifications" in section_set:
+            workspace.clarification_json = self.clarification_engine.generate(
+                requirements, workspace.answers_json or {}
+            ).model_dump()
+        if "architectures" in section_set:
+            architectures = self.architecture_generator.generate(
+                requirements, workspace.answers_json or {}
+            )
+        if "comparison" in section_set:
+            comparison = self.comparison_engine.compare(
+                requirements, architectures, workspace.answers_json or {}
+            )
+        if "recommendation" in section_set:
+            recommendation = self.recommendation_engine.recommend(
+                requirements, architectures, comparison
+            )
+        if "database" in section_set:
+            database_design = self.database_generator.generate(requirements)
+        if "api" in section_set:
+            api_design = self.api_generator.generate(requirements, database_design)
+        if "deployment" in section_set:
+            deployment_plan = self.deployment_generator.generate(
+                requirements, recommendation, workspace.answers_json or {}
+            )
+        if "diagrams" in section_set:
+            workspace.diagrams_json = {
+                key: value.model_dump()
+                for key, value in self.diagram_generator.generate(
+                    requirements,
+                    architectures,
+                    recommendation,
+                    database_design,
+                    deployment_plan,
+                ).items()
+            }
+
+        workspace.architectures_json = [item.model_dump() for item in architectures]
+        workspace.comparison_json = comparison.model_dump()
+        workspace.recommendation_json = recommendation.model_dump()
+        workspace.database_design_json = database_design.model_dump()
+        workspace.api_design_json = api_design.model_dump()
+        workspace.deployment_plan_json = deployment_plan.model_dump()
+
+    def _rebuild_graph_and_documentation(self, workspace: Workspace) -> None:
+        requirements = RequirementModel.model_validate(workspace.requirements_json)
+        architectures = [
+            ArchitectureOption.model_validate(item) for item in workspace.architectures_json
+        ]
+        recommendation = RecommendationResult.model_validate(workspace.recommendation_json)
+        diagrams = {
+            key: DiagramArtifact.model_validate(value)
+            for key, value in (workspace.diagrams_json or {}).items()
+        }
+        graph = self.causal_graph_service.build(
+            original_prompt=workspace.original_prompt,
+            requirements=requirements,
+            architectures=architectures,
+            recommendation=recommendation,
+            api_design=ApiDesign.model_validate(workspace.api_design_json),
+            database_design=DatabaseDesign.model_validate(workspace.database_design_json),
+            deployment_plan=DeploymentPlan.model_validate(workspace.deployment_plan_json),
+            diagrams=diagrams,
+            adrs=self._load_adrs(workspace),
+        )
+        workspace.causal_graph_json = graph.model_dump()
+        response = self._workspace_response_from_parts(workspace)
+        workspace.documentation_markdown = self.documentation_generator.build_markdown(response)
+
+    def _check_edit_version(
+        self, workspace: Workspace, edit: WorkspaceEditRequest
+    ) -> None:
+        if edit.expected_updated_at is None or workspace.updated_at is None:
+            return
+        requested = edit.expected_updated_at.replace(tzinfo=None)
+        stored = workspace.updated_at.replace(tzinfo=None)
+        if abs((requested - stored).total_seconds()) > 0.001:
+            raise ValueError(
+                "This workspace changed after you opened it. Refresh before applying the edit."
+            )
+
+    def _record_revision(self, workspace: Workspace, description: str) -> None:
+        history = copy.deepcopy(workspace.edit_history_json or {})
+        past = list(history.get("past", []))
+        past.append(self._snapshot(workspace, description))
+        workspace.edit_history_json = {"past": past[-12:], "future": []}
+
+    def _restore_revision(
+        self, workspace_id: str, *, direction: str
+    ) -> WorkspaceMutationResponse | None:
+        workspace = self.repository.get(workspace_id)
+        if workspace is None:
+            return None
+        history = copy.deepcopy(workspace.edit_history_json or {})
+        source_key = "past" if direction == "undo" else "future"
+        destination_key = "future" if direction == "undo" else "past"
+        source = list(history.get(source_key, []))
+        destination = list(history.get(destination_key, []))
+        if not source:
+            raise ValueError(f"There is no workspace change to {direction}.")
+
+        snapshot = source.pop()
+        destination.append(self._snapshot(workspace, f"Before {direction}"))
+        self._restore_snapshot(workspace, snapshot)
+        history[source_key] = source[-12:]
+        history[destination_key] = destination[-12:]
+        workspace.edit_history_json = history
+        saved = self.repository.save(workspace)
+        response = self._to_response(saved)
+        impact = WorkspaceEditImpact(
+            items=[
+                WorkspaceImpactItem(
+                    area="Workspace",
+                    level="major",
+                    summary=f"The previous canonical workspace revision was {direction}ne.",
+                )
+            ],
+            affected_artifacts=["workspace"],
+        )
+        return WorkspaceMutationResponse(
+            workspace=response,
+            impact=impact,
+            consistency_issues=response.consistency_issues,
+            message=f"Workspace change {direction}ne.",
+        )
+
+    def _snapshot(self, workspace: Workspace, description: str) -> dict:
+        fields = (
+            "answers_json", "requirements_json", "clarification_json",
+            "architectures_json", "comparison_json", "recommendation_json",
+            "diagrams_json", "database_design_json", "api_design_json",
+            "deployment_plan_json", "causal_graph_json", "adrs_json",
+            "diagram_layouts_json", "impact_history_json",
+        )
+        return {
+            "description": description,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "documentation_markdown": workspace.documentation_markdown,
+            "state": {
+                field: copy.deepcopy(getattr(workspace, field, None)) for field in fields
+            },
+        }
+
+    def _restore_snapshot(self, workspace: Workspace, snapshot: dict) -> None:
+        state = snapshot.get("state", {})
+        for field, value in state.items():
+            if hasattr(workspace, field):
+                setattr(workspace, field, copy.deepcopy(value))
+        workspace.documentation_markdown = snapshot.get("documentation_markdown", "")
+
     def _workspace_response_from_parts(self, workspace: Workspace) -> WorkspaceResponse:
         requirements = RequirementModel.model_validate(workspace.requirements_json)
         architectures = [
@@ -420,6 +673,16 @@ class WorkspaceOrchestrator:
             adr=adrs[-1] if adrs else None,
             adrs=adrs,
             causal_graph=causal_graph,
+            diagram_layouts=copy.deepcopy(
+                getattr(workspace, "diagram_layouts_json", None) or {}
+            ),
+            consistency_issues=[],
+            can_undo=bool(
+                (getattr(workspace, "edit_history_json", None) or {}).get("past")
+            ),
+            can_redo=bool(
+                (getattr(workspace, "edit_history_json", None) or {}).get("future")
+            ),
             created_at=workspace.created_at,
             updated_at=workspace.updated_at,
         )
@@ -428,6 +691,7 @@ class WorkspaceOrchestrator:
         response = self._workspace_response_from_parts(workspace)
         if not response.documentation_markdown:
             response.documentation_markdown = self.documentation_generator.build_markdown(response)
+        response.consistency_issues = self.workspace_editor.consistency_issues(response)
         return response
 
     def get_causal_graph(self, workspace_id: str) -> CausalGraph | None:

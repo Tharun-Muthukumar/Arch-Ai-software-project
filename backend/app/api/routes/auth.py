@@ -6,6 +6,7 @@ from app.api.deps import (
     get_account_repository,
     get_auth_service,
     get_db,
+    get_optional_current_user,
     require_current_user,
 )
 from app.core.config import get_settings
@@ -13,6 +14,7 @@ from app.models.account import User
 from app.repositories.account_repository import AccountRepository
 from app.schemas.account import (
     AuthResponse,
+    AuthSessionResponse,
     ProfileUpdateRequest,
     SignInRequest,
     SignUpRequest,
@@ -85,6 +87,16 @@ def logout(
 @router.get("/me", response_model=AuthResponse)
 def me(user: User = Depends(require_current_user)) -> AuthResponse:
     return AuthResponse(user=UserPublic.model_validate(user))
+
+
+@router.get("/session", response_model=AuthSessionResponse)
+def session_status(
+    user: User | None = Depends(get_optional_current_user),
+) -> AuthSessionResponse:
+    return AuthSessionResponse(
+        authenticated=user is not None,
+        user=UserPublic.model_validate(user) if user is not None else None,
+    )
 
 
 @router.patch("/profile", response_model=AuthResponse)

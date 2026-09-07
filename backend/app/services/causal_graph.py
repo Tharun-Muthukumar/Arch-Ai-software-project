@@ -401,6 +401,10 @@ class CausalGraphService:
                             "path": endpoint.path,
                             "purpose": endpoint.purpose,
                             "auth_required": endpoint.auth_required,
+                            "service": endpoint.service,
+                            "requirement_ids": endpoint.requirement_ids,
+                            "request_description": endpoint.request_description,
+                            "response_description": endpoint.response_description,
                         }
                         for endpoint in group.endpoints
                     ],
@@ -408,6 +412,23 @@ class CausalGraphService:
             )
             add_node(api_node)
             api_nodes.append(api_node)
+            explicit_requirement_ids = {
+                requirement_id
+                for endpoint in group.endpoints
+                for requirement_id in endpoint.requirement_ids
+            }
+            for requirement_id in explicit_requirement_ids:
+                if requirement_id in {item.id for item in requirement_nodes}:
+                    requirement = next(
+                        item for item in requirement_nodes if item.id == requirement_id
+                    )
+                    add_edge(
+                        requirement.id,
+                        api_id,
+                        "exposed_by",
+                        f"{group.name} explicitly associates an endpoint with {requirement.id}: {requirement.name}",
+                        1.0,
+                    )
             for matched, score in self._rank_requirements(api_text, requirement_nodes, limit=3):
                 add_edge(
                     matched.id,
@@ -424,6 +445,21 @@ class CausalGraphService:
                     f'{component.name} owns or coordinates the {group.name} API because {component.description}',
                     0.8,
                 )
+            explicit_services = {
+                endpoint.service for endpoint in group.endpoints if endpoint.service
+            }
+            for service_name in explicit_services:
+                component = next(
+                    (item for item in selected_components if item.name == service_name), None
+                )
+                if component:
+                    add_edge(
+                        component.id,
+                        api_id,
+                        "exposed_by",
+                        f"{component.name} is the explicitly selected owner for a {group.name} endpoint.",
+                        1.0,
+                    )
 
         database_nodes: list[CausalGraphNode] = []
         for index, entity in enumerate(database_design.entities, start=1):

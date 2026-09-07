@@ -17,8 +17,8 @@ const user = {
 function renderAuthenticatedApp(logoutStatus = 204) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
-    if (url.endsWith('/auth/me')) {
-      return new Response(JSON.stringify({ user }), {
+    if (url.endsWith('/auth/session')) {
+      return new Response(JSON.stringify({ authenticated: true, user }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })

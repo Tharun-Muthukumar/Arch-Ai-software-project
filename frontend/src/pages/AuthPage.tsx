@@ -1,7 +1,7 @@
 import { Eye, EyeOff, LoaderCircle, LogIn, UserPlus } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../context/auth'
 import { signUp } from '../lib/api'
 import { getErrorMessage } from '../lib/utils'
 

@@ -1,4 +1,4 @@
-import { Copy, Download } from 'lucide-react'
+import { AlertTriangle, Copy, Download, LoaderCircle, RefreshCw } from 'lucide-react'
 import mermaid from 'mermaid'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { downloadBlob } from '../../lib/utils'
@@ -13,10 +13,12 @@ let diagramCounter = 0
 export function MermaidDiagram({ artifact }: MermaidDiagramProps) {
   const [svg, setSvg] = useState('')
   const [error, setError] = useState('')
+  const [renderVersion, setRenderVersion] = useState(0)
   const [showSource, setShowSource] = useState<'hidden' | 'mermaid' | 'plantuml'>('hidden')
-  const diagramId = useRef(`diagram-${++diagramCounter}`)
+  const activeRender = useRef(0)
 
   const renderDiagram = useCallback(async () => {
+    const renderAttempt = ++activeRender.current
     try {
       mermaid.initialize({
         startOnLoad: false,
@@ -40,20 +42,27 @@ export function MermaidDiagram({ artifact }: MermaidDiagramProps) {
         htmlLabels: true,
       })
 
-      const id = diagramId.current
+      // React StrictMode intentionally re-runs effects in development. A fresh
+      // Mermaid ID prevents overlapping attempts from sharing temporary DOM.
+      const id = `diagram-${++diagramCounter}`
       const { svg: renderedSvg } = await mermaid.render(id, artifact.mermaid)
+      if (renderAttempt !== activeRender.current) return
       setSvg(renderedSvg)
       setError('')
     } catch (err) {
+      if (renderAttempt !== activeRender.current) return
       console.error('Mermaid render error:', err)
       setError(`Mermaid error: ${err instanceof Error ? err.message : 'unknown'}`)
     }
-  }, [artifact.mermaid])
+  }, [artifact.mermaid, renderVersion])
 
   useEffect(() => {
     setSvg('')
     setError('')
     void renderDiagram()
+    return () => {
+      activeRender.current += 1
+    }
   }, [renderDiagram])
 
   async function copySource(source: string) {
@@ -120,13 +129,25 @@ export function MermaidDiagram({ artifact }: MermaidDiagramProps) {
         </div>
       </div>
 
-      <div className="mt-4 rounded-lg border p-4" style={{ borderColor: 'var(--card-border)', background: 'var(--surface-strong)' }}>
+      <div className="diagram-viewport mt-4">
         {error ? (
-          <p className="text-sm" style={{ color: 'var(--danger)' }}>{error}</p>
+          <div className="diagram-state" role="alert">
+            <AlertTriangle className="h-5 w-5" style={{ color: 'var(--danger)' }} />
+            <div>
+              <strong>Diagram could not be rendered</strong>
+              <p>{error}</p>
+            </div>
+            <button type="button" className="button-secondary gap-2" onClick={() => setRenderVersion((current) => current + 1)}>
+              <RefreshCw className="h-4 w-4" /> Retry
+            </button>
+          </div>
         ) : !svg ? (
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Rendering diagram...</p>
+          <div className="diagram-state" role="status">
+            <LoaderCircle className="h-5 w-5 animate-spin" style={{ color: 'var(--accent)' }} />
+            <div><strong>Rendering diagram</strong><p>Preparing the synchronized {artifact.title.toLowerCase()} view.</p></div>
+          </div>
         ) : (
-          <div className="overflow-auto">
+          <div className="diagram-scroll-region">
             <div className="diagram-canvas" dangerouslySetInnerHTML={{ __html: svg }} />
           </div>
         )}

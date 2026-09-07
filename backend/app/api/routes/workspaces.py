@@ -15,6 +15,9 @@ from app.schemas.domain import (
     ClarificationAnswerRequest,
     CounterfactualSimulationRequest,
     CounterfactualSimulationResult,
+    WorkspaceEditPreview,
+    WorkspaceEditRequest,
+    WorkspaceMutationResponse,
     WorkspaceCreateRequest,
     WorkspaceResponse,
 )
@@ -105,6 +108,96 @@ def get_causal_graph(
     if graph is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return graph
+
+
+@router.post(
+    "/{workspace_id}/edits/preview",
+    response_model=WorkspaceEditPreview,
+)
+def preview_workspace_edit(
+    workspace_id: str,
+    payload: WorkspaceEditRequest,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> WorkspaceEditPreview:
+    require_workspace_access(workspace_id, user, history_service, write=True)
+    try:
+        preview = orchestrator.preview_edit(workspace_id, payload)
+    except ValueError as exc:
+        status = 409 if "changed after you opened" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    if preview is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return preview
+
+
+@router.post(
+    "/{workspace_id}/edits",
+    response_model=WorkspaceMutationResponse,
+)
+def apply_workspace_edit(
+    workspace_id: str,
+    payload: WorkspaceEditRequest,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> WorkspaceMutationResponse:
+    require_workspace_access(workspace_id, user, history_service, write=True)
+    try:
+        result = orchestrator.apply_workspace_edit(workspace_id, payload)
+    except ValueError as exc:
+        status = 409 if "changed after you opened" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if user is not None:
+        history_service.record_exchange(
+            workspace_id,
+            f"Workspace edit: {payload.operation} {payload.target_type}",
+            result.message,
+        )
+    return result
+
+
+@router.post(
+    "/{workspace_id}/edits/undo",
+    response_model=WorkspaceMutationResponse,
+)
+def undo_workspace_edit(
+    workspace_id: str,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> WorkspaceMutationResponse:
+    require_workspace_access(workspace_id, user, history_service, write=True)
+    try:
+        result = orchestrator.undo_workspace_edit(workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return result
+
+
+@router.post(
+    "/{workspace_id}/edits/redo",
+    response_model=WorkspaceMutationResponse,
+)
+def redo_workspace_edit(
+    workspace_id: str,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> WorkspaceMutationResponse:
+    require_workspace_access(workspace_id, user, history_service, write=True)
+    try:
+        result = orchestrator.redo_workspace_edit(workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return result
 
 
 @router.get(

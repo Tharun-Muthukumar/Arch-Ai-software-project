@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -251,6 +251,10 @@ class ApiEndpoint(BaseModel):
     path: str
     purpose: str
     auth_required: bool | None
+    request_description: str = ""
+    response_description: str = ""
+    service: str | None = None
+    requirement_ids: list[str] = Field(default_factory=list)
     request_example: dict = Field(default_factory=dict)
     response_example: dict = Field(default_factory=dict)
 
@@ -271,6 +275,10 @@ class ApiDesign(BaseModel):
 
 class DeploymentPlan(BaseModel):
     deployment_model: str
+    replicas: int | None = Field(default=None, ge=1, le=1000)
+    regions: list[str] = Field(default_factory=list)
+    deployment_strategy: str | None = None
+    availability_configuration: str | None = None
     target_stack: list[str] = Field(default_factory=list)
     docker_services: list[str] = Field(default_factory=list)
     kubernetes_modules: list[str] = Field(default_factory=list)
@@ -289,6 +297,86 @@ class ImpactAssessment(BaseModel):
     directly_affected_node_ids: list[str] = Field(default_factory=list)
     indirectly_affected_node_ids: list[str] = Field(default_factory=list)
     affected_artifacts: list[str] = Field(default_factory=list)
+
+
+WorkspaceEditTarget = Literal[
+    "functional_requirement",
+    "non_functional_requirement",
+    "actor",
+    "constraint",
+    "assumption",
+    "integration",
+    "data_characteristic",
+    "domain_entity",
+    "architecture_component",
+    "api_endpoint",
+    "database_entity",
+    "deployment",
+    "diagram_layout",
+]
+WorkspaceEditOperation = Literal["add", "update", "delete", "reorder"]
+ImpactLevel = Literal["none", "minor", "moderate", "major", "visual"]
+
+
+class WorkspaceEditRequest(BaseModel):
+    target_type: WorkspaceEditTarget
+    operation: WorkspaceEditOperation
+    target_id: str | None = None
+    parent_id: str | None = None
+    value: str | dict[str, Any] | None = None
+    destination_index: int | None = Field(default=None, ge=0)
+    use_ai: bool = False
+    expected_updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_edit_shape(self):
+        if self.operation in {"update", "delete", "reorder"} and not self.target_id:
+            raise ValueError("target_id is required for this edit")
+        if self.operation in {"add", "update"} and self.value is None:
+            raise ValueError("value is required for this edit")
+        if self.operation == "reorder" and self.destination_index is None:
+            raise ValueError("destination_index is required when reordering")
+        if self.target_type == "diagram_layout" and self.operation == "delete":
+            raise ValueError("diagram layout entries are reset with an update")
+        return self
+
+
+class WorkspaceImpactItem(BaseModel):
+    area: str
+    level: ImpactLevel
+    summary: str
+
+
+class WorkspaceEditImpact(BaseModel):
+    items: list[WorkspaceImpactItem] = Field(default_factory=list)
+    directly_affected_node_ids: list[str] = Field(default_factory=list)
+    indirectly_affected_node_ids: list[str] = Field(default_factory=list)
+    affected_artifacts: list[str] = Field(default_factory=list)
+    requires_confirmation: bool = False
+
+
+class SemanticEditSuggestion(BaseModel):
+    suggested_text: str
+    rationale: str
+    inferred_characteristics: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    clarification_questions: list[str] = Field(default_factory=list)
+    source: Literal["ollama", "deterministic-fallback"]
+
+
+class WorkspaceEditPreview(BaseModel):
+    edit: WorkspaceEditRequest
+    normalized_value: str | dict[str, Any] | None = None
+    impact: WorkspaceEditImpact
+    suggestion: SemanticEditSuggestion | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ConsistencyIssue(BaseModel):
+    code: str
+    severity: Literal["info", "warning", "error"]
+    message: str
+    related_ids: list[str] = Field(default_factory=list)
 
 
 class CriteriaWeights(BaseModel):
@@ -650,5 +738,16 @@ class WorkspaceResponse(BaseModel):
     adr: ArchitectureDecisionRecord | None = None
     adrs: list[ArchitectureDecisionRecord] = Field(default_factory=list)
     causal_graph: CausalGraph | None = None
+    diagram_layouts: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    consistency_issues: list[ConsistencyIssue] = Field(default_factory=list)
+    can_undo: bool = False
+    can_redo: bool = False
     created_at: datetime
     updated_at: datetime
+
+
+class WorkspaceMutationResponse(BaseModel):
+    workspace: WorkspaceResponse
+    impact: WorkspaceEditImpact
+    consistency_issues: list[ConsistencyIssue] = Field(default_factory=list)
+    message: str

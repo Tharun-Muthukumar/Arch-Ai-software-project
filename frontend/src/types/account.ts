@@ -18,6 +18,11 @@ export interface AuthResponse {
   user: UserAccount
 }
 
+export interface AuthSessionResponse {
+  authenticated: boolean
+  user: UserAccount | null
+}
+
 export interface SignUpPayload {
   username: string
   email: string

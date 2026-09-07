@@ -82,6 +82,11 @@ class AuthResponse(BaseModel):
     user: UserPublic
 
 
+class AuthSessionResponse(BaseModel):
+    authenticated: bool
+    user: UserPublic | None = None
+
+
 class ConversationMessageResponse(BaseModel):
     id: str
     role: Literal["user", "assistant"]

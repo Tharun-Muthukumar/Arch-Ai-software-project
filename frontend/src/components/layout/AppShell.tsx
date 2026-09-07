@@ -1,65 +1,122 @@
 import {
   BarChart3,
+  BookOpenText,
+  Boxes,
+  ChevronDown,
+  ChevronLeft,
+  CircleUserRound,
   ClipboardList,
-  FileText,
-  Home,
-  Image,
-  LayoutDashboard,
-  Network,
-  Settings,
-  Users,
-  Building2,
+  CloudCog,
   DollarSign,
-  Zap,
   GitBranch,
   History,
+  LayoutDashboard,
   LogOut,
-  CircleUserRound,
+  Menu,
+  Network,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Redo2,
+  Settings,
+  Sparkles,
+  Undo2,
+  Users,
+  X,
+  Zap,
 } from 'lucide-react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
-import { useAuth } from '../../context/AuthContext'
-import { getErrorMessage } from '../../lib/utils'
-import { cn } from '../../lib/utils'
+import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { useAuth } from '../../context/auth'
+import { useWorkspaceEditing } from '../../hooks/useWorkspaceEditing'
+import { useWorkspacesQuery } from '../../hooks/useWorkspaces'
+import { cn, formatUpdatedAt, getActiveWorkspace, getErrorMessage } from '../../lib/utils'
+import type { Workspace } from '../../types/api'
 
-const navItems = [
-  { to: '/', label: 'Overview', icon: Home },
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/wizard', label: 'Requirements', icon: ClipboardList },
-  { to: '/architecture', label: 'Architecture', icon: Network },
-  { to: '/causal-graph', label: 'Causal Graph', icon: GitBranch },
-  { to: '/comparison', label: 'Comparison', icon: BarChart3 },
-  { to: '/blast-radius', label: 'Blast Radius', icon: Zap },
-  { to: '/team-fit', label: 'Team Fit', icon: Users },
-  { to: '/industry-twins', label: 'Industry Twins', icon: Building2 },
-  { to: '/budget', label: 'Budget', icon: DollarSign },
-  { to: '/diagrams', label: 'Diagrams', icon: Image },
-  { to: '/docs', label: 'Report', icon: FileText },
-  { to: '/history', label: 'History', icon: History },
-  { to: '/settings', label: 'Settings', icon: Settings },
+const navGroups = [
+  {
+    label: 'Workspace',
+    items: [
+      { to: '/dashboard', label: 'Overview', icon: LayoutDashboard },
+      { to: '/wizard', label: 'Requirements', icon: ClipboardList },
+      { to: '/architecture', label: 'Architecture', icon: Network },
+      { to: '/interfaces', label: 'Interfaces & data', icon: Boxes },
+      { to: '/causal-graph', label: 'Causal graph', icon: GitBranch },
+      { to: '/diagrams', label: 'Diagrams', icon: BookOpenText },
+    ],
+  },
+  {
+    label: 'Evaluate',
+    items: [
+      { to: '/comparison', label: 'Comparison', icon: BarChart3 },
+      { to: '/blast-radius', label: 'Blast radius', icon: Zap },
+      { to: '/team-fit', label: 'Team fit', icon: Users },
+      { to: '/industry-twins', label: 'Industry twins', icon: CloudCog },
+      { to: '/budget', label: 'Budget', icon: DollarSign },
+    ],
+  },
+  {
+    label: 'Library',
+    items: [
+      { to: '/docs', label: 'Report', icon: BookOpenText },
+      { to: '/history', label: 'History', icon: History },
+      { to: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ]
 
-function NavigationLink({ item, compact = false }: { item: (typeof navItems)[number]; compact?: boolean }) {
+const allNavItems = navGroups.flatMap((group) => group.items)
+
+function Navigation({ compact, onNavigate }: { compact: boolean; onNavigate?: () => void }) {
   const location = useLocation()
-  const isActive = item.to === '/' ? location.pathname === '/' : location.pathname === item.to
-  const Icon = item.icon
-  return <NavLink key={item.to} to={item.to} end={item.to === '/'} role="tab" aria-selected={isActive} className={cn(
-    'flex items-center rounded-lg border-b-2 border-transparent transition',
-    compact ? 'gap-1.5 whitespace-nowrap px-3 py-1.5 text-xs' : 'gap-2.5 px-3 py-2 text-sm',
-    isActive
-      ? 'border-amber-400 bg-amber-500/15 font-bold text-amber-300 shadow-sm'
-      : 'font-medium text-slate-400 hover:bg-white/5 hover:text-slate-200',
-  )}>
-    <Icon className={compact ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
-    {item.label}
-  </NavLink>
+  const [searchParams] = useSearchParams()
+  const workspaceId = searchParams.get('workspace')
+
+  return (
+    <nav className="space-y-5" aria-label="Primary navigation">
+      {navGroups.map((group) => (
+        <div key={group.label}>
+          {!compact ? <div className="nav-group-label">{group.label}</div> : null}
+          <div className="space-y-1">
+            {group.items.map((item) => {
+              const Icon = item.icon
+              const active = location.pathname === item.to || (item.to === '/dashboard' && location.pathname === '/')
+              const to = workspaceId && !['/history', '/settings'].includes(item.to)
+                ? `${item.to}?workspace=${encodeURIComponent(workspaceId)}`
+                : item.to
+              return (
+                <NavLink
+                  key={item.to}
+                  to={to}
+                  title={compact ? item.label : undefined}
+                  aria-label={item.label}
+                  aria-current={active ? 'page' : undefined}
+                  className={cn('nav-link', active && 'is-active', compact && 'is-compact')}
+                  onClick={onNavigate}
+                >
+                  <Icon className="h-[18px] w-[18px] shrink-0" />
+                  {!compact ? <span>{item.label}</span> : null}
+                </NavLink>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </nav>
+  )
 }
 
 export function AppShell() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const [searchParams] = useSearchParams()
+  const workspaces = useWorkspacesQuery()
+  const workspace = getActiveWorkspace(workspaces.data, searchParams.get('workspace'))
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState<string | null>(null)
+  const pageTitle = allNavItems.find((item) => item.to === location.pathname)?.label ?? 'Overview'
 
   async function handleLogout() {
     if (isLoggingOut) return
@@ -75,67 +132,90 @@ export function AppShell() {
     }
   }
 
+  function selectWorkspace(workspaceId: string) {
+    const next = new URLSearchParams(searchParams)
+    next.set('workspace', workspaceId)
+    navigate(`${location.pathname}?${next.toString()}`)
+  }
+
   return (
-    <div className="flex min-h-screen">
-      <aside className="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r p-4 lg:flex" style={{ borderColor: 'var(--card-border)', background: 'var(--surface)' }}>
-        <div className="mb-6">
-          <h1 className="text-lg font-bold" style={{ color: 'var(--brand)' }}>ArchAI</h1>
+    <div className="app-frame">
+      <aside className={cn('desktop-sidebar', sidebarCollapsed && 'is-collapsed')}>
+        <div className="brand-lockup">
+          <div className="brand-mark"><Sparkles className="h-4 w-4" /></div>
+          {!sidebarCollapsed ? <div><strong>ArchAI</strong><span>Architecture studio</span></div> : null}
         </div>
-
-        <nav className="space-y-1" role="tablist" aria-label="ArchAI sections">
-          {navItems.map((item) => <NavigationLink key={item.to} item={item} />)}
-        </nav>
-
-        <div className="mt-auto border-t pt-4" style={{ borderColor: 'var(--card-border)' }}>
-          <NavLink to="/profile" className="flex min-w-0 items-center gap-2 rounded-md px-2 py-2 hover:bg-white/5">
-            <CircleUserRound className="h-5 w-5 shrink-0 text-amber-400" />
-            <div className="min-w-0"><p className="truncate text-sm font-medium">{user?.username}</p><p className="truncate text-xs text-muted">Profile</p></div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+          <Navigation compact={sidebarCollapsed} />
+        </div>
+        <div className="border-t p-3" style={{ borderColor: 'var(--card-border)' }}>
+          <NavLink to="/profile" className={cn('profile-link', sidebarCollapsed && 'justify-center')} title={sidebarCollapsed ? 'Profile' : undefined}>
+            <div className="avatar">{user?.username?.slice(0, 1).toUpperCase()}</div>
+            {!sidebarCollapsed ? <div className="min-w-0"><strong>{user?.username}</strong><span>Account profile</span></div> : null}
           </NavLink>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={() => setSidebarCollapsed((current) => !current)}
+            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            {!sidebarCollapsed ? <span>Collapse</span> : null}
+          </button>
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b px-4 py-3 sm:px-6" style={{ borderColor: 'var(--card-border)', background: 'var(--surface)' }}>
-          <div className="lg:hidden">
-            <h1 className="text-lg font-bold" style={{ color: 'var(--brand)' }}>ArchAI</h1>
+      {mobileOpen ? (
+        <div className="mobile-nav-backdrop" onMouseDown={() => setMobileOpen(false)}>
+          <aside className="mobile-nav" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b p-4" style={{ borderColor: 'var(--card-border)' }}>
+              <div className="brand-lockup p-0"><div className="brand-mark"><Sparkles className="h-4 w-4" /></div><div><strong>ArchAI</strong><span>Architecture studio</span></div></div>
+              <button type="button" className="icon-button" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X className="h-4 w-4" /></button>
+            </div>
+            <div className="overflow-y-auto p-3"><Navigation compact={false} onNavigate={() => setMobileOpen(false)} /></div>
+          </aside>
+        </div>
+      ) : null}
+
+      <div className="min-w-0 flex-1">
+        <header className="topbar">
+          <button type="button" className="icon-button lg:hidden" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu className="h-5 w-5" /></button>
+          <div className="min-w-0">
+            <div className="breadcrumb"><span>Design room</span><ChevronLeft className="h-3 w-3 rotate-180" /><strong>{pageTitle}</strong></div>
+            <h1 className="topbar-title">{workspace?.title ?? pageTitle}</h1>
           </div>
-          <div className="hidden lg:block">
-            <h2 className="text-base font-semibold">Design room</h2>
-          </div>
-          <div className="flex items-center gap-2">
-            <NavLink to="/profile" className="button-secondary gap-2 px-3 py-2">
-              <CircleUserRound className="h-4 w-4" />
-              <span className="hidden sm:inline">{user?.username}</span>
-            </NavLink>
-            <button
-              type="button"
-              className="button-secondary px-3 py-2"
-              onClick={() => void handleLogout()}
-              disabled={isLoggingOut}
-              title="Log out"
-              aria-label="Log out"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            {workspace ? <WorkspaceRevisionControls workspace={workspace} /> : null}
+            {workspace && workspaces.data && workspaces.data.length > 0 ? (
+              <label className="workspace-select hidden md:flex">
+                <span className="sr-only">Active workspace</span>
+                <select value={workspace.id} onChange={(event) => selectWorkspace(event.target.value)}>
+                  {workspaces.data.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                </select>
+                <ChevronDown className="h-3.5 w-3.5" />
+              </label>
+            ) : null}
+            <NavLink to="/profile" className="icon-button" title="Profile" aria-label="Open profile"><CircleUserRound className="h-4 w-4" /></NavLink>
+            <button type="button" className="icon-button" onClick={() => void handleLogout()} disabled={isLoggingOut} title="Log out" aria-label="Log out"><LogOut className="h-4 w-4" /></button>
           </div>
         </header>
 
-        {logoutError ? (
-          <div className="border-b border-red-800 bg-red-950/50 px-6 py-2 text-sm text-red-300" role="alert">
-            {logoutError}
-          </div>
-        ) : null}
-
-        <div className="flex lg:hidden">
-          <nav className="flex gap-1 overflow-x-auto px-4 py-2" role="tablist" aria-label="ArchAI sections">
-            {navItems.map((item) => <NavigationLink key={item.to} item={item} compact />)}
-          </nav>
-        </div>
-
-        <main className="flex-1 overflow-y-auto p-6">
-          <Outlet />
-        </main>
+        {logoutError ? <div className="error-strip" role="alert">{logoutError}</div> : null}
+        <main className="app-main"><Outlet /></main>
       </div>
+    </div>
+  )
+}
+
+function WorkspaceRevisionControls({ workspace }: { workspace: Workspace }) {
+  const editing = useWorkspaceEditing(workspace)
+  const busy = editing.undo.isPending || editing.redo.isPending
+  return (
+    <div className="revision-controls">
+      <span className="save-state hidden xl:inline"><span className="save-dot" />Saved {formatUpdatedAt(workspace.updated_at)}</span>
+      <button type="button" className="icon-button" title="Undo last workspace change" aria-label="Undo last workspace change" disabled={!workspace.can_undo || busy} onClick={() => editing.undo.mutate()}><Undo2 className="h-4 w-4" /></button>
+      <button type="button" className="icon-button" title="Redo workspace change" aria-label="Redo workspace change" disabled={!workspace.can_redo || busy} onClick={() => editing.redo.mutate()}><Redo2 className="h-4 w-4" /></button>
     </div>
   )
 }

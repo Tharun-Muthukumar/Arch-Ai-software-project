@@ -1,7 +1,9 @@
 import re
 from textwrap import wrap
+from typing import Callable, TypeVar
 
 from app.schemas.domain import (
+    ArchitectureComponent,
     ArchitectureOption,
     DatabaseDesign,
     DatabaseEntity,
@@ -11,6 +13,9 @@ from app.schemas.domain import (
     RecommendationResult,
     RequirementModel,
 )
+
+
+T = TypeVar("T")
 
 
 class DiagramGenerator:
@@ -28,7 +33,7 @@ class DiagramGenerator:
         return {
             "use_case": self._use_case(requirements),
             "activity": self._activity(requirements),
-            "sequence": self._sequence(requirements),
+            "sequence": self._sequence(requirements, recommended, database_design),
             "class": self._class_diagram(database_design),
             "er": self._er_diagram(database_design),
             "component": self._component(recommended),
@@ -36,6 +41,8 @@ class DiagramGenerator:
         }
 
     def _use_case(self, requirements: RequirementModel) -> DiagramArtifact:
+        return self._dynamic_use_case(requirements)
+
         if requirements.domain == "EV Charging Booking Platform":
             mermaid = "\n".join(
                 [
@@ -365,6 +372,8 @@ class DiagramGenerator:
         )
 
     def _activity(self, requirements: RequirementModel) -> DiagramArtifact:
+        return self._dynamic_activity(requirements)
+
         if requirements.domain == "EV Charging Booking Platform":
             mermaid = "\n".join(
                 [
@@ -494,7 +503,14 @@ class DiagramGenerator:
             plantuml=plantuml,
         )
 
-    def _sequence(self, requirements: RequirementModel) -> DiagramArtifact:
+    def _sequence(
+        self,
+        requirements: RequirementModel,
+        architecture: ArchitectureOption,
+        database_design: DatabaseDesign,
+    ) -> DiagramArtifact:
+        return self._dynamic_sequence(requirements, architecture, database_design)
+
         if requirements.domain == "EV Charging Booking Platform":
             mermaid = "\n".join(
                 [
@@ -671,6 +687,203 @@ class DiagramGenerator:
             plantuml=plantuml,
         )
 
+    def _dynamic_use_case(self, requirements: RequirementModel) -> DiagramArtifact:
+        functional = requirements.functional_requirements[:12]
+        if len(requirements.functional_requirements) > 12:
+            functional = [*functional[:11], requirements.functional_requirements[-1]]
+        actors = requirements.actors[:6]
+        mermaid_lines = [
+            "flowchart LR",
+            "    classDef actor fill:#102c31,stroke:#35b7c8,color:#f4f6f8;",
+            "    classDef usecase fill:#33230e,stroke:#f5a524,color:#f4f6f8;",
+            "    classDef source fill:#20262d,stroke:#66717c,color:#f4f6f8;",
+            '    Source["Confirmed project brief"]:::source',
+        ]
+        plantuml_lines = ["@startuml", "left to right direction"]
+        for index, actor in enumerate(actors, start=1):
+            label = self._diagram_text(actor.name)
+            mermaid_lines.append(f'    Actor{index}["{label}"]:::actor')
+            plantuml_lines.append(f'actor "{label}" as Actor{index}')
+
+        plantuml_lines.append(f'rectangle "{self._diagram_text(requirements.domain)}" {{')
+        if functional:
+            for index, requirement in enumerate(functional, start=1):
+                label = self._wrap_label(
+                    self._clean_use_case_label(requirement) or requirement,
+                    24,
+                    html=True,
+                )
+                mermaid_lines.append(f'    FR{index}(["FR-{index:03d}<br/>{self._diagram_text(label)}"]):::usecase')
+                plantuml_lines.append(
+                    f'  usecase "FR-{index:03d}\\n{self._diagram_text(self._wrap_label(requirement, 28))}" as FR{index}'
+                )
+                actor_index = self._actor_for_requirement(requirements, requirement)
+                if actor_index is None:
+                    mermaid_lines.append(f"    Source --> FR{index}")
+                else:
+                    mermaid_lines.append(f"    Actor{actor_index + 1} --> FR{index}")
+                    plantuml_lines.append(f"Actor{actor_index + 1} --> FR{index}")
+        else:
+            mermaid_lines.append('    Missing["Functional behavior is not confirmed"]:::usecase')
+            mermaid_lines.append("    Source --> Missing")
+            plantuml_lines.append('  usecase "Functional behavior is not confirmed" as Missing')
+        plantuml_lines.extend(["}", "@enduml"])
+        return DiagramArtifact(
+            title="Use Case Diagram",
+            description=(
+                f"Maps confirmed actors to the current {requirements.domain} requirements. "
+                "Unassigned requirements remain connected to the original brief rather than to an invented actor."
+            ),
+            mermaid="\n".join(mermaid_lines),
+            plantuml="\n".join(plantuml_lines),
+        )
+
+    def _dynamic_activity(self, requirements: RequirementModel) -> DiagramArtifact:
+        workflows = requirements.domain_workflows[:6]
+        if workflows:
+            activities = [
+                (workflow.primary_actor, workflow.description) for workflow in workflows
+            ]
+        else:
+            activities = [("Actor not yet identified", item) for item in requirements.functional_requirements[:6]]
+
+        mermaid_lines = ["flowchart TB", '    Model["Confirmed requirement model"]']
+        plantuml_lines = ["@startuml", "start", ":Use confirmed requirement model;"]
+        if not activities:
+            mermaid_lines.extend(
+                [
+                    '    Missing["Workflow details are unknown"]',
+                    "    Model --> Missing",
+                ]
+            )
+            plantuml_lines.append(":Workflow details are unknown;")
+        for index, (actor, activity) in enumerate(activities, start=1):
+            actor_label = self._diagram_text(actor)
+            activity_label = self._diagram_text(self._wrap_label(activity, 34, html=True))
+            mermaid_lines.extend(
+                [
+                    f'    Actor{index}["{actor_label}"]',
+                    f'    Activity{index}["{activity_label}"]',
+                    f"    Model --> Actor{index} --> Activity{index}",
+                ]
+            )
+            plantuml_lines.append(
+                f':{actor_label}: {self._diagram_text(self._wrap_label(activity, 42))};'
+            )
+        plantuml_lines.extend(["stop", "@enduml"])
+        return DiagramArtifact(
+            title="Activity Diagram",
+            description=(
+                "Shows each confirmed domain workflow independently. The diagram does not infer "
+                "an execution order where the requirements do not provide one."
+            ),
+            mermaid="\n".join(mermaid_lines),
+            plantuml="\n".join(plantuml_lines),
+        )
+
+    def _dynamic_sequence(
+        self,
+        requirements: RequirementModel,
+        architecture: ArchitectureOption,
+        database_design: DatabaseDesign,
+    ) -> DiagramArtifact:
+        workflow = requirements.domain_workflows[0] if requirements.domain_workflows else None
+        requirement = (
+            workflow.description
+            if workflow
+            else requirements.functional_requirements[0]
+            if requirements.functional_requirements
+            else "Workflow details require clarification"
+        )
+        actor = (
+            workflow.primary_actor
+            if workflow
+            else requirements.actors[0].name
+            if requirements.actors
+            else "Actor not yet identified"
+        )
+        component = self._best_text_match(
+            requirement,
+            architecture.components,
+            lambda item: " ".join(
+                [item.name, item.responsibility, *item.interactions]
+            ),
+        )
+        entity = self._best_text_match(
+            requirement,
+            database_design.entities,
+            lambda item: " ".join(
+                [item.name, item.description, *[field.name for field in item.fields]]
+            ),
+        )
+        actor_text = self._diagram_text(actor)
+        system_text = self._diagram_text(component.name if component else architecture.name)
+        request_text = self._diagram_text(requirement)
+
+        mermaid_lines = [
+            "sequenceDiagram",
+            f"    actor UserParticipant as {actor_text}",
+            "    participant Interface as System interface",
+            f"    participant System as {system_text}",
+        ]
+        plantuml_lines = [
+            "@startuml",
+            f'actor "{actor_text}" as Actor',
+            'boundary "System interface" as Interface',
+            f'participant "{system_text}" as System',
+        ]
+        if entity:
+            entity_text = self._diagram_text(entity.name)
+            mermaid_lines.append(f"    participant Data as {entity_text}")
+            plantuml_lines.append(f'database "{entity_text}" as Data')
+        mermaid_lines.extend(
+            [
+                f"    UserParticipant->>Interface: {request_text}",
+                "    Interface->>System: Submit validated workflow request",
+            ]
+        )
+        plantuml_lines.extend(
+            [
+                f"Actor -> Interface : {request_text}",
+                "Interface -> System : Submit validated workflow request",
+            ]
+        )
+        if entity:
+            mermaid_lines.extend(
+                [
+                    f"    System->>Data: Read or update {entity_text} as required",
+                    "    Data-->>System: Persisted workflow state",
+                ]
+            )
+            plantuml_lines.extend(
+                [
+                    f"System -> Data : Read or update {entity_text} as required",
+                    "Data --> System : Persisted workflow state",
+                ]
+            )
+        mermaid_lines.extend(
+            [
+                "    System-->>Interface: Workflow result or validation error",
+                "    Interface-->>UserParticipant: Present confirmed result",
+            ]
+        )
+        plantuml_lines.extend(
+            [
+                "System --> Interface : Workflow result or validation error",
+                "Interface --> Actor : Present confirmed result",
+                "@enduml",
+            ]
+        )
+        return DiagramArtifact(
+            title="Sequence Diagram",
+            description=(
+                f"Traces one confirmed {requirements.domain} workflow through the closest matching "
+                "architecture component and data entity. Unconfirmed integrations are not added."
+            ),
+            mermaid="\n".join(mermaid_lines),
+            plantuml="\n".join(plantuml_lines),
+        )
+
     def _class_diagram(self, database_design: DatabaseDesign) -> DiagramArtifact:
         selected_entities = self._diagram_entities(database_design)
         selected_names = {entity.name for entity in selected_entities}
@@ -776,7 +989,10 @@ class DiagramGenerator:
             tier = self._component_tier(component.name)
             grouped_components[tier].append(component)
 
-        mermaid_lines = ["flowchart LR"]
+        mermaid_lines = [
+            "flowchart LR",
+            f'    Architecture["{self._diagram_text(architecture.name)}"]',
+        ]
         for group_name, components in grouped_components.items():
             if not components:
                 continue
@@ -791,9 +1007,15 @@ class DiagramGenerator:
                 mermaid_lines.append(f'        {component_id}["{label}"]')
             mermaid_lines.append("    end")
 
-        for left, right in zip(architecture.components, architecture.components[1:]):
+        for component in architecture.components:
             mermaid_lines.append(
-                f"    {self._component_id(left.name)} --> {self._component_id(right.name)}"
+                f'    Architecture -. "contains" .-> {self._component_id(component.name)}'
+            )
+
+        connections = self._component_connections(architecture)
+        for left, right, reason in connections:
+            mermaid_lines.append(
+                f'    {self._component_id(left.name)} -->|"{self._diagram_text(reason)}"| {self._component_id(right.name)}'
             )
 
         plantuml_lines = ["@startuml", "skinparam componentStyle rectangle"]
@@ -806,9 +1028,9 @@ class DiagramGenerator:
                     f'component "{component.name}\\n{", ".join(component.technologies[:2])}" as {self._component_id(component.name)}'
                 )
             plantuml_lines.append("}")
-        for left, right in zip(architecture.components, architecture.components[1:]):
+        for left, right, reason in connections:
             plantuml_lines.append(
-                f"{self._component_id(left.name)} --> {self._component_id(right.name)}"
+                f"{self._component_id(left.name)} --> {self._component_id(right.name)} : {self._diagram_text(reason)}"
             )
         plantuml_lines.append("@enduml")
 
@@ -820,6 +1042,8 @@ class DiagramGenerator:
         )
 
     def _deployment(self, deployment_plan: DeploymentPlan) -> DiagramArtifact:
+        return self._dynamic_deployment(deployment_plan)
+
         mermaid = "\n".join(
             [
                 "flowchart TB",
@@ -873,6 +1097,139 @@ class DiagramGenerator:
             mermaid=mermaid,
             plantuml=plantuml,
         )
+
+    def _dynamic_deployment(self, plan: DeploymentPlan) -> DiagramArtifact:
+        runtime_items = self._unique(
+            [*plan.docker_services, *plan.kubernetes_modules]
+        )[:10]
+        platform_items = self._unique(plan.target_stack)[:6]
+        mermaid_lines = [
+            "flowchart TB",
+            f'    Plan["{self._diagram_text(plan.deployment_model)}"]',
+        ]
+        plantuml_lines = [
+            "@startuml",
+            f'node "{self._diagram_text(plan.deployment_model)}" as Plan {{',
+        ]
+        for index, item in enumerate(runtime_items, start=1):
+            label = self._diagram_text(self._wrap_label(item, 28, html=True))
+            mermaid_lines.append(f'    Runtime{index}["{label}"]')
+            mermaid_lines.append(f"    Plan --> Runtime{index}")
+            plantuml_lines.append(
+                f'  component "{self._diagram_text(item)}" as Runtime{index}'
+            )
+        plantuml_lines.append("}")
+        for index, item in enumerate(platform_items, start=1):
+            label = self._diagram_text(self._wrap_label(item, 24, html=True))
+            mermaid_lines.append(f'    Platform{index}["{label}"]')
+            mermaid_lines.append(f"    Platform{index} --> Plan")
+            plantuml_lines.append(
+                f'node "{self._diagram_text(item)}" as Platform{index}'
+            )
+            plantuml_lines.append(f"Platform{index} --> Plan")
+        if plan.regions:
+            region_text = self._diagram_text(", ".join(plan.regions))
+            mermaid_lines.append(f'    Regions["Regions: {region_text}"] --> Plan')
+            plantuml_lines.append(f'cloud "Regions: {region_text}" as Regions')
+            plantuml_lines.append("Regions --> Plan")
+        if plan.replicas is not None:
+            mermaid_lines.append(f'    Replicas["Replicas: {plan.replicas}"] --> Plan')
+            plantuml_lines.append(f'note right of Plan : Replicas: {plan.replicas}')
+        plantuml_lines.append("@enduml")
+        return DiagramArtifact(
+            title="Deployment Diagram",
+            description=(
+                "Shows only the current deployment model, selected runtime modules, target stack, "
+                "and user-confirmed region or replica settings."
+            ),
+            mermaid="\n".join(mermaid_lines),
+            plantuml="\n".join(plantuml_lines),
+        )
+
+    def _component_connections(
+        self, architecture: ArchitectureOption
+    ) -> list[tuple[ArchitectureComponent, ArchitectureComponent, str]]:
+        connections: list[tuple[ArchitectureComponent, ArchitectureComponent, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for component in architecture.components:
+            for interaction in component.interactions:
+                target = next(
+                    (
+                        candidate
+                        for candidate in architecture.components
+                        if candidate.name != component.name
+                        and candidate.name.casefold() in interaction.casefold()
+                    ),
+                    None,
+                )
+                if target is None:
+                    continue
+                key = (component.name.casefold(), target.name.casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                connections.append((component, target, interaction))
+        return connections
+
+    def _actor_for_requirement(
+        self, requirements: RequirementModel, requirement: str
+    ) -> int | None:
+        for workflow in requirements.domain_workflows:
+            if self._text_overlap(workflow.description, requirement) >= 0.65:
+                for index, actor in enumerate(requirements.actors):
+                    if actor.name.casefold() == workflow.primary_actor.casefold():
+                        return index
+        requirement_tokens = self._tokens(requirement)
+        best_index = None
+        best_score = 0.0
+        for index, actor in enumerate(requirements.actors):
+            actor_tokens = self._tokens(f"{actor.name} {actor.description}")
+            score = len(requirement_tokens & actor_tokens) / max(len(requirement_tokens), 1)
+            if actor.name.casefold() in requirement.casefold():
+                score = max(score, 1.0)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        return best_index if best_score >= 0.2 else None
+
+    def _best_text_match(
+        self, text: str, items: list[T], key: Callable[[T], str]
+    ) -> T | None:
+        text_tokens = self._tokens(text)
+        best = None
+        best_score = 0.0
+        for item in items:
+            item_tokens = self._tokens(key(item))
+            score = len(text_tokens & item_tokens) / max(len(text_tokens), 1)
+            if score > best_score:
+                best = item
+                best_score = score
+        return best if best_score > 0 else None
+
+    def _text_overlap(self, left: str, right: str) -> float:
+        left_tokens = self._tokens(left)
+        right_tokens = self._tokens(right)
+        return len(left_tokens & right_tokens) / max(min(len(left_tokens), len(right_tokens)), 1)
+
+    def _tokens(self, value: str) -> set[str]:
+        stop = {"and", "are", "can", "for", "from", "must", "should", "system", "the", "their", "this", "with"}
+        return {
+            token for token in re.findall(r"[a-z][a-z0-9_-]+", value.casefold())
+            if token not in stop and len(token) > 2
+        }
+
+    def _diagram_text(self, value: str) -> str:
+        return " ".join(value.replace('"', "'").replace(";", ",").split())
+
+    def _unique(self, values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in values:
+            key = value.casefold()
+            if key not in seen:
+                seen.add(key)
+                result.append(value)
+        return result
 
     def _clean_use_case_label(self, requirement: str) -> str:
         cleaned = requirement.strip().rstrip(".")

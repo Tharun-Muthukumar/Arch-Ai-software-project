@@ -41,6 +41,22 @@ def build_structured_prompt(stage: str, payload: dict) -> str:
             f"Raw input JSON:\n{json.dumps(payload, indent=2)}"
         )
 
+    if stage == "workspace-semantic-edit":
+        return (
+            "You are ArchAI's careful requirements editor. Interpret the user's raw edit in "
+            "the supplied project context and return only JSON matching the enforced schema.\n"
+            "Rules:\n"
+            "- Preserve every explicit actor, action, object, qualifier, and negation.\n"
+            "- Improve clarity and testability without changing the user's meaning.\n"
+            "- Do not invent features, users, integrations, technologies, vendors, numbers, "
+            "traffic, latency, availability, retention, regions, budgets, or team sizes.\n"
+            "- Inferred characteristics must be direct technical consequences of explicit wording.\n"
+            "- Put uncertain interpretations in assumptions and missing architecture-critical "
+            "information in clarification_questions. Questions must not imply an answer.\n"
+            "- Keep suggested_text under 60 words and each list item concise.\n"
+            f"Raw edit and context JSON:\n{json.dumps(payload, indent=2)}"
+        )
+
     stage_instruction = {
         "requirement-analysis": "Rewrite the summary in at most 35 words.",
         "architecture-generation": (
