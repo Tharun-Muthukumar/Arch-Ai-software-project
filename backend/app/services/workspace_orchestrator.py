@@ -264,7 +264,7 @@ class WorkspaceOrchestrator:
         if "comparison" in impact.impacted_modules or "architectures" in impact.impacted_modules:
             comparison = self.comparison_engine.compare(updated_requirements, architectures, workspace.answers_json)
         if "recommendation" in impact.impacted_modules or "architectures" in impact.impacted_modules:
-            recommendation = self.recommendation_engine.recommend(updated_requirements, architectures, comparison)
+            recommendation = self.recommendation_engine.recommend(updated_requirements, architectures, comparison, workspace.answers_json)
         if "database" in impact.impacted_modules:
             database_design = self.database_generator.generate(updated_requirements)
         if "api" in impact.impacted_modules:
@@ -321,6 +321,7 @@ class WorkspaceOrchestrator:
         workspace.causal_graph_json = graph.model_dump()
 
         response = self._workspace_response_from_parts(workspace)
+        response.consistency_issues = self.workspace_editor.consistency_issues(response)
         workspace.documentation_markdown = self.documentation_generator.build_markdown(response)
 
         return self._to_response(self.repository.save(workspace))
@@ -352,7 +353,7 @@ class WorkspaceOrchestrator:
             refine_with_ai=refine_architecture,
         )
         comparison = self.comparison_engine.compare(requirements, architectures, answers)
-        recommendation = self.recommendation_engine.recommend(requirements, architectures, comparison)
+        recommendation = self.recommendation_engine.recommend(requirements, architectures, comparison, answers)
         database_design = self.database_generator.generate(requirements)
         api_design = self.api_generator.generate(requirements, database_design)
         deployment_plan = self.deployment_generator.generate(requirements, recommendation, answers)
@@ -412,6 +413,9 @@ class WorkspaceOrchestrator:
             created_at=self._placeholder_datetime(),
             updated_at=self._placeholder_datetime(),
         )
+        # Consistency findings are computed before the markdown so the stored
+        # report includes the Consistency Review section.
+        response.consistency_issues = self.workspace_editor.consistency_issues(response)
         documentation_markdown = self.documentation_generator.build_markdown(response)
         return {
             "requirements": requirements,
@@ -486,7 +490,7 @@ class WorkspaceOrchestrator:
             )
         if "recommendation" in section_set:
             recommendation = self.recommendation_engine.recommend(
-                requirements, architectures, comparison
+                requirements, architectures, comparison, workspace.answers_json or {}
             )
         if "database" in section_set:
             database_design = self.database_generator.generate(requirements)
@@ -538,6 +542,7 @@ class WorkspaceOrchestrator:
         )
         workspace.causal_graph_json = graph.model_dump()
         response = self._workspace_response_from_parts(workspace)
+        response.consistency_issues = self.workspace_editor.consistency_issues(response)
         workspace.documentation_markdown = self.documentation_generator.build_markdown(response)
 
     def _check_edit_version(
@@ -720,6 +725,8 @@ class WorkspaceOrchestrator:
             answers["preferred_cloud"] = payload.preferred_cloud
         if payload.constraints:
             answers["constraints"] = "; ".join(payload.constraints)
+        if payload.team_size:
+            answers["team_size"] = str(payload.team_size)
         return answers
 
     def _placeholder_datetime(self):

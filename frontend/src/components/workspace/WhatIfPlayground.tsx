@@ -121,6 +121,12 @@ export function WhatIfPlayground({ comparison, onRankingChange }: WhatIfPlaygrou
     }
   }, [])
 
+  // Resync instantly when the workspace regenerates (edits, clarifications):
+  // the ranking must reflect the new scorecards, not the previous revision.
+  useEffect(() => {
+    setRankedScorecards(comparison.scorecards)
+  }, [comparison])
+
   const resetWeights = useCallback(() => {
     setWeights(DEFAULT_WEIGHTS)
     fetchReweighted(DEFAULT_WEIGHTS)

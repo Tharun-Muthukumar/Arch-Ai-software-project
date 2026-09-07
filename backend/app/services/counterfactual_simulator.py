@@ -420,9 +420,12 @@ class CounterfactualSimulator:
             conflicts.append("Scale pressure favors stronger isolation, but the smaller team reduces the fit of independently operated services.")
         if scale_pressure and constrained:
             conflicts.append("Scale pressure raises infrastructure needs while the tighter budget favors incremental changes and measured hotspots.")
-        micro = next((item for item in ranking if item.architecture_id == "event-driven-microservices"), None)
-        if micro and micro.team_fit_score is not None and micro.team_fit_score < 5:
-            conflicts.append("Microservices technical suitability is offset by insufficient team ownership capacity.")
+        distributed_ids = {"event-driven-microservices", "hybrid-event-serverless", "service-based"}
+        for distributed_id in distributed_ids:
+            micro = next((item for item in ranking if item.architecture_id == distributed_id), None)
+            if micro and micro.team_fit_score is not None and micro.team_fit_score < 5:
+                conflicts.append(f"{micro.architecture_name} technical suitability is offset by insufficient team ownership capacity.")
+                break
         return list(dict.fromkeys(conflicts))
 
     def _evolution_path(self, changes, architecture, still_suitable, conflicts) -> list[str]:
@@ -453,7 +456,7 @@ class CounterfactualSimulator:
             steps.append("Add threat modeling, access-control evidence, encryption boundaries, and auditable policy checks for the new constraint.")
         if conflicts:
             steps.append("Keep one primary deployable unit and extract only a measured high-load boundary after ownership capacity exists.")
-        elif scale_pressure and architecture.id == "modular-monolith" and not still_suitable:
+        elif scale_pressure and architecture.id in {"modular-monolith", "service-based", "hybrid-modular-serverless"} and not still_suitable:
             steps.append("Extract only the highest-load module if independent scaling remains necessary after the preceding changes.")
         if not steps:
             steps.append("No architecture evolution is justified by the recognized hypothetical changes.")

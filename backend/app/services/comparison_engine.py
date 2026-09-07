@@ -24,48 +24,93 @@ METRICS = [
     "operational_complexity",
 ]
 
+# Calibrated starting points: simple topologies lead on cost/simplicity,
+# distributed topologies lead on elasticity/isolation. Adjustments below
+# (not these bases) decide the winner from confirmed requirement signals.
 BASE_PROFILES = {
     "modular-monolith": {
-        "scalability": 7,
+        "scalability": 6,
         "performance": 8,
-        "maintainability": 8,
-        "security": 8,
+        "maintainability": 7,
+        "security": 7,
         "cost": 9,
-        "reliability": 8,
-        "availability": 7,
+        "reliability": 7,
+        "availability": 6,
         "deployment_complexity": 9,
         "learning_curve": 9,
         "development_time": 9,
-        "fault_isolation": 6,
+        "fault_isolation": 5,
         "operational_complexity": 9,
     },
-    "event-driven-microservices": {
-        "scalability": 9,
+    "service-based": {
+        "scalability": 7,
         "performance": 8,
         "maintainability": 7,
-        "security": 8,
+        "security": 7,
+        "cost": 7,
+        "reliability": 7,
+        "availability": 7,
+        "deployment_complexity": 7,
+        "learning_curve": 7,
+        "development_time": 7,
+        "fault_isolation": 7,
+        "operational_complexity": 7,
+    },
+    "event-driven-microservices": {
+        "scalability": 10,
+        "performance": 7,
+        "maintainability": 6,
+        "security": 7,
         "cost": 4,
         "reliability": 8,
         "availability": 9,
-        "deployment_complexity": 4,
+        "deployment_complexity": 3,
         "learning_curve": 4,
-        "development_time": 5,
-        "fault_isolation": 9,
-        "operational_complexity": 4,
+        "development_time": 4,
+        "fault_isolation": 10,
+        "operational_complexity": 3,
     },
     "serverless-platform": {
         "scalability": 8,
-        "performance": 7,
+        "performance": 6,
         "maintainability": 7,
-        "security": 8,
+        "security": 7,
         "cost": 7,
         "reliability": 8,
         "availability": 8,
         "deployment_complexity": 7,
         "learning_curve": 6,
-        "development_time": 7,
+        "development_time": 8,
+        "fault_isolation": 8,
+        "operational_complexity": 8,
+    },
+    "hybrid-modular-serverless": {
+        "scalability": 8,
+        "performance": 7,
+        "maintainability": 7,
+        "security": 7,
+        "cost": 8,
+        "reliability": 8,
+        "availability": 8,
+        "deployment_complexity": 7,
+        "learning_curve": 7,
+        "development_time": 8,
         "fault_isolation": 7,
         "operational_complexity": 7,
+    },
+    "hybrid-event-serverless": {
+        "scalability": 9,
+        "performance": 7,
+        "maintainability": 6,
+        "security": 7,
+        "cost": 6,
+        "reliability": 8,
+        "availability": 9,
+        "deployment_complexity": 5,
+        "learning_curve": 5,
+        "development_time": 6,
+        "fault_isolation": 9,
+        "operational_complexity": 5,
     },
 }
 
@@ -77,17 +122,18 @@ class ComparisonEngine:
         architectures: list[ArchitectureOption],
         answers: dict[str, str] | None = None,
     ) -> ComparisonResult:
-        weights = self._build_weights(requirements)
+        answers = answers or {}
+        weights = self._build_weights(requirements, answers)
         scorecards: list[ArchitectureScorecard] = []
 
         for architecture in architectures:
-            profile = BASE_PROFILES[architecture.id].copy()
-            profile = self._apply_adjustments(profile, architecture.id, requirements, answers or {})
+            profile = dict(BASE_PROFILES.get(architecture.id, BASE_PROFILES["service-based"]))
+            profile = self._apply_adjustments(profile, architecture.id, requirements, answers)
             metric_scores = [
                 MetricScore(
                     metric=metric,
                     score=profile[metric],
-                    explanation=self._explain(metric, profile[metric], architecture.name, requirements),
+                    explanation=self._explain(metric, profile[metric], architecture.name, requirements, answers),
                 )
                 for metric in METRICS
             ]
@@ -110,19 +156,31 @@ class ComparisonEngine:
             )
 
         scale_reasoning = (
-            f"The `{requirements.scale_profile}` profile adjusts scalability, reliability, and availability weights."
+            f"The `{requirements.scale_profile}` profile raises the weights for elasticity and resilience."
             if requirements.scale_profile != "unknown"
             else "Workload scale is unknown, so scale-sensitive weights remain neutral."
         )
+        team_size = self._parse_team_size(answers)
+        team_reasoning = (
+            f"A {team_size}-person team shifts weight toward operability and delivery speed."
+            if team_size
+            else "Team size was not specified, so team-sensitive weights remain neutral."
+        )
         reasoning = [
-            "Scores are rule-based and derived from confirmed requirements and the available operational context.",
+            "Scores are rule-based from confirmed requirements, constraints, data characteristics, and operational answers.",
             scale_reasoning,
-            "Cost and complexity metrics favor simpler deployment topologies when the brief does not justify distributed systems overhead.",
+            team_reasoning,
+            "Cost and complexity reward simpler topologies only when the brief does not justify distribution; scale, realtime, availability, region, and complexity signals reward isolation symmetrically.",
+            "Overall score is the mean of the 12 metric scores; weighted score is the weight-weighted sum (x10). "
+            "Scores are outputs of this deterministic decision model, not objective measurements of real systems.",
         ]
 
         return ComparisonResult(weights=weights, scorecards=scorecards, reasoning=reasoning)
 
-    def _build_weights(self, requirements: RequirementModel) -> dict[str, float]:
+    def _build_weights(
+        self, requirements: RequirementModel, answers: dict[str, str] | None = None
+    ) -> dict[str, float]:
+        answers = answers or {}
         weights = {
             "scalability": 0.12,
             "performance": 0.09,
@@ -144,11 +202,59 @@ class ComparisonEngine:
             weights["reliability"] += 0.02
             weights["cost"] -= 0.02
             weights["development_time"] -= 0.02
+        elif requirements.scale_profile == "growth-scale":
+            weights["scalability"] += 0.02
+            weights["maintainability"] += 0.01
+            weights["fault_isolation"] += 0.01
+            weights["cost"] -= 0.01
+            weights["development_time"] -= 0.01
         elif requirements.scale_profile == "startup-scale":
             weights["cost"] += 0.03
             weights["development_time"] += 0.03
             weights["deployment_complexity"] += 0.02
             weights["fault_isolation"] -= 0.02
+            weights["scalability"] -= 0.02
+
+        team_size = self._parse_team_size(answers)
+        if 0 < team_size <= 6:
+            weights["cost"] += 0.02
+            weights["development_time"] += 0.02
+            weights["deployment_complexity"] += 0.01
+            weights["learning_curve"] += 0.01
+            weights["scalability"] -= 0.02
+            weights["fault_isolation"] -= 0.02
+        elif team_size >= 13:
+            weights["scalability"] += 0.03
+            weights["fault_isolation"] += 0.02
+            weights["availability"] += 0.01
+            weights["cost"] -= 0.02
+            weights["development_time"] -= 0.01
+
+        budget = (answers.get("budget") or "").lower()
+        if budget == "low":
+            weights["cost"] += 0.03
+            weights["operational_complexity"] += 0.01
+            weights["scalability"] -= 0.01
+        elif budget == "high":
+            weights["scalability"] += 0.02
+            weights["availability"] += 0.01
+            weights["cost"] -= 0.02
+
+        text = " ".join(
+            requirements.functional_requirements
+            + requirements.non_functional_requirements
+            + requirements.constraints
+            + requirements.data_characteristics
+        ).lower()
+        if any(marker in text for marker in ("audit", "compliance", "pci", "hipaa", "gdpr", "soc2", "regulated")):
+            weights["security"] += 0.02
+            weights["reliability"] += 0.01
+            weights["development_time"] -= 0.01
+        if any(marker in text for marker in ("realtime", "real-time", "event processing", "stream", "telemetry", "sensor")):
+            weights["scalability"] += 0.02
+            weights["performance"] += 0.01
+            weights["fault_isolation"] += 0.01
+            weights["cost"] -= 0.01
 
         total = sum(weights.values())
         return {metric: round(value / total, 4) for metric, value in weights.items()}
@@ -166,72 +272,240 @@ class ComparisonEngine:
             + requirements.constraints
             + requirements.data_characteristics
         ).lower()
+        entity_count = len(requirements.domain_entities)
+        workflow_count = len(requirements.domain_workflows)
+        integration_count = len(requirements.integrations)
+        complex_domain = entity_count >= 6 or workflow_count >= 5
+        many_integrations = integration_count >= 3
+        realtime = any(marker in lower_requirements for marker in ("realtime", "real-time", "event processing", "stream", "telemetry", "sensor"))
+        variable_demand = any(marker in lower_requirements for marker in ("bursty", "spiky", "variable demand", "seasonal", "batch"))
+        compliance = any(marker in lower_requirements for marker in ("audit", "compliance", "pci", "hipaa", "gdpr", "soc2", "regulated"))
+        strict_avail = any(marker in lower_requirements for marker in ("99.99", "four nines", "strict availability"))
+        latency_match = re.search(r"(?:latency|response time)[^\d]{0,20}(\d+)\s*ms", lower_requirements)
+        low_latency = bool(latency_match and int(latency_match.group(1)) <= 100)
+        team_size = self._parse_team_size(answers)
+        budget = (answers.get("budget") or "").lower()
+        cloud = (answers.get("preferred_cloud") or "").lower()
+        regions = self._parse_int(answers.get("geographic_regions", "0") or "0")
+        high_scale = requirements.scale_profile == "high-scale"
+        growth_scale = requirements.scale_profile == "growth-scale"
+        startup_scale = requirements.scale_profile == "startup-scale"
 
-        if requirements.scale_profile == "high-scale":
-            if architecture_id == "event-driven-microservices":
+        is_monolith = architecture_id == "modular-monolith"
+        is_service = architecture_id == "service-based"
+        is_micro = architecture_id == "event-driven-microservices"
+        is_serverless = architecture_id == "serverless-platform"
+        is_hybrid_modular = architecture_id == "hybrid-modular-serverless"
+        is_hybrid_event = architecture_id == "hybrid-event-serverless"
+
+        # Scale pressure: reward independent scaling, penalise single deployables.
+        if high_scale:
+            if is_micro:
                 profile["scalability"] += 1
                 profile["availability"] += 1
-            if architecture_id == "modular-monolith":
+            if is_hybrid_event:
+                profile["scalability"] += 1
+                profile["availability"] += 1
+            if is_serverless:
+                profile["scalability"] += 1
+            if is_service:
+                profile["scalability"] += 1
+            if is_monolith:
                 profile["scalability"] -= 2
                 profile["availability"] -= 1
                 profile["fault_isolation"] -= 1
-            if architecture_id == "serverless-platform":
+                profile["maintainability"] -= 1
+            if is_hybrid_modular and not variable_demand:
+                profile["scalability"] -= 1
+        elif growth_scale:
+            if is_micro or is_hybrid_event:
                 profile["scalability"] += 1
-        if any(marker in lower_requirements for marker in ("realtime", "real-time", "event processing")):
-            if architecture_id == "event-driven-microservices":
+            if is_service or is_hybrid_modular:
+                profile["maintainability"] += 1
+            if is_monolith:
+                profile["scalability"] -= 1
+        elif startup_scale:
+            if is_micro:
+                profile["cost"] -= 1
+                profile["development_time"] -= 1
+            if is_hybrid_event:
+                profile["cost"] -= 1
+            if is_monolith or is_hybrid_modular:
+                profile["development_time"] += 1
+                profile["cost"] += 1
+
+        # Realtime / event-driven workloads.
+        if realtime:
+            if is_micro or is_hybrid_event:
                 profile["scalability"] += 1
                 profile["performance"] += 1
-            elif architecture_id == "modular-monolith":
-                profile["scalability"] -= 1
-            elif architecture_id == "serverless-platform":
+            if is_serverless:
                 profile["scalability"] += 1
-        if any(marker in lower_requirements for marker in ("99.99", "four nines", "strict availability")):
-            if architecture_id == "modular-monolith":
+            if is_service:
+                profile["performance"] += 1
+            if is_hybrid_modular:
+                profile["scalability"] += 1
+            if is_monolith:
+                profile["scalability"] -= 1
+                profile["performance"] -= 1
+
+        # Variable / bursty demand favours elastic edges.
+        if variable_demand:
+            if is_serverless or is_hybrid_modular:
+                profile["scalability"] += 1
+                profile["cost"] += 1
+            if is_hybrid_event:
+                profile["scalability"] += 1
+            if is_monolith:
+                profile["scalability"] -= 1
+                profile["cost"] -= 1
+
+        # Strict availability targets.
+        if strict_avail:
+            if is_monolith:
                 profile["availability"] -= 2
                 profile["fault_isolation"] -= 1
+                profile["reliability"] -= 1
             else:
                 profile["availability"] += 1
-        latency_match = re.search(r"(?:latency|response time)[^\d]{0,20}(\d+)\s*ms", lower_requirements)
-        if latency_match and int(latency_match.group(1)) <= 100:
-            if architecture_id == "modular-monolith":
+            if is_micro or is_hybrid_event:
+                profile["fault_isolation"] += 1
+
+        # Tight latency budgets favour fewer network hops.
+        if low_latency:
+            if is_monolith:
                 profile["performance"] += 1
-            else:
+            if is_service:
+                profile["performance"] += 1
+            if is_micro or is_hybrid_event:
                 profile["performance"] -= 1
-        if "audit" in lower_requirements or "compliance" in lower_requirements:
+            if is_serverless:
+                profile["performance"] -= 1
+
+        # Compliance-heavy briefs reward audit simplicity; distribution pays governance cost.
+        if compliance:
             profile["security"] += 1
-            if architecture_id == "serverless-platform":
+            if is_monolith or is_service or is_hybrid_modular:
+                profile["maintainability"] += 1
+            if is_micro or is_hybrid_event:
+                profile["operational_complexity"] -= 1
                 profile["learning_curve"] -= 1
-        if answers.get("preferred_cloud", "").lower() in {"aws", "azure", "gcp"}:
-            if architecture_id == "serverless-platform":
+            if is_serverless:
+                profile["learning_curve"] -= 1
+
+        # Cloud posture changes managed-service leverage.
+        if cloud in {"aws", "azure", "gcp"}:
+            if is_serverless or is_hybrid_event or is_hybrid_modular:
                 profile["deployment_complexity"] += 1
                 profile["cost"] += 1
-        if answers.get("budget", "").lower() in {"low", "constrained", "startup"}:
-            if architecture_id == "event-driven-microservices":
+            if is_micro:
+                profile["deployment_complexity"] += 1
+        elif cloud in {"on-premise", "on premise", "onprem", "self-hosted"}:
+            if is_serverless:
+                profile["deployment_complexity"] -= 2
+                profile["cost"] -= 1
+                profile["availability"] -= 1
+            if is_hybrid_modular or is_hybrid_event:
+                profile["deployment_complexity"] -= 1
+            if is_micro:
+                profile["deployment_complexity"] -= 1
+            if is_monolith or is_service:
+                profile["deployment_complexity"] += 1
+
+        # Budget posture.
+        if budget in {"low", "constrained", "startup"}:
+            if is_micro:
                 profile["cost"] -= 2
                 profile["development_time"] -= 1
-            if architecture_id == "modular-monolith":
+            if is_hybrid_event:
+                profile["cost"] -= 1
+            if is_monolith or is_hybrid_modular:
                 profile["cost"] += 1
-        regions = int(answers.get("geographic_regions", "0") or 0)
+            if high_scale and is_serverless:
+                # Usage-based spend stops being cheap under sustained high throughput.
+                profile["cost"] -= 1
+        elif budget == "high":
+            if is_micro or is_hybrid_event:
+                profile["development_time"] += 1
+
+        # Multi-region operation.
         if regions > 1:
-            if architecture_id == "modular-monolith":
+            if is_monolith:
                 profile["availability"] -= 1
                 profile["deployment_complexity"] -= 2
-            elif architecture_id == "event-driven-microservices":
+            elif is_service:
+                profile["availability"] += 1
+            elif is_micro or is_hybrid_event:
                 profile["availability"] += 1
             else:
                 profile["availability"] += 1
                 profile["deployment_complexity"] += 1
-        team_size = int(answers.get("team_size", "0") or 0)
+
+        # Team-size pressure (Conway-aware): small teams pay distributed overhead,
+        # large teams outgrow single-deployable ownership.
         if 0 < team_size <= 6:
-            if architecture_id == "event-driven-microservices":
+            if is_micro:
                 profile["operational_complexity"] -= 2
                 profile["deployment_complexity"] -= 1
                 profile["learning_curve"] -= 1
                 profile["development_time"] -= 1
-            elif architecture_id == "modular-monolith":
+            if is_hybrid_event:
+                profile["operational_complexity"] -= 1
+                profile["deployment_complexity"] -= 1
+                profile["learning_curve"] -= 1
+            if is_service:
+                profile["operational_complexity"] -= 1
+                profile["development_time"] -= 1
+            if is_monolith or is_hybrid_modular:
                 profile["operational_complexity"] += 1
                 profile["development_time"] += 1
+        elif 7 <= team_size <= 12:
+            if is_service or is_hybrid_modular:
+                profile["maintainability"] += 1
+                profile["development_time"] += 1
+            if is_micro or is_hybrid_event:
+                profile["development_time"] += 1
+            if is_monolith:
+                profile["maintainability"] -= 1
+        elif team_size >= 13:
+            if is_micro or is_hybrid_event:
+                profile["operational_complexity"] += 1
+                profile["development_time"] += 1
+                profile["learning_curve"] += 1
+            if is_service:
+                profile["maintainability"] += 1
+            if is_monolith:
+                profile["maintainability"] -= 1
+                profile["fault_isolation"] -= 1
+                profile["development_time"] -= 1
+
+        # Domain complexity and integration sprawl.
+        if complex_domain:
+            if is_monolith:
+                profile["maintainability"] -= 1
+                profile["fault_isolation"] -= 1
+            if is_service or is_micro:
+                profile["maintainability"] += 1
+            if is_hybrid_event or is_hybrid_modular:
+                profile["scalability"] += 1
+        if many_integrations:
+            if is_monolith:
+                profile["maintainability"] -= 1
+            if is_micro or is_service or is_hybrid_event:
+                profile["scalability"] += 1
+                profile["fault_isolation"] += 1
+
         return {metric: max(1, min(10, score)) for metric, score in profile.items()}
+
+    @staticmethod
+    def _parse_team_size(answers: dict[str, str]) -> int:
+        match = re.search(r"\d+", str((answers or {}).get("team_size", "") or ""))
+        return int(match.group()) if match else 0
+
+    @staticmethod
+    def _parse_int(value: str) -> int:
+        match = re.search(r"\d+", str(value or ""))
+        return int(match.group()) if match else 0
 
     def _explain(
         self,
@@ -239,16 +513,49 @@ class ComparisonEngine:
         score: int,
         architecture_name: str,
         requirements: RequirementModel,
+        answers: dict[str, str] | None = None,
     ) -> str:
-        if requirements.scale_profile == "high-scale":
-            scale_reason = "the confirmed high-scale brief rewards horizontal elasticity"
-        elif requirements.scale_profile == "unknown":
-            scale_reason = "unknown workload scale keeps the weighting neutral"
-        else:
-            scale_reason = "the confirmed scale profile rewards controlled complexity"
+        answers = answers or {}
+        drivers: list[str] = []
+        scale = requirements.scale_profile
+        if scale == "high-scale" and metric in {"scalability", "availability", "fault_isolation", "reliability"}:
+            drivers.append("the confirmed high-scale brief rewards horizontal elasticity and isolation")
+        elif scale == "startup-scale" and metric in {"cost", "development_time", "deployment_complexity", "learning_curve"}:
+            drivers.append("the startup-scale brief rewards low cost and fast delivery")
+        elif scale == "unknown" and metric in {"scalability", "availability"}:
+            drivers.append("unknown workload scale keeps elasticity expectations neutral")
+        team_size = self._parse_team_size(answers)
+        if team_size and metric in {"operational_complexity", "deployment_complexity", "learning_curve", "development_time"}:
+            if team_size <= 6:
+                drivers.append(f"a {team_size}-person team is sensitive to operational overhead")
+            elif team_size >= 13:
+                drivers.append(f"a {team_size}-person team can staff parallel ownership")
+            else:
+                drivers.append(f"a {team_size}-person team supports bounded service ownership")
+        text = " ".join(
+            requirements.functional_requirements
+            + requirements.non_functional_requirements
+            + requirements.constraints
+            + requirements.data_characteristics
+        ).lower()
+        if metric == "performance" and ("latency" in text or "response time" in text):
+            drivers.append("the brief states an explicit latency expectation")
+        if metric == "security" and any(marker in text for marker in ("audit", "compliance", "pci", "hipaa", "gdpr", "soc2")):
+            drivers.append("compliance and audit obligations shape the security posture")
+        if metric in {"scalability", "performance"} and any(marker in text for marker in ("realtime", "real-time", "stream", "telemetry", "sensor")):
+            drivers.append("realtime or event-driven demand shapes the elasticity assessment")
+        if metric == "availability" and ("99.99" in text or "four nines" in text):
+            drivers.append("a strict availability target tests redundancy and failover")
+        if not drivers:
+            if scale == "high-scale":
+                drivers.append("the confirmed high-scale brief rewards horizontal elasticity")
+            elif scale == "unknown":
+                drivers.append("unknown workload scale keeps the weighting neutral")
+            else:
+                drivers.append("the confirmed scale profile rewards controlled complexity")
         return (
             f"{architecture_name} scores {score}/10 for {metric.replace('_', ' ')} because "
-            f"{scale_reason} and this option balances that against delivery and operations trade-offs."
+            f"{' and '.join(drivers)}."
         )
 
     def _strengths(self, architecture_id: str) -> list[str]:
@@ -256,6 +563,10 @@ class ComparisonEngine:
             "modular-monolith": [
                 "Fastest path to a cohesive first production release.",
                 "Clear internal modularity without distributed system overhead.",
+            ],
+            "service-based": [
+                "Coarse services isolate volatile capabilities without microservices overhead.",
+                "Allows independent scaling of hotspots while keeping data governance simple.",
             ],
             "event-driven-microservices": [
                 "Strong isolation across bounded contexts and workloads.",
@@ -265,14 +576,29 @@ class ComparisonEngine:
                 "Elastic infrastructure with lower steady-state ops load.",
                 "Good balance between scale handling and platform team size.",
             ],
+            "hybrid-modular-serverless": [
+                "Keeps transactional core simple while scaling variable slices elastically.",
+                "Lets small teams adopt serverless selectively with tracked usage cost.",
+            ],
+            "hybrid-event-serverless": [
+                "Stable services plus elastic event consumers for variable reactions.",
+                "Preserves replay and independent consumer evolution with fewer services.",
+            ],
         }
-        return strength_map[architecture_id]
+        return strength_map.get(architecture_id, [
+            "Balanced trade-offs across delivery speed and operational control.",
+            "Clear component boundaries with governed contracts.",
+        ])
 
     def _risks(self, architecture_id: str) -> list[str]:
         risk_map = {
             "modular-monolith": [
                 "Requires team discipline to avoid tight coupling over time.",
                 "May need later decomposition if traffic or team size grows sharply.",
+            ],
+            "service-based": [
+                "Shared data governance can drift into coupling without contract discipline.",
+                "A handful of deployables still needs service-level observability.",
             ],
             "event-driven-microservices": [
                 "Operational load is high for early-stage teams.",
@@ -282,8 +608,19 @@ class ComparisonEngine:
                 "Vendor-specific tooling may influence long-term portability.",
                 "Workflow observability needs deliberate investment.",
             ],
+            "hybrid-modular-serverless": [
+                "Core-edge contracts need idempotency, retries, and shared tracing.",
+                "Two operational models can confuse ownership without clear runbooks.",
+            ],
+            "hybrid-event-serverless": [
+                "Event contracts and consumer idempotency span two compute models.",
+                "Retry storms and cold starts need explicit budgets and alerts.",
+            ],
         }
-        return risk_map[architecture_id]
+        return risk_map.get(architecture_id, [
+            "Contract governance becomes mandatory as ownership splits.",
+            "Observability must cover every independently scaled boundary.",
+        ])
 
 
 def recompute_with_weights(
@@ -331,4 +668,3 @@ def recompute_with_weights(
 
     scorecards.sort(key=lambda s: s.overall_score, reverse=True)
     return scorecards
-

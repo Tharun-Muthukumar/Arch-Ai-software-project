@@ -77,7 +77,11 @@ export function CausalGraphPage() {
     enabled: Boolean(workspace?.id),
     initialData: workspace?.causal_graph ?? undefined,
   })
-  const graph = graphQuery.data
+  // Prefer the workspace copy: every mutation (clarifications, edits, change
+  // requests) refreshes the workspaces cache, while this page's separate query
+  // key is only invalidated on some paths and would otherwise render a stale
+  // graph after the architecture changes.
+  const graph = workspace?.causal_graph ?? graphQuery.data
   const requestedArchitecture = searchParams.get('architecture')
   const requestedComponent = searchParams.get('component')
   const [architectureId, setArchitectureId] = useState('')

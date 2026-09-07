@@ -32,6 +32,12 @@ class ClarificationEngine:
                 "Authentication influences API design, authorization, and deployment hardening.",
                 ["Email/password", "SSO/SAML", "Social login", "Passwordless"],
             ),
+            "team_size": (
+                "team",
+                "How many engineers are available to build and operate the system?",
+                "Team size drives Conway's Law fit, ownership boundaries, and how much operational complexity the team can carry.",
+                [],
+            ),
             "preferred_cloud": (
                 "deployment",
                 "Do you have a preferred cloud provider or hosting model?",

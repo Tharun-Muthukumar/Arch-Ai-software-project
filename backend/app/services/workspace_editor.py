@@ -241,7 +241,197 @@ class WorkspaceEditService:
                         related_ids=[node_id],
                     )
                 )
+        issues.extend(self._cross_artifact_warnings(workspace))
         return issues
+
+    def _cross_artifact_warnings(self, workspace: WorkspaceResponse) -> list[ConsistencyIssue]:
+        """Cross-artifact validation from business context down to deployment.
+
+        Every check compares generated artifacts against the validated
+        requirements and reports warning-level (never blocking) findings, so
+        contradictions surface instead of silently shipping.
+        """
+        from app.services.domain_inference import (
+            auth_evidence,
+            has_global_markers,
+            payment_evidence_level,
+            singularize,
+            tokenize,
+        )
+
+        warnings: list[ConsistencyIssue] = []
+        requirements = workspace.requirements
+        req_text = " ".join(
+            requirements.functional_requirements
+            + requirements.non_functional_requirements
+            + requirements.constraints
+        )
+        lower_text = req_text.casefold()
+        entity_tokens: set[str] = set()
+        for entity in workspace.database_design.entities:
+            entity_tokens |= {token for token in tokenize(entity.name) if len(token) > 2}
+        group_tokens: set[str] = set()
+        for group in workspace.api_design.groups:
+            group_tokens |= {token for token in tokenize(group.name) if len(token) > 2}
+
+        # Major capabilities must exist as entities or API groups. Each
+        # keyword maps to tokens that acceptably cover it, so related
+        # concepts (production covering manufacturing) do not false-positive.
+        capability_coverage: tuple[tuple[str, set[str]], ...] = (
+            ("manufacturing", {"manufacturing", "production", "facility", "plant"}),
+            ("production", {"production", "manufacturing", "plant"}),
+            ("bottling", {"bottling", "bottler", "partner"}),
+            ("facility", {"facility", "plant", "warehouse", "site"}),
+            ("warehouse", {"warehouse", "storage", "inventory"}),
+            ("inventory", {"inventory", "stock", "warehouse"}),
+            ("shipment", {"shipment", "delivery", "distribution", "logistics"}),
+            ("forecast", {"forecast", "planning", "demand"}),
+            ("distributor", {"distributor", "partner", "dealer"}),
+            ("retailer", {"retailer", "store", "customer"}),
+        )
+        model_tokens = entity_tokens | group_tokens
+        req_token_set = {
+            singularize(token) for token in tokenize(req_text) if len(token) > 2
+        }
+        uncovered = [
+            keyword
+            for keyword, acceptable in capability_coverage
+            if singularize(keyword) in req_token_set and not (acceptable & model_tokens)
+        ]
+        if uncovered:
+            warnings.append(
+                ConsistencyIssue(
+                    code="capability-without-model",
+                    severity="warning",
+                    message=(
+                        "Capabilities mentioned in requirements have no matching "
+                        f"domain entity or API group: {', '.join(uncovered)}. "
+                        "Confirm whether the model is incomplete."
+                    ),
+                )
+            )
+
+        # Global operation requires a multi-region deployment plan.
+        if has_global_markers(*requirements.constraints, *requirements.non_functional_requirements):
+            if len(workspace.deployment_plan.regions) < 2:
+                warnings.append(
+                    ConsistencyIssue(
+                        code="single-region-for-global",
+                        severity="warning",
+                        message=(
+                            "Global or multi-region operation is required but the "
+                            "deployment plan names fewer than two regions."
+                        ),
+                    )
+                )
+
+        # Stated identity controls must not leave anonymous surfaces.
+        if auth_evidence(req_text):
+            public_markers = ("login", "refresh", "signup", "token", "health", "public")
+            exposed = [
+                f"{endpoint.method.upper()} {endpoint.path}"
+                for group in workspace.api_design.groups
+                for endpoint in group.endpoints
+                if endpoint.auth_required is not True
+                and not any(marker in endpoint.path.lower() for marker in public_markers)
+            ]
+            if exposed:
+                warnings.append(
+                    ConsistencyIssue(
+                        code="anonymous-auth-surface",
+                        severity="warning",
+                        message=(
+                            "Identity controls are required but these endpoints allow "
+                            f"anonymous access: {', '.join(exposed[:4])}."
+                            + ("…" if len(exposed) > 4 else "")
+                        ),
+                    )
+                )
+
+        # Payment surfaces require payment evidence in the requirements.
+        payment_surface = (
+            any("payment" in token for token in entity_tokens | group_tokens)
+            or any(
+                "pay" in endpoint.path.lower() or "checkout" in endpoint.path.lower()
+                for group in workspace.api_design.groups
+                for endpoint in group.endpoints
+            )
+        )
+        if payment_surface and payment_evidence_level(req_text) == 0:
+            warnings.append(
+                ConsistencyIssue(
+                    code="unjustified-payment-surface",
+                    severity="warning",
+                    message=(
+                        "Payment tables or endpoints exist without payment "
+                        "evidence in the requirements; confirm they belong to "
+                        "this domain."
+                    ),
+                )
+            )
+
+        # Every domain entity should resolve to an API capability, where
+        # capability means a matching group, endpoint path, or endpoint purpose.
+        exempt_groups = {"authentication", "users"}
+        api_tokens: set[str] = set()
+        for group in workspace.api_design.groups:
+            if group.name.casefold() in exempt_groups:
+                continue
+            api_tokens |= {token for token in tokenize(group.name) if len(token) > 3}
+            for endpoint in group.endpoints:
+                api_tokens |= {token for token in tokenize(endpoint.path) if len(token) > 3}
+                api_tokens |= {token for token in tokenize(endpoint.purpose) if len(token) > 3}
+        for entity in workspace.database_design.entities:
+            name_tokens = {token for token in tokenize(entity.name) if len(token) > 3}
+            if not name_tokens:
+                continue
+            covered = bool(name_tokens & api_tokens)
+            if not covered and entity.name not in {"users", "audit_logs"}:
+                warnings.append(
+                    ConsistencyIssue(
+                        code="entity-without-api",
+                        severity="warning",
+                        message=(
+                            f"Domain entity '{entity.name}' has no matching API "
+                            "group; confirm it is reachable through the contract."
+                        ),
+                    )
+                )
+
+        # Every domain entity should declare an owning bounded context.
+        for entity in workspace.database_design.entities:
+            if not entity.bounded_context:
+                warnings.append(
+                    ConsistencyIssue(
+                        code="entity-without-context",
+                        severity="warning",
+                        message=(
+                            f"Domain entity '{entity.name}' has no owning "
+                            "bounded context; assign one to keep ownership clear."
+                        ),
+                    )
+                )
+
+        # Event-driven claims require event evidence in the requirements.
+        recommended_id = workspace.recommendation.recommended_architecture_id
+        if any(
+            marker in recommended_id
+            for marker in ("event", "microservice")
+        ) and not any(
+            marker in lower_text
+            for marker in ("real-time", "realtime", "stream", "telemetry", "event", "sensor", "async")
+        ):
+            warnings.append(
+                ConsistencyIssue(
+                    code="event-claim-without-events",
+                    severity="warning",
+                    message=(
+                        "The recommended architecture is event-driven but no "
+                        "event-driven workload is stated in the requirements."
+                    ),
+                )
+            )
+        return warnings
 
     def _semantic_suggestion(
         self, workspace: WorkspaceResponse, target_type: str, raw_text: str
@@ -516,7 +706,7 @@ class WorkspaceEditService:
             "deployment_model", "replicas", "regions", "deployment_strategy",
             "availability_configuration", "target_stack", "docker_services", "kubernetes_modules",
             "cicd_pipeline", "observability", "scaling_strategy", "security_controls",
-            "cloud_recommendation",
+            "cloud_recommendation", "stack_rationale",
         }
         unknown = set(normalized) - allowed
         if unknown:

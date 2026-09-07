@@ -15,8 +15,11 @@ describe('WorkspaceForm', () => {
     fireEvent.change(screen.getByLabelText(/project brief/i), {
       target: { value: 'Build a learning platform for 50,000 users.' },
     })
-    fireEvent.change(screen.getByLabelText(/^constraints$/i), {
+    fireEvent.change(screen.getByLabelText(/constraints/i), {
       target: { value: 'SSO, PostgreSQL' },
+    })
+    fireEvent.change(screen.getByLabelText(/team size/i), {
+      target: { value: '6' },
     })
     fireEvent.click(
       screen.getByRole('button', { name: /^generate$/i }),
@@ -28,6 +31,7 @@ describe('WorkspaceForm', () => {
         budget: undefined,
         preferred_cloud: undefined,
         constraints: ['SSO', 'PostgreSQL'],
+        team_size: 6,
       }),
     )
   })

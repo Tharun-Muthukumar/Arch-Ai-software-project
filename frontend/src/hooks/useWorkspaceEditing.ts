@@ -1,27 +1,16 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { applyWorkspaceEdit, getApiBaseUrl, previewWorkspaceEdit, redoWorkspaceEdit, undoWorkspaceEdit } from '../lib/api'
+import { applyWorkspaceEdit, previewWorkspaceEdit, redoWorkspaceEdit, undoWorkspaceEdit } from '../lib/api'
+import { WORKSPACE_WRITE_KEY, syncWorkspaceResult } from '../lib/workspaceSync'
 import { getErrorMessage } from '../lib/utils'
 import type { Workspace, WorkspaceEditRequest, WorkspaceMutationResponse } from '../types/api'
 import { useToast } from '../components/ui/ToastProvider'
-
-function replaceWorkspace(
-  current: Workspace[] | undefined,
-  nextWorkspace: Workspace,
-) {
-  const remaining = (current ?? []).filter((item) => item.id !== nextWorkspace.id)
-  return [nextWorkspace, ...remaining]
-}
 
 export function useWorkspaceEditing(workspace: Workspace) {
   const queryClient = useQueryClient()
   const { showToast } = useToast()
 
   function acceptResult(result: WorkspaceMutationResponse) {
-    queryClient.setQueryData<Workspace[]>(
-      ['workspaces', getApiBaseUrl()],
-      (current) => replaceWorkspace(current, result.workspace),
-    )
-    void queryClient.invalidateQueries({ queryKey: ['causal-graph', workspace.id] })
+    syncWorkspaceResult(queryClient, result.workspace)
     showToast({
       title: result.message,
       description: result.impact.items
@@ -39,6 +28,7 @@ export function useWorkspaceEditing(workspace: Workspace) {
     }),
   })
   const apply = useMutation({
+    mutationKey: [...WORKSPACE_WRITE_KEY, 'apply'],
     mutationFn: (edit: WorkspaceEditRequest) => applyWorkspaceEdit(workspace.id, {
       ...edit,
       expected_updated_at: workspace.updated_at,
@@ -51,11 +41,13 @@ export function useWorkspaceEditing(workspace: Workspace) {
     }),
   })
   const undo = useMutation({
+    mutationKey: [...WORKSPACE_WRITE_KEY, 'undo'],
     mutationFn: () => undoWorkspaceEdit(workspace.id),
     onSuccess: acceptResult,
     onError: (error) => showToast({ title: 'Undo failed', description: getErrorMessage(error), tone: 'danger' }),
   })
   const redo = useMutation({
+    mutationKey: [...WORKSPACE_WRITE_KEY, 'redo'],
     mutationFn: () => redoWorkspaceEdit(workspace.id),
     onSuccess: acceptResult,
     onError: (error) => showToast({ title: 'Redo failed', description: getErrorMessage(error), tone: 'danger' }),

@@ -1,4 +1,4 @@
-"""Curated real-world architecture twin matching.
+"""Curated real-world architecture precedent matching.
 
 Design rationale:
   This module matches the recommended architecture's score vector against a
@@ -6,11 +6,13 @@ Design rationale:
   distance in criteria-space. It grounds an abstract recommendation in real
   industry precedent rather than a generic label such as "microservices".
   Case facts are intentionally broad and public; matching is deterministic.
+  Similarity scores are algorithmic distances between score vectors, not
+  measurements of any company's internal systems.
 """
 
 from math import sqrt
 
-from app.schemas.domain import TwinCaseStudy, TwinMatch
+from app.schemas.domain import TwinCaseStudy, TwinMatch, TwinSimilarMetric
 from app.services.comparison_engine import BASE_PROFILES
 
 
@@ -24,7 +26,13 @@ def _profile(architecture_id: str, **adjustments: int) -> dict[str, int]:
         "event-driven": "event-driven-microservices",
         "event_driven": "event-driven-microservices",
         "serverless": "serverless-platform",
+        "service-based": "service-based",
+        "service_based": "service-based",
+        "hybrid-modular-serverless": "hybrid-modular-serverless",
+        "hybrid-event-serverless": "hybrid-event-serverless",
     }.get(architecture_id, architecture_id)
+    if base_id not in BASE_PROFILES:
+        base_id = "service-based"
     profile = BASE_PROFILES[base_id].copy()
     for metric, delta in adjustments.items():
         if metric in profile:
@@ -84,14 +92,31 @@ def _same_family(left: str, right: str) -> bool:
         "monolithic": "cohesive",
         "layered": "cohesive",
         "clean": "cohesive",
+        "service-based": "service",
+        "service_based": "service",
         "event-driven-microservices": "distributed",
         "microservices": "distributed",
         "event-driven": "distributed",
         "event_driven": "distributed",
         "serverless-platform": "serverless",
         "serverless": "serverless",
+        "hybrid-modular-serverless": "hybrid-cohesive-serverless",
+        "hybrid-event-serverless": "hybrid-distributed-serverless",
     }
-    return families.get(left, left) == families.get(right, right)
+    left_family = families.get(left, left)
+    right_family = families.get(right, right)
+    if left_family == right_family:
+        return True
+    # Hybrids share precedent with either parent family.
+    hybrid_parents = {
+        "hybrid-cohesive-serverless": {"cohesive", "serverless", "service"},
+        "hybrid-distributed-serverless": {"distributed", "serverless", "service"},
+    }
+    if left_family in hybrid_parents:
+        return right_family in hybrid_parents[left_family]
+    if right_family in hybrid_parents:
+        return left_family in hybrid_parents[right_family]
+    return False
 
 
 def compute_similarity(
@@ -134,6 +159,36 @@ def _alignment_metrics(user_row: dict[str, int], case: TwinCaseStudy) -> str:
     return " and ".join(metric.replace("_", " ") for metric in aligned) or "overall architecture trade-offs"
 
 
+def _similar_metrics(
+    user_row: dict[str, int], case: TwinCaseStudy, top_n: int = 3
+) -> list[TwinSimilarMetric]:
+    """Return the closest metrics with both scores so the UI can name them precisely."""
+    shared = sorted(
+        set(user_row) & set(case.score_vector),
+        key=lambda metric: (
+            abs(user_row[metric] - case.score_vector[metric]),
+            metric,
+        ),
+    )[:max(1, top_n)]
+    return [
+        TwinSimilarMetric(
+            metric=metric,
+            user_score=int(user_row[metric]),
+            case_score=int(case.score_vector[metric]),
+            delta=int(abs(user_row[metric] - case.score_vector[metric])),
+        )
+        for metric in shared
+    ]
+
+
+def _similar_metrics_clause(similar: list[TwinSimilarMetric]) -> str:
+    parts = [
+        f"{item.metric.replace('_', ' ')} (you {item.user_score}/10 vs {item.case_score}/10)"
+        for item in similar
+    ]
+    return "; ".join(parts) or "overall architecture trade-offs"
+
+
 def match_twins(
     comparison_matrix: dict[str, dict[str, int]],
     recommended_architecture_id: str,
@@ -150,11 +205,13 @@ def match_twins(
             similarity = min(100.0, round(similarity + 2.0, 1))
         overlaps = _overlap_services(deployment_stack, case.notable_services)
         shared = f"Shares {', '.join(overlaps)} with {case.company}'s approach" if overlaps else f"No direct stack overlap is modeled with {case.company}'s public stack"
+        similar = _similar_metrics(user_row, case)
         matches.append(TwinMatch(
             case_study=case,
             similarity_score=similarity,
             overlap_services=overlaps,
-            rationale=f"{shared}; strongest alignment on {_alignment_metrics(user_row, case)}.",
+            rationale=f"{shared}; most similar metrics: {_similar_metrics_clause(similar)}.",
+            similar_metrics=similar,
         ))
     matches.sort(key=lambda match: match.similarity_score, reverse=True)
     return matches[:max(1, top_n)]

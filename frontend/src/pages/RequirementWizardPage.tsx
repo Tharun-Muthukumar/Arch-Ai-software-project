@@ -54,7 +54,9 @@ export function RequirementWizardPage() {
     ? 'Interpreted from the raw brief by Ollama'
     : requirements.analysis_source === 'predefined-blueprint'
       ? 'Matched with verified domain knowledge'
-      : 'Conservative extraction fallback'
+      : requirements.analysis_source === 'deterministic-extraction'
+        ? 'Extracted deterministically from the brief wording (medium confidence)'
+        : 'Conservative extraction fallback'
 
   function openStringEdit(
     target: WorkspaceEditTarget,

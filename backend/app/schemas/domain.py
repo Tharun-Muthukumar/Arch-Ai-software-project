@@ -106,6 +106,7 @@ class DomainEntityHint(BaseModel):
     name: str
     description: str
     attributes: list[str] = Field(default_factory=list)
+    bounded_context: str | None = None
 
 
 class DomainWorkflowHint(BaseModel):
@@ -130,7 +131,8 @@ class RequirementModel(BaseModel):
     data_characteristics: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     analysis_source: Literal[
-        "predefined-blueprint", "ollama-pretrained", "conservative-fallback", "legacy"
+        "predefined-blueprint", "ollama-pretrained", "deterministic-extraction",
+        "conservative-fallback", "legacy",
     ] = "legacy"
     analysis_warnings: list[str] = Field(default_factory=list)
 
@@ -227,6 +229,7 @@ class DatabaseEntity(BaseModel):
     name: str
     description: str
     fields: list[DatabaseField] = Field(default_factory=list)
+    bounded_context: str | None = None
 
 
 class DatabaseRelationship(BaseModel):
@@ -287,6 +290,7 @@ class DeploymentPlan(BaseModel):
     scaling_strategy: list[str] = Field(default_factory=list)
     security_controls: list[str] = Field(default_factory=list)
     cloud_recommendation: str
+    stack_rationale: list[str] = Field(default_factory=list)
 
 
 class ImpactAssessment(BaseModel):
@@ -471,11 +475,19 @@ class TwinCaseStudy(BaseModel):
     source_note: str
 
 
+class TwinSimilarMetric(BaseModel):
+    metric: str
+    user_score: int
+    case_score: int
+    delta: int
+
+
 class TwinMatch(BaseModel):
     case_study: TwinCaseStudy
     similarity_score: float = Field(ge=0, le=100)
     overlap_services: list[str] = Field(default_factory=list)
     rationale: str
+    similar_metrics: list[TwinSimilarMetric] = Field(default_factory=list)
 
 
 class TwinMatchRequest(BaseModel):
@@ -635,6 +647,7 @@ class WorkspaceCreateRequest(BaseModel):
     budget: str | None = None
     preferred_cloud: str | None = None
     constraints: list[str] = Field(default_factory=list)
+    team_size: int | None = Field(default=None, ge=1, le=1000)
 
 
 class ClarificationAnswerRequest(BaseModel):

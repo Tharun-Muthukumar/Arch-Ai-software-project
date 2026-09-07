@@ -21,13 +21,20 @@ export function deploymentStack(workspace: Workspace): string[] {
 }
 
 export function projectConstraints(workspace: Workspace): ProjectConstraints {
-  const teamSize = Number.parseInt(workspace.answers.team_size ?? '', 10)
+  const teamMatch = /\d+/.exec(workspace.answers.team_size ?? '')
+  const teamSize = teamMatch ? Number.parseInt(teamMatch[0].trim(), 10) : Number.NaN
   const timeline = Number.parseInt(workspace.answers.timeline_weeks ?? '', 10)
   const budget = workspace.answers.budget?.toLowerCase()
   return {
-    team_size: Number.isFinite(teamSize) && teamSize > 0 ? teamSize : 5,
+    team_size: Number.isFinite(teamSize) && teamSize > 0 ? Math.min(teamSize, 1000) : 5,
     budget_level: budget === 'low' || budget === 'high' ? budget : 'medium',
     expected_scale: workspace.requirements.scale_profile,
     timeline_weeks: Number.isFinite(timeline) && timeline > 0 ? timeline : 12,
   }
+}
+
+export function teamSizeSource(workspace: Workspace): 'specified' | 'default' {
+  const teamMatch = /\d+/.exec(workspace.answers.team_size ?? '')
+  const teamSize = teamMatch ? Number.parseInt(teamMatch[0], 10) : Number.NaN
+  return Number.isFinite(teamSize) && teamSize > 0 ? 'specified' : 'default'
 }

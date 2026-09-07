@@ -1,6 +1,13 @@
 import re
 
 from app.schemas.domain import ApiDesign, ApiEndpoint, ApiGroup, DatabaseDesign, RequirementModel
+from app.services.domain_inference import (
+    auth_evidence,
+    cluster_entities,
+    to_display_name,
+    to_identifier,
+    tokenize,
+)
 
 
 class ApiGenerator:
@@ -233,30 +240,16 @@ class ApiGenerator:
                 ]
             )
         else:
-            groups.append(
-                ApiGroup(
-                    name="Core Workflows",
-                    description="Primary domain CRUD and lifecycle transitions.",
-                    endpoints=[
-                        ApiEndpoint(
-                            method="POST",
-                            path="/api/v1/workflows",
-                            purpose="Create a new domain workflow instance.",
-                            auth_required=True,
-                            request_example={"payload": {"name": "New workflow"}},
-                            response_example={"id": "uuid", "status": "draft"},
-                        ),
-                        ApiEndpoint(
-                            method="PATCH",
-                            path="/api/v1/workflows/{workflowId}",
-                            purpose="Update a workflow's state or payload.",
-                            auth_required=True,
-                            request_example={"status": "submitted"},
-                            response_example={"id": "uuid", "status": "submitted"},
-                        ),
-                    ],
-                )
+            # Domain-driven groups replace the generic template: the Auth
+            # group appears only with identity evidence, and the Users group
+            # only when the data model actually contains a users table.
+            kept = [groups[0]] if self._auth_evidence(requirements) else []
+            if any(entity.name == "users" for entity in database_design.entities):
+                kept.append(groups[1])
+            kept.extend(
+                self._generate_domain_groups(requirements, database_design)
             )
+            groups = kept
 
         validation_rules = [
             "Use request-level Pydantic validation with strict enum and UUID parsing.",
@@ -272,7 +265,12 @@ class ApiGenerator:
 
         return ApiDesign(
             style="REST",
-            authentication_strategy="JWT access tokens, refresh token rotation, role-based authorization",
+            authentication_strategy=(
+                "JWT access tokens, refresh token rotation, role-based authorization"
+                if self._auth_evidence(requirements)
+                or requirements.domain in ("EV Charging Booking Platform", "Online Pharmacy")
+                else "Unknown; clarify actor identity, trust boundaries, and machine credentials."
+            ),
             groups=groups,
             validation_rules=validation_rules,
             openapi_summary=openapi_summary,
@@ -335,6 +333,141 @@ class ApiGenerator:
         if first_word in {"amend", "edit", "update"}:
             return "PATCH"
         return "POST"
+
+    # ------------------------------------------------------------------
+    # Domain-driven groups: one group per bounded context derived from the
+    # actual domain entities and workflows — never a generic template.
+    # ------------------------------------------------------------------
+
+    _TRANSITION_VERBS = frozenset(
+        {"approve", "review", "cancel", "submit", "plan", "forecast", "schedule",
+         "dispatch", "fulfill", "inspect", "register", "coordinate", "synchronize"}
+    )
+
+    def _auth_evidence(self, requirements: RequirementModel) -> bool:
+        return auth_evidence(
+            *requirements.functional_requirements,
+            *requirements.non_functional_requirements,
+            *requirements.constraints,
+            *(actor.description for actor in requirements.actors),
+        )
+
+    def _requirement_ids(self, requirements: RequirementModel, *texts: str) -> list[str]:
+        """Map FR indices (FR-001…) sharing content tokens with the endpoint."""
+        focus: set[str] = set()
+        for text in texts:
+            focus |= {token for token in tokenize(text) if len(token) > 3}
+        matched: list[str] = []
+        for index, requirement in enumerate(requirements.functional_requirements, start=1):
+            req_tokens = {token for token in tokenize(requirement) if len(token) > 3}
+            if len(focus & req_tokens) >= 2:
+                matched.append(f"FR-{index:03d}")
+            if len(matched) >= 3:
+                break
+        return matched
+
+    def _generate_domain_groups(
+        self, requirements: RequirementModel, database_design: DatabaseDesign
+    ) -> list[ApiGroup]:
+        auth_required: bool | None = True if self._auth_evidence(requirements) else None
+        # Platform tables (identity/governance) are served by the Auth/Users
+        # groups, never by domain CRUD groups.
+        entity_names = [
+            entity.name
+            for entity in database_design.entities
+            if entity.name not in {"users", "audit_logs", "notifications"}
+        ]
+        contexts = cluster_entities(entity_names)
+        context_members: dict[str, list[str]] = {}
+        for name in entity_names:
+            context_members.setdefault(contexts.get(name, to_display_name(name)), []).append(name)
+
+        workflow_verbs: dict[str, str] = {}
+        for workflow in requirements.domain_workflows:
+            first = workflow.name.strip().split(maxsplit=1)
+            verb = first[0].lower() if first else ""
+            workflow_verbs[workflow.name] = verb
+
+        groups: list[ApiGroup] = []
+        for context in sorted(context_members):
+            members = context_members[context]
+            endpoints: list[ApiEndpoint] = []
+            for member in members:
+                slug = to_identifier(member).replace("_", "-")
+                member_id = f"{slug[:-1] if slug.endswith('s') else slug}Id"
+                owning = next(
+                    (
+                        workflow.description
+                        for workflow in requirements.domain_workflows
+                        if any(
+                            token in tokenize(workflow.description)
+                            for token in to_identifier(member).split("_")
+                        )
+                    ),
+                    f"Lifecycle operations for {to_display_name(member)} records.",
+                )
+                endpoints.append(
+                    ApiEndpoint(
+                        method="GET",
+                        path=f"/api/v1/{slug}",
+                        purpose=f"List and filter {to_display_name(member)} records in the {context} context.",
+                        auth_required=auth_required,
+                        request_example={},
+                        response_example={},
+                        requirement_ids=self._requirement_ids(requirements, owning, member),
+                    )
+                )
+                endpoints.append(
+                    ApiEndpoint(
+                        method="POST",
+                        path=f"/api/v1/{slug}",
+                        purpose=f"Create a {to_display_name(member)} record owned by {context}.",
+                        auth_required=auth_required,
+                        request_example={},
+                        response_example={},
+                        requirement_ids=self._requirement_ids(requirements, owning, member),
+                    )
+                )
+                endpoints.append(
+                    ApiEndpoint(
+                        method="PATCH",
+                        path=f"/api/v1/{slug}/{{{member_id}}}",
+                        purpose=f"Update {to_display_name(member)} state or attributes within {context}.",
+                        auth_required=auth_required,
+                        request_example={},
+                        response_example={},
+                        requirement_ids=self._requirement_ids(requirements, owning, member),
+                    )
+                )
+            # Workflow transition endpoints (approvals, scheduling, dispatch…)
+            # live in the context of their primary entity.
+            for workflow in requirements.domain_workflows:
+                verb = workflow_verbs.get(workflow.name, "")
+                if verb not in self._TRANSITION_VERBS:
+                    continue
+                related = workflow.related_entities or members[:1]
+                home = contexts.get(related[0], context) if related else context
+                if home != context:
+                    continue
+                endpoints.append(
+                    ApiEndpoint(
+                        method="POST",
+                        path=f"/api/v1/{self._slug(workflow.name)}",
+                        purpose=f"{workflow.description} (owning context: {context}).",
+                        auth_required=auth_required,
+                        request_example={},
+                        response_example={},
+                        requirement_ids=self._requirement_ids(requirements, workflow.description),
+                    )
+                )
+            groups.append(
+                ApiGroup(
+                    name=context,
+                    description=f"{context} bounded context: {', '.join(to_display_name(m) for m in members)}.",
+                    endpoints=endpoints,
+                )
+            )
+        return groups
 
     def _slug(self, value: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")

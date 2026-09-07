@@ -1,8 +1,10 @@
-import { AlertTriangle, Copy, Download, LoaderCircle, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Copy, Download, LoaderCircle, Maximize, Minus, Plus, RefreshCw } from 'lucide-react'
 import mermaid from 'mermaid'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { downloadBlob } from '../../lib/utils'
 import type { DiagramArtifact } from '../../types/api'
+
+const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
 interface MermaidDiagramProps {
   artifact: DiagramArtifact
@@ -15,6 +17,8 @@ export function MermaidDiagram({ artifact }: MermaidDiagramProps) {
   const [error, setError] = useState('')
   const [renderVersion, setRenderVersion] = useState(0)
   const [showSource, setShowSource] = useState<'hidden' | 'mermaid' | 'plantuml'>('hidden')
+  const [zoom, setZoom] = useState(1)
+  const [isFit, setIsFit] = useState(true)
   const activeRender = useRef(0)
 
   const renderDiagram = useCallback(async () => {
@@ -59,11 +63,35 @@ export function MermaidDiagram({ artifact }: MermaidDiagramProps) {
   useEffect(() => {
     setSvg('')
     setError('')
+    setZoom(1)
+    setIsFit(true)
     void renderDiagram()
     return () => {
       activeRender.current += 1
     }
   }, [renderDiagram])
+
+  function zoomIn() {
+    setIsFit(false)
+    setZoom((current) => {
+      const next = ZOOM_STEPS.find((step) => step > current + 0.001)
+      return next ?? 2
+    })
+  }
+
+  function zoomOut() {
+    setIsFit(false)
+    setZoom((current) => {
+      const reversed = [...ZOOM_STEPS].reverse()
+      const next = reversed.find((step) => step < current - 0.001)
+      return next ?? 0.5
+    })
+  }
+
+  function fitToView() {
+    setIsFit(true)
+    setZoom(1)
+  }
 
   async function copySource(source: string) {
     await navigator.clipboard.writeText(source)
@@ -75,9 +103,11 @@ export function MermaidDiagram({ artifact }: MermaidDiagramProps) {
     const url = URL.createObjectURL(svgBlob)
 
     image.onload = () => {
+      const naturalWidth = image.width || 1600
+      const naturalHeight = image.height || 900
       const canvas = document.createElement('canvas')
-      canvas.width = image.width * 2
-      canvas.height = image.height * 2
+      canvas.width = naturalWidth * 2
+      canvas.height = naturalHeight * 2
       const context = canvas.getContext('2d')
       if (!context) {
         URL.revokeObjectURL(url)
@@ -148,10 +178,32 @@ export function MermaidDiagram({ artifact }: MermaidDiagramProps) {
           </div>
         ) : (
           <div className="diagram-scroll-region">
-            <div className="diagram-canvas" dangerouslySetInnerHTML={{ __html: svg }} />
+            <div
+              className={`diagram-canvas ${isFit ? 'fit' : 'scaled'}`}
+              style={isFit ? undefined : { width: `${zoom * 100}%`, minWidth: `${zoom * 100}%` }}
+              dangerouslySetInnerHTML={{ __html: svg }}
+            />
           </div>
         )}
       </div>
+
+      {svg && !error ? (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Diagram zoom controls">
+          <button type="button" onClick={zoomOut} disabled={!isFit && zoom <= 0.5} className="button-secondary flex items-center gap-1 px-2.5 py-1.5 text-xs" title="Zoom out" aria-label="Zoom out">
+            <Minus className="h-3.5 w-3.5" />
+          </button>
+          <span className="min-w-14 text-center text-xs tabular-nums" style={{ color: 'var(--text-muted)' }} aria-live="polite">
+            {isFit ? 'Fit' : `${Math.round(zoom * 100)}%`}
+          </span>
+          <button type="button" onClick={zoomIn} disabled={!isFit && zoom >= 2} className="button-secondary flex items-center gap-1 px-2.5 py-1.5 text-xs" title="Zoom in" aria-label="Zoom in">
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" onClick={fitToView} className="button-secondary flex items-center gap-1 px-2.5 py-1.5 text-xs" title="Fit diagram to view" aria-label="Fit diagram to view">
+            <Maximize className="h-3.5 w-3.5" /> Fit
+          </button>
+          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Scroll to pan when zoomed.</span>
+        </div>
+      ) : null}
 
       <div className="mt-3 flex gap-2">
         <button

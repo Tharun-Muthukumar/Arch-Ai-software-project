@@ -27,10 +27,14 @@ _COMPONENT_COSTS: dict[str, tuple[str, tuple[float, float, float]]] = {
     "redis": ("Managed Redis cache", (35, 90, 260)),
     "lambda": ("Serverless functions", (35, 180, 700)),
     "serverless": ("Serverless functions", (35, 180, 700)),
+    "managed function": ("Serverless functions", (35, 180, 700)),
+    "function package": ("Serverless functions", (35, 180, 700)),
+    "function deployment": ("Serverless functions", (35, 180, 700)),
     "api gateway": ("API Gateway", (15, 45, 130)),
     "dynamodb": ("Managed DynamoDB", (30, 160, 600)),
     "queue": ("Managed queue/event bus", (15, 55, 180)),
     "event bus": ("Managed queue/event bus", (15, 55, 180)),
+    "object storage": ("Object storage", (15, 60, 220)),
     "cdn": ("CDN/static delivery", (10, 45, 160)),
 }
 _SCALE_TIERS = ("small (~1K users)", "medium (~100K users)", "large (~1M+ users)")
@@ -40,12 +44,16 @@ _TOOLING_COSTS = {
     "monolithic": 180.0,
     "layered": 200.0,
     "clean": 200.0,
+    "service-based": 280.0,
+    "service_based": 280.0,
     "event-driven-microservices": 480.0,
     "microservices": 480.0,
     "event-driven": 480.0,
     "event_driven": 480.0,
     "serverless-platform": 300.0,
     "serverless": 300.0,
+    "hybrid-modular-serverless": 260.0,
+    "hybrid-event-serverless": 380.0,
 }
 
 
@@ -122,12 +130,15 @@ def generate_budget(
         budgets_by_scale=budgets,
         assumptions=[
             "Illustrative estimate only, not a vendor quote or procurement budget.",
+            "Order-of-magnitude planning figures: useful for comparing architectures, not for financial approval.",
             "Docker/Compose hosts are modeled at about $60, $130, and $350 per month by scale.",
             "Managed Kubernetes is modeled at about $240, $720, and $2,200 per month including nodes.",
             "Managed relational databases are modeled at about $80, $260, and $900 per month by scale.",
             "Kafka is modeled at about $220, $420, and $1,100 per month; Redis at $35, $90, and $260.",
             "Serverless functions scale more smoothly at about $35, $180, and $700 per month; API Gateway stays comparatively low.",
             f"Each engineer uses an illustrative {constraints.budget_level} blended monthly cost of ${_TEAM_COSTS.get(constraints.budget_level, 6_000):,.0f}.",
+            f"Team cost is {constraints.team_size} people x blended rate; update team size in the overview for an accurate figure.",
             "Tooling covers rough CI/CD, monitoring, tracing, and error tracking allowances.",
+            "Excluded: data transfer/egress, third-party licenses, support contracts, regional price differences, and volume discounts.",
         ],
     )

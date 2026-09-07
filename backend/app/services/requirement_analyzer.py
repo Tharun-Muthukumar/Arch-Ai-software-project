@@ -10,6 +10,19 @@ from app.schemas.domain import (
     RequirementModel,
 )
 from app.services.ai.client import OllamaStructuredClient
+from app.services.domain_inference import (
+    capability_object_tokens,
+    classify_domain,
+    extract_actors,
+    extract_capabilities,
+    extract_entities,
+    extract_integrations,
+    normalize_constraint_statements,
+    payment_evidence_level,
+    split_sentences,
+    to_display_name,
+    tokenize,
+)
 
 
 @dataclass(frozen=True)
@@ -138,7 +151,7 @@ BLUEPRINTS = (
             "Provide merchant-facing inventory and fulfillment tooling.",
             "Expose operational dashboards and audit logs for administrators.",
         ),
-        entities=("users", "products", "orders", "order_items", "payments", "shipments"),
+        entities=("users", "products", "inventory", "orders", "order_items", "payments", "shipments"),
         compliance=("PCI-aware payment integration", "audit logging", "data privacy controls"),
     ),
     DomainBlueprint(
@@ -277,6 +290,9 @@ class RequirementAnalyzer:
         effective_constraints = self._dedupe(
             [*constraints, *self._constraints_from_answers(answers)]
         )
+        effective_constraints, fragment_merges = normalize_constraint_statements(
+            effective_constraints
+        )
         raw_requirement = {
             "title": title,
             "description": description,
@@ -296,28 +312,36 @@ class RequirementAnalyzer:
             minimum_timeout_seconds=90,
         )
         if generated is None:
-            return self._conservative_fallback(title, description, effective_constraints)
+            return self._fallback_or_deterministic(
+                title, description, business_context, answers, effective_constraints
+            )
 
         try:
             extraction = UnknownDomainExtraction.model_validate(generated)
         except ValidationError as exc:
-            fallback = self._conservative_fallback(title, description, effective_constraints)
-            fallback.analysis_warnings.append(
-                f"Ollama returned invalid structured requirements: {exc.errors()[0]['msg']}"
+            return self._fallback_or_deterministic(
+                title, description, business_context, answers, effective_constraints,
+                prior_warnings=[
+                    f"Ollama returned invalid structured requirements: {exc.errors()[0]['msg']}"
+                ],
             )
-            return fallback
 
         warnings: list[str] = []
+        if fragment_merges:
+            warnings.append(
+                f"Merged {fragment_merges} constraint fragment(s) into complete statements."
+            )
         functional = self._filter_grounded_items(
             extraction.functional_requirements, source_text, warnings, "functional requirement"
         )
         if len(functional) < 2:
-            fallback = self._conservative_fallback(title, description, effective_constraints)
-            fallback.analysis_warnings.extend(warnings)
-            fallback.analysis_warnings.append(
-                "Ollama output did not retain enough grounded functional detail."
+            return self._fallback_or_deterministic(
+                title, description, business_context, answers, effective_constraints,
+                prior_warnings=[
+                    *warnings,
+                    "Ollama output did not retain enough grounded functional detail.",
+                ],
             )
-            return fallback
 
         non_functional = self._filter_grounded_items(
             extraction.non_functional_requirements,
@@ -351,7 +375,10 @@ class RequirementAnalyzer:
             and actor.strip().casefold() not in GENERIC_ACTOR_NAMES
             and self._label_is_safe(actor, source_text)
             and self._has_meaningful_overlap(actor, source_text)
-            and self._actor_is_active(actor, source_text)
+            and (
+                self._actor_is_active(actor, source_text)
+                or self._actor_grounded_in_requirements(actor, functional, source_text)
+            )
         ]
         entities = [
             DomainEntityHint(
@@ -373,12 +400,13 @@ class RequirementAnalyzer:
             source_text,
         )
         if not actors or len(entities) < 2 or len(workflows) < 2:
-            fallback = self._conservative_fallback(title, description, effective_constraints)
-            fallback.analysis_warnings.extend(warnings)
-            fallback.analysis_warnings.append(
-                "Ollama output lacked grounded actors, entities, or workflows required by the pipeline."
+            return self._fallback_or_deterministic(
+                title, description, business_context, answers, effective_constraints,
+                prior_warnings=[
+                    *warnings,
+                    "Ollama output lacked grounded actors, entities, or workflows required by the pipeline.",
+                ],
             )
-            return fallback
         assumptions = [
             f"Assumption: {item.removeprefix('Assumption:').strip()}"
             for item in self._filter_grounded_items(
@@ -399,6 +427,12 @@ class RequirementAnalyzer:
             explicit_constraints.append(f"User-specified budget posture: {budget}.")
         if (cloud := answers.get("preferred_cloud")) and self._answer_is_known(cloud):
             explicit_constraints.append(f"User-specified hosting preference: {cloud}.")
+        if (team_raw := answers.get("team_size")) and self._answer_is_known(team_raw):
+            team_number = self._parse_team_size(team_raw)
+            if team_number > 0:
+                explicit_constraints.append(f"User-specified team size: {team_number} engineers.")
+
+        explicit_constraints, _ = normalize_constraint_statements(explicit_constraints)
 
         summary = self._strip_unsupported_claims(extraction.summary, source_text)
         if not summary:
@@ -499,6 +533,318 @@ class RequirementAnalyzer:
             analysis_warnings=self._dedupe(warnings),
         )
 
+    def _fallback_or_deterministic(
+        self,
+        title: str,
+        description: str,
+        business_context: str | None,
+        answers: dict[str, str],
+        constraints: list[str],
+        prior_warnings: list[str] | None = None,
+    ) -> RequirementModel:
+        """Deterministic domain extraction, else the honest empty fallback.
+
+        When Ollama is unavailable (or its output is unusable), domain terms
+        are extracted directly from the brief with generic language rules, so
+        ANY business domain propagates downstream. Extraction is marked as
+        medium-confidence inference; inputs with no extractable structure
+        keep the conservative fallback with explicit open questions.
+        """
+        deterministic = self._analyze_deterministic(
+            title, description, business_context, answers, constraints,
+            prior_warnings=prior_warnings,
+        )
+        if deterministic is not None:
+            return deterministic
+        fallback = self._conservative_fallback(title, description, constraints)
+        if prior_warnings:
+            fallback.analysis_warnings.extend(prior_warnings)
+        return fallback
+
+    def _analyze_deterministic(
+        self,
+        title: str,
+        description: str,
+        business_context: str | None,
+        answers: dict[str, str],
+        constraints: list[str],
+        prior_warnings: list[str] | None = None,
+    ) -> RequirementModel | None:
+        source_text = " ".join(
+            part
+            for part in [
+                title, description, business_context or "",
+                *constraints, *answers.values(),
+            ]
+            if part
+        )
+        actor_terms = extract_actors(source_text)
+        # Round one uses a wide token pool (top 16) so capability grounding
+        # never depends on the final top-N entity cut.
+        pool_ids = extract_entities(source_text, limit=16)
+        entity_tokens = {
+            token
+            for identifier in pool_ids
+            for token in tokenize(identifier)
+        }
+        actor_tokens = {
+            token
+            for name, _ in actor_terms
+            for token in tokenize(name)
+        }
+        capabilities = extract_capabilities(
+            description, business_context, entity_tokens, actor_tokens
+        )
+        # Second pass: boost entities grounded as actor vocabulary or
+        # capability objects so partner/party concepts survive the final cut.
+        actor_boosts = {
+            token: 1.5
+            for name, _ in actor_terms
+            for token in tokenize(name)
+            if len(token) > 3
+        }
+        capability_boosts = {
+            token: 1.0 for token in capability_object_tokens(capabilities)
+        }
+        entity_ids = extract_entities(
+            source_text + " " + " ".join(capabilities),
+            limit=14,
+            extra_weights={**capability_boosts, **actor_boosts},
+        )
+        entity_tokens = {
+            token
+            for identifier in entity_ids
+            for token in tokenize(identifier)
+        }
+        grounded_actors = [
+            (name, kind)
+            for name, kind in actor_terms
+            if any(
+                token in " ".join(capabilities).lower()
+                for token in tokenize(name)
+                if len(token) > 2
+            )
+        ]
+        if not grounded_actors or len(entity_ids) < 2 or len(capabilities) < 2:
+            return None
+
+        warnings: list[str] = list(prior_warnings or [])
+        family, confidence, evidence = classify_domain(title, source_text)
+        if family:
+            domain = f"{family} Platform"
+            warnings.append(
+                f"Domain inferred as '{domain}' from brief vocabulary "
+                f"({', '.join(evidence[:6])}); confirm during review."
+            )
+        else:
+            domain = f"{to_display_name(entity_ids[0])} Management Platform"
+            confidence = 0.35
+            warnings.append(
+                "No dominant domain vocabulary detected; domain label derived "
+                f"from the most frequent business concept ('{entity_ids[0]}'). "
+                "Confirm during review."
+            )
+
+        actors = [
+            Actor(name=name, description=self._deterministic_actor_description(name, kind, capabilities, source_text))
+            for name, kind in grounded_actors[:8]
+        ]
+        entities = [
+            DomainEntityHint(
+                name=to_display_name(identifier),
+                description=f"{to_display_name(identifier)} identified from the project brief.",
+            )
+            for identifier in entity_ids[:14]
+        ]
+        workflows = self._build_workflow_hints(
+            [],
+            [item for item in capabilities[:10] if len(item.split()) <= 14] or capabilities[:10],
+            actors,
+            entities,
+            source_text,
+        )
+        if len(workflows) < 2:
+            return None
+
+        functional = self._dedupe(capabilities[:10])
+        non_functional = self._merge_explicit_items(
+            [],
+            self._extract_explicit_quality_requirements(description, business_context),
+        )
+        non_functional = self._ensure_non_functional_requirements(
+            non_functional, actors, entities, workflows
+        )
+
+        user_constraints, merges = normalize_constraint_statements(
+            [*constraints, *self._constraints_from_answers(answers)]
+        )
+        if merges:
+            warnings.append(
+                f"Merged {merges} constraint fragment(s) into complete statements."
+            )
+        explicit_constraints = [
+            *user_constraints,
+            *self._extract_explicit_constraints(description, business_context),
+        ]
+        if (budget := answers.get("budget")) and self._answer_is_known(budget):
+            explicit_constraints.append(f"User-specified budget posture: {budget}.")
+        if (cloud := answers.get("preferred_cloud")) and self._answer_is_known(cloud):
+            explicit_constraints.append(f"User-specified hosting preference: {cloud}.")
+        if (team_raw := answers.get("team_size")) and self._answer_is_known(team_raw):
+            team_number = self._parse_team_size(team_raw)
+            if team_number > 0:
+                explicit_constraints.append(f"User-specified team size: {team_number} engineers.")
+        explicit_constraints, _ = normalize_constraint_statements(explicit_constraints)
+
+        integrations = self._dedupe(
+            extract_integrations(
+                description, business_context, " ".join(constraints)
+            )
+            + self._extract_integration_requirements(functional)
+        )
+        integrations = self._drop_covered_integrations(integrations)
+        # The deterministic path uses additive coverage only: extracted items
+        # are already clean, so uncovered source clauses are appended when
+        # grounded and never rewrite existing requirements.
+        functional = self._append_uncovered_capabilities(
+            functional, description, business_context, entity_tokens, actor_tokens
+        )
+
+        summary_source = description.strip().split(".")[0].strip()
+        summary = summary_source[:500] if summary_source else f"{title}: {capabilities[0]}"
+        open_questions = self._deterministic_open_questions(
+            source_text, answers, actors, integrations
+        )
+        return RequirementModel(
+            summary=summary,
+            domain=domain,
+            scale_profile=self._infer_scale_profile(source_text, answers, unknown_default=True),
+            functional_requirements=functional,
+            non_functional_requirements=non_functional,
+            actors=actors,
+            constraints=self._dedupe(explicit_constraints),
+            assumptions=[
+                "Inferred: role responsibilities, entity attributes, and workflow "
+                "boundaries are derived deterministically from brief wording "
+                f"(confidence {confidence:.0%}); validate before committing."
+            ],
+            domain_entities=entities,
+            domain_workflows=workflows,
+            integrations=self._dedupe(integrations),
+            data_characteristics=self._dedupe_characteristics(
+                self._extract_explicit_data_characteristics(description, business_context)
+            ),
+            open_questions=open_questions,
+            analysis_source="deterministic-extraction",
+            analysis_warnings=self._dedupe(warnings),
+        )
+
+    def _drop_covered_integrations(self, integrations: list[str]) -> list[str]:
+        """Drop bare integration phrases already covered by a structured entry."""
+        from app.services.domain_inference import singularize
+
+        def _key_tokens(text: str) -> set[str]:
+            return {
+                singularize(token)
+                for token in re.findall(r"[a-z][a-z0-9_-]+", text.lower())
+                if len(token) > 3
+            } - {"with", "and", "ownership", "external", "sync", "unspecified"}
+
+        structured = [item for item in integrations if "Ownership:" in item]
+        covered: set[str] = set()
+        for item in structured:
+            covered |= _key_tokens(item)
+        result = list(structured)
+        for item in integrations:
+            if "Ownership:" in item:
+                continue
+            tokens = _key_tokens(item)
+            if tokens and not tokens <= covered:
+                result.append(item)
+        return self._dedupe(result)
+
+    def _append_uncovered_capabilities(
+        self,
+        functional: list[str],
+        description: str,
+        business_context: str | None,
+        entity_tokens: set[str],
+        actor_tokens: set[str],
+    ) -> list[str]:
+        """Append grounded source clauses missing from the extracted set.
+
+        Unlike the Ollama-path preservation pass, this never replaces an
+        existing requirement: deterministic items are already normalized.
+        """
+        from app.services.domain_inference import (
+            _CAPABILITY_NOUNS,
+            _CAPABILITY_VERBS,
+            _looks_like_capability,
+            _normalize_capability,
+            _split_enumeration,
+        )
+
+        represented = " ".join(functional)
+        extended = list(functional)
+        for sentence in split_sentences(
+            " ".join(part for part in (description, business_context or "") if part)
+        ):
+            candidates = _split_enumeration(sentence)
+            if len(candidates) <= 1:
+                candidates = [sentence]
+            for candidate in candidates:
+                cleaned = _normalize_capability(candidate)
+                if not cleaned or cleaned in extended:
+                    continue
+                if self._clause_coverage(cleaned, represented) >= 0.85:
+                    continue
+                if _looks_like_capability(cleaned, entity_tokens, actor_tokens):
+                    extended.append(cleaned)
+                    represented += f" {cleaned}"
+        return self._dedupe(extended)
+
+    def _deterministic_actor_description(
+        self, name: str, kind: str, capabilities: list[str], source_text: str
+    ) -> str:
+        for capability in capabilities:
+            if self._clause_coverage(name, capability) > 0:
+                return capability
+        name_tokens = {token for token in tokenize(name) if len(token) > 2}
+        for sentence in split_sentences(source_text):
+            sentence_tokens = set(tokenize(sentence))
+            if name_tokens & sentence_tokens and len(sentence.split()) <= 28:
+                return " ".join(sentence.split())
+        if kind == "organizational":
+            return f"External business party participating in {name} responsibilities; confirm scope during review."
+        if kind == "machine":
+            return f"Machine participant exchanging operational data; confirm protocols during review."
+        return "Responsibilities require clarification."
+
+    def _deterministic_open_questions(
+        self,
+        source_text: str,
+        answers: dict[str, str],
+        actors: list[Actor],
+        integrations: list[str],
+    ) -> list[str]:
+        questions = [
+            "Which actors perform each workflow and what permissions do they need?",
+        ]
+        lower = source_text.casefold()
+        if not re.search(r"\d[\d,]*\s*(million|thousand|k)?\s*\+?\s*(users|transactions|requests)", lower):
+            questions.append(
+                "What workload volume, concurrency, and growth should the architecture support?"
+            )
+        if not integrations:
+            questions.append("Which external systems must this software exchange data with?")
+        if "availability" not in lower and "sla" not in lower and "uptime" not in lower:
+            questions.append("What availability, recovery, and downtime tolerance apply?")
+        if "audit" not in lower and "compliance" not in lower and "regulation" not in lower:
+            questions.append("What audit, retention, and regulatory obligations apply?")
+        if not answers.get("auth"):
+            questions.append("What authentication model is required for end users and operators?")
+        return questions[:8]
+
     def apply_clarifications(
         self,
         requirements: RequirementModel,
@@ -548,6 +894,12 @@ class RequirementAnalyzer:
                     updates.constraints.append(
                         "Payment transaction handling is not in scope."
                     )
+            elif key == "team_size" and not is_unknown:
+                team_number = self._parse_team_size(value)
+                if team_number > 0:
+                    updates.constraints.append(
+                        f"User-specified team size: {team_number} engineers."
+                    )
             elif key.startswith("domain_open_") and not is_unknown:
                 question = questions.get(key, "Architecture-critical detail")
                 updates.constraints.append(
@@ -558,7 +910,7 @@ class RequirementAnalyzer:
         updates.non_functional_requirements = self._dedupe(
             updates.non_functional_requirements
         )
-        updates.constraints = self._dedupe(updates.constraints)
+        updates.constraints, _ = normalize_constraint_statements(updates.constraints)
         updates.integrations = self._dedupe(updates.integrations)
         return RequirementModel.model_validate(updates.model_dump())
 
@@ -594,7 +946,12 @@ class RequirementAnalyzer:
             domain_constraints.append(f"User-specified budget posture: {budget}.")
         if (cloud := answers.get("preferred_cloud")) and self._answer_is_known(cloud):
             domain_constraints.append(f"User-specified hosting preference: {cloud}.")
+        if (team_raw := answers.get("team_size")) and self._answer_is_known(team_raw):
+            team_number = self._parse_team_size(team_raw)
+            if team_number > 0:
+                domain_constraints.append(f"User-specified team size: {team_number} engineers.")
 
+        domain_constraints, _ = normalize_constraint_statements(domain_constraints)
         assumptions = []
         if business_context:
             assumptions.append(f"Business context considered: {business_context}.")
@@ -660,11 +1017,32 @@ class RequirementAnalyzer:
         return RequirementModel.model_validate(updates.model_dump())
 
     def _pick_blueprint(self, text: str) -> DomainBlueprint | None:
+        """Score blueprint keyword evidence instead of first-substring matching.
+
+        A single generic word (e.g. "commerce" inside "digital commerce") is
+        not enough to claim a domain: matching requires either two distinct
+        keyword hits with a combined score of 2+, or three distinct hits.
+        Multi-word phrases count double because they are far more specific.
+        """
         lower_text = text.lower()
+        generic_singles = {"shop", "store", "cart", "commerce", "course"}
+        best: DomainBlueprint | None = None
+        best_score = 0.0
         for blueprint in BLUEPRINTS:
-            if any(keyword in lower_text for keyword in blueprint.keywords):
-                return blueprint
-        return None
+            score = 0.0
+            hits = 0
+            for keyword in blueprint.keywords:
+                if " " in keyword:
+                    if keyword in lower_text:
+                        score += 2.0
+                        hits += 1
+                elif re.search(rf"\b{re.escape(keyword)}\b", lower_text):
+                    score += 0.5 if keyword in generic_singles else 1.0
+                    hits += 1
+            if (hits >= 2 and score >= 2.0) or hits >= 3:
+                if score > best_score:
+                    best, best_score = blueprint, score
+        return best
 
     def _infer_scale_profile(
         self, text: str, answers: dict[str, str], *, unknown_default: bool = False
@@ -728,9 +1106,26 @@ class RequirementAnalyzer:
     def _feature_overrides(self, text: str) -> list[str]:
         lower_text = text.lower()
         features: list[str] = []
+        # Commerce-sensitive capabilities require strong evidence: a passing
+        # mention of "payment" (e.g. "external payment systems, where
+        # required") must never conjure carts, checkout, or refunds.
+        commerce_level = payment_evidence_level(text)
+        gated_map = {
+            "payment": (
+                commerce_level >= 2,
+                "Integrate payment authorization, settlement, and refund handling.",
+            ),
+            "refund": (
+                "refund" in lower_text
+                and (commerce_level >= 1 or "return" in lower_text or "cancel" in lower_text),
+                "Support refund review flows with auditable payment status transitions.",
+            ),
+        }
+        for keyword, (allowed, feature) in gated_map.items():
+            if keyword in lower_text and allowed:
+                features.append(feature)
         keyword_map = {
             "notification": "Allow users to manage notification preferences and delivery channels.",
-            "payment": "Integrate payment authorization, settlement, and refund handling.",
             "search": "Provide full-text search with business-aware filtering.",
             "analytics": "Deliver usage analytics and operational KPI dashboards.",
             "chat": "Support conversational or collaborative workflows with moderation controls.",
@@ -738,7 +1133,6 @@ class RequirementAnalyzer:
             "booking": "Allow users to reschedule or cancel reservations without losing operational traceability.",
             "charger": "Surface charger specifications, connector types, and live availability signals.",
             "station": "Present rich station details, operating windows, and wayfinding context.",
-            "refund": "Support refund review flows with auditable payment status transitions.",
         }
         for keyword, feature in keyword_map.items():
             if keyword in lower_text:
@@ -754,7 +1148,7 @@ class RequirementAnalyzer:
         )
         return [
             re.sub(r"^and\s+", "", clause, flags=re.IGNORECASE)
-            for clause in self._source_clauses(description, None)
+            for clause in self._source_clauses(description, business_context)
             if any(marker in f" {clause.lower()} " for marker in markers)
             and "do not assume" not in clause.lower()
             and "don't assume" not in clause.lower()
@@ -860,7 +1254,7 @@ class RequirementAnalyzer:
                 )
             ) and "do not assume" not in lower_clause and "don't assume" not in lower_clause:
                 constraints.append(clause)
-            elif self._looks_like_capability(clause):
+            elif self._looks_like_capability(clause) and len(tokenize(clause)) >= 4:
                 best_index = None
                 best_score = 0.0
                 for index, requirement in enumerate(functional):
@@ -876,7 +1270,8 @@ class RequirementAnalyzer:
                 else:
                     functional.append(clause)
             represented_text += f" {clause}"
-        return self._dedupe(functional), self._dedupe(constraints), self._dedupe(integrations)
+        normalized_constraints, _ = normalize_constraint_statements(constraints)
+        return self._dedupe(functional), normalized_constraints, self._dedupe(integrations)
 
     def _authoritative_requirement_clause(self, clause: str) -> str | None:
         framing = re.match(
@@ -907,11 +1302,22 @@ class RequirementAnalyzer:
             if not sentence.strip():
                 continue
             lower_sentence = sentence.casefold()
-            parts = (
-                [sentence]
-                if "do not assume" in lower_sentence or "don't assume" in lower_sentence
-                else re.split(r",\s+", sentence)
+            # Sentences carrying obligation language ("must ...", "required ...")
+            # are kept whole: splitting them on commas produces fragments such
+            # as "privacy" or "financial" that lose their meaning.
+            keep_whole = (
+                "do not assume" in lower_sentence
+                or "don't assume" in lower_sentence
+                or any(
+                    marker in f" {lower_sentence} "
+                    for marker in (
+                        " must ", " must not ", " shall ", " need ", " needs ",
+                        " required ", " requires ", " only ", " cannot ",
+                        " never ", " at least ", " no more than ",
+                    )
+                )
             )
+            parts = [sentence] if keep_whole else re.split(r",\s+", sentence)
             for part in parts:
                 cleaned = re.sub(
                     r"^and\s+", "", part.strip(), flags=re.IGNORECASE
@@ -1183,6 +1589,65 @@ class RequirementAnalyzer:
             return False
         return explicit_action is not None or enabled_action is not None or machine_actor
 
+    def _actor_grounded_in_requirements(
+        self, name: str, functional: list[str], source_text: str = ""
+    ) -> bool:
+        """Whether requirements assign work to the actor's head role.
+
+        Briefs usually introduce participants in enumerations ("suppliers,
+        facilities, partners...") without adjacent verbs, so verb-adjacency
+        alone would discard legitimate actors. Only the head noun counts,
+        and it must ALSO appear in the source brief: otherwise an invented
+        role ("Sales Manager") could self-ground against the model's own
+        requirement text. An invented qualifier ("Provenance Manager" with
+        no manager anywhere) is still rejected.
+        """
+        words = [
+            self._normalize_token(token)
+            for token in re.findall(r"[a-z][a-z0-9-]+", name.casefold())
+            if len(token) > 3
+        ]
+        if not words:
+            return False
+        head = words[-1]
+        if source_text:
+            source_tokens = {
+                self._normalize_token(token)
+                for token in re.findall(r"[a-z][a-z0-9-]+", source_text.casefold())
+            }
+            if not any(
+                self._role_head_matches(head, candidate) for candidate in source_tokens
+            ):
+                return False
+        for requirement in functional:
+            req_tokens = {
+                self._normalize_token(token)
+                for token in re.findall(r"[a-z][a-z0-9-]+", requirement.casefold())
+                if len(token) > 3
+            }
+            if any(self._role_head_matches(head, candidate) for candidate in req_tokens):
+                return True
+        return False
+
+    @staticmethod
+    def _role_head_matches(head: str, candidate: str) -> bool:
+        """Whether a brief token validates an actor's head role noun.
+
+        Only true morphological kinship counts: identical stems, plurals, or
+        collective nouns ("partnership" validates "partner"). Activity
+        nominalizations ("management") and bare verbs ("manage") never
+        validate the corresponding role ("manager"), and related-but-distinct
+        words ("distribution" vs "distributor") need their own mention —
+        which genuine briefs provide.
+        """
+        if len(candidate) <= 3:
+            return False
+        if head == candidate:
+            return True
+        if candidate.startswith(head):
+            return candidate[len(head):] in {"s", "es", "ship"}
+        return False
+
     def _actor_description(self, name: str, functional: list[str]) -> str:
         for requirement in functional:
             if self._clause_coverage(name, requirement) > 0:
@@ -1230,6 +1695,19 @@ class RequirementAnalyzer:
 
     def _workflow_name(self, requirement: str) -> str:
         value = requirement.rstrip(".").strip()
+        value = re.sub(
+            r"^(the organization|the platform|the system|the company|also)\s+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(
+            r"^(key capabilities|capabilities)\s+(include|including)\s+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(r"^(include|including)\s+", "", value, flags=re.IGNORECASE)
         passive = re.match(
             r"(.+?)\s+(?:can|must|should|will)?\s*be\s+([a-z]+)\b",
             value,
@@ -1247,19 +1725,50 @@ class RequirementAnalyzer:
             if maintained:
                 value = f"{self._base_verb(maintained.group(2))} {maintained.group(1)}"
             else:
-                value = re.sub(
-                    r"^[A-Za-z][A-Za-z ]{0,40}\s+(?:can|may|must|should|will)\s+",
-                    "",
-                    value,
-                    flags=re.IGNORECASE,
-                )
-                value = re.sub(r"^system\s+", "", value, flags=re.IGNORECASE)
-                words = value.split()
-                if words:
-                    words[0] = self._base_verb(words[0])
-                    value = " ".join(words)
+                sliced = self._slice_at_first_action(value)
+                if sliced:
+                    value = sliced
+                else:
+                    value = re.sub(
+                        r"^[A-Za-z][A-Za-z ]{0,40}\s+(?:can|may|must|should|will)\s+",
+                        "",
+                        value,
+                        flags=re.IGNORECASE,
+                    )
+                    value = re.sub(r"^system\s+", "", value, flags=re.IGNORECASE)
+                    words = value.split()
+                    if words:
+                        from app.services.domain_inference import _CAPABILITY_VERBS as _VERBS
+
+                        if words[0].strip(",;").lower() in _VERBS:
+                            words[0] = self._base_verb(words[0])
+                        value = " ".join(words)
         value = re.sub(r"\s*\([^)]*$", "", value)
-        return " ".join(value.split()[:10]).title()
+        words = [word.strip(",;") for word in value.split()[:6]]
+        while words and words[-1].lower() in {
+            "for", "through", "with", "to", "of", "and", "across", "in", "on", "that",
+        }:
+            words.pop()
+        return " ".join(words).title()
+
+    @staticmethod
+    def _slice_at_first_action(value: str) -> str | None:
+        """Slice framing prose to verb + object ("... company that manages
+        product formulation, ..." -> "manage product formulation").
+
+        Only verbs slice (noun-led items like "Supply chain management" are
+        already crisp labels). Passive/maintained constructions are handled
+        by their dedicated branches before this runs.
+        """
+        from app.services.domain_inference import _BASE_ACTION_VERBS
+
+        words = value.split()
+        for index, word in enumerate(words):
+            cleaned = word.strip(",;").lower()
+            if cleaned in _BASE_ACTION_VERBS:
+                chosen = [words[index], *words[index + 1: index + 3]]
+                return " ".join(part.strip(",;") for part in chosen)
+        return None
 
     def _base_verb(self, value: str) -> str:
         lower = value.casefold()
@@ -1350,6 +1859,11 @@ class RequirementAnalyzer:
 
     def _answer_is_known(self, value: str) -> bool:
         return " ".join(value.split()).casefold() not in UNKNOWN_ANSWER_VALUES
+
+    @staticmethod
+    def _parse_team_size(value: str) -> int:
+        match = re.search(r"\d+", str(value or ""))
+        return int(match.group()) if match else 0
 
     def _dedupe_actors(self, values: list[Actor]) -> list[Actor]:
         seen: set[str] = set()

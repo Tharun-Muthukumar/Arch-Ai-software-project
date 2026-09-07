@@ -24,11 +24,13 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useState, type FocusEvent, type MouseEvent } from 'react'
+import { useIsMutating } from '@tanstack/react-query'
 import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../../context/auth'
 import { useWorkspaceEditing } from '../../hooks/useWorkspaceEditing'
 import { useWorkspacesQuery } from '../../hooks/useWorkspaces'
+import { WORKSPACE_WRITE_KEY } from '../../lib/workspaceSync'
 import { cn, formatUpdatedAt, getActiveWorkspace, getErrorMessage } from '../../lib/utils'
 import type { Workspace } from '../../types/api'
 
@@ -50,7 +52,7 @@ const navGroups = [
       { to: '/comparison', label: 'Comparison', icon: BarChart3 },
       { to: '/blast-radius', label: 'Blast radius', icon: Zap },
       { to: '/team-fit', label: 'Team fit', icon: Users },
-      { to: '/industry-twins', label: 'Industry twins', icon: CloudCog },
+      { to: '/industry-twins', label: 'Industry precedents', icon: CloudCog },
       { to: '/budget', label: 'Budget', icon: DollarSign },
     ],
   },
@@ -70,6 +72,17 @@ function Navigation({ compact, onNavigate }: { compact: boolean; onNavigate?: ()
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const workspaceId = searchParams.get('workspace')
+  const [hovered, setHovered] = useState<{ label: string; top: number } | null>(null)
+
+  function showTooltip(event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>, label: string) {
+    if (!compact) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    setHovered({ label, top: rect.top + rect.height / 2 })
+  }
+
+  function hideTooltip() {
+    setHovered(null)
+  }
 
   return (
     <nav className="space-y-5" aria-label="Primary navigation">
@@ -87,11 +100,14 @@ function Navigation({ compact, onNavigate }: { compact: boolean; onNavigate?: ()
                 <NavLink
                   key={item.to}
                   to={to}
-                  title={compact ? item.label : undefined}
                   aria-label={item.label}
                   aria-current={active ? 'page' : undefined}
                   className={cn('nav-link', active && 'is-active', compact && 'is-compact')}
                   onClick={onNavigate}
+                  onMouseEnter={(event) => showTooltip(event, item.label)}
+                  onMouseLeave={hideTooltip}
+                  onFocus={(event) => showTooltip(event, item.label)}
+                  onBlur={hideTooltip}
                 >
                   <Icon className="h-[18px] w-[18px] shrink-0" />
                   {!compact ? <span>{item.label}</span> : null}
@@ -101,6 +117,11 @@ function Navigation({ compact, onNavigate }: { compact: boolean; onNavigate?: ()
           </div>
         </div>
       ))}
+      {compact && hovered ? (
+        <div className="nav-instant-tooltip" style={{ top: hovered.top, transform: 'translateY(-50%)' }} role="tooltip">
+          {hovered.label}
+        </div>
+      ) : null}
     </nav>
   )
 }
@@ -211,9 +232,14 @@ export function AppShell() {
 function WorkspaceRevisionControls({ workspace }: { workspace: Workspace }) {
   const editing = useWorkspaceEditing(workspace)
   const busy = editing.undo.isPending || editing.redo.isPending
+  const syncingWrites = useIsMutating({ mutationKey: WORKSPACE_WRITE_KEY })
   return (
     <div className="revision-controls">
-      <span className="save-state hidden xl:inline"><span className="save-dot" />Saved {formatUpdatedAt(workspace.updated_at)}</span>
+      {syncingWrites > 0 ? (
+        <span className="save-state hidden xl:inline" role="status"><span className="save-dot" style={{ background: 'var(--warning)' }} />Syncing…</span>
+      ) : (
+        <span className="save-state hidden xl:inline"><span className="save-dot" />Saved {formatUpdatedAt(workspace.updated_at)}</span>
+      )}
       <button type="button" className="icon-button" title="Undo last workspace change" aria-label="Undo last workspace change" disabled={!workspace.can_undo || busy} onClick={() => editing.undo.mutate()}><Undo2 className="h-4 w-4" /></button>
       <button type="button" className="icon-button" title="Redo workspace change" aria-label="Redo workspace change" disabled={!workspace.can_redo || busy} onClick={() => editing.redo.mutate()}><Redo2 className="h-4 w-4" /></button>
     </div>

@@ -83,6 +83,18 @@ class DocumentationGenerator:
                 api_groups,
                 "",
                 "## Deployment Plan",
+                f"Replicas: {workspace.deployment_plan.replicas if workspace.deployment_plan.replicas else 'unknown'}",
+                f"Regions: {', '.join(workspace.deployment_plan.regions) if workspace.deployment_plan.regions else 'unknown'}",
+                f"Strategy: {workspace.deployment_plan.deployment_strategy or 'not decided'}",
+                f"Availability: {workspace.deployment_plan.availability_configuration or 'not specified'}",
+                "",
+                "### Stack rationale (which workload needs each technology)",
+                *(
+                    [f"- {item}" for item in workspace.deployment_plan.stack_rationale]
+                    or ["- Stack rationale pending deployment clarification."]
+                ),
+                "",
+                "### Target stack",
                 *[f"- {item}" for item in workspace.deployment_plan.target_stack],
                 "",
                 "## Diagrams",
@@ -92,6 +104,12 @@ class DocumentationGenerator:
                 *graph_lines,
                 "",
                 "Relationships are derived from validated requirements and generated artifacts; semantic confidence is recorded where matching is approximate.",
+                "",
+                "## Consistency Review",
+                *(
+                    [f"- [{issue.severity}] {issue.message}" for issue in workspace.consistency_issues]
+                    or ["- No consistency findings recorded."]
+                ),
             ]
         )
 

@@ -41,6 +41,24 @@ def build_structured_prompt(stage: str, payload: dict) -> str:
             f"Raw input JSON:\n{json.dumps(payload, indent=2)}"
         )
 
+    if stage == "architecture-selection":
+        return (
+            "You are ArchAI's architecture strategist. Choose the three most suitable "
+            "architecture styles for the brief from the supplied candidate catalog, "
+            "including a hybrid when the signals genuinely call for split treatment "
+            "(for example a small team with bursty or event-heavy slices, or a cohesive "
+            "core with isolated high-scale workloads).\n"
+            "Return only JSON matching the enforced schema: "
+            '{"selected_ids": ["<id>", "<id>", "<id>"], "rationale": "<one or two sentences>"}.\n'
+            "Rules:\n"
+            "- selected_ids must contain exactly three unique ids, each from the candidate id list.\n"
+            "- Prefer the deterministic suitability scores unless the brief text clearly justifies an override.\n"
+            "- Include a hybrid id when scale pressure, variable demand, or team constraints make a pure style weaker than a composed one.\n"
+            "- Do not invent new ids, technologies, vendors, or numeric targets.\n"
+            "- Keep rationale under 40 words and grounded in the supplied signals.\n"
+            f"Selection input JSON:\n{json.dumps(payload, indent=2)}"
+        )
+
     if stage == "workspace-semantic-edit":
         return (
             "You are ArchAI's careful requirements editor. Interpret the user's raw edit in "

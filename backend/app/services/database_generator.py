@@ -7,6 +7,33 @@ from app.schemas.domain import (
     DatabaseRelationship,
     RequirementModel,
 )
+from app.services.domain_inference import (
+    audit_evidence,
+    auth_evidence,
+    cluster_entities,
+    singularize,
+    to_display_name,
+    to_identifier,
+    tokenize,
+)
+
+_PARTY_TOKENS = frozenset(
+    {"partner", "supplier", "distributor", "retailer", "wholesaler", "customer",
+     "vendor", "facility", "warehouse", "store", "user", "member", "client",
+     "carrier", "broker", "dealer", "manufacturer", "bottler", "plant", "outlet"}
+)
+
+_CATALOG_TOKENS = frozenset(
+    {"product", "sku", "ingredient", "course", "lesson", "medicine", "drug",
+     "catalog", "formulation", "concentrate", "recipe"}
+)
+
+_TRANSACTIONAL_TOKENS = frozenset(
+    {"order", "shipment", "booking", "session", "forecast", "inspection",
+     "delivery", "plan", "enrollment", "submission", "prescription", "payment",
+     "invoice", "ticket", "reservation", "cycle", "procedure", "review",
+     "sale", "sales", "checkout"}
+)
 
 
 class DatabaseGenerator:
@@ -27,39 +54,56 @@ class DatabaseGenerator:
             return self._generate_from_hints(requirements)
 
         lower_text = " ".join(requirements.functional_requirements).lower()
-        entities = [
-            DatabaseEntity(
-                name="users",
-                description="Core platform users with role-based access.",
-                fields=[
-                    DatabaseField(name="id", data_type="UUID", description="Primary key"),
-                    DatabaseField(name="email", data_type="VARCHAR(255)", indexed=True, description="Unique login email"),
-                    DatabaseField(name="full_name", data_type="VARCHAR(255)", description="Display name"),
-                    DatabaseField(name="role", data_type="VARCHAR(50)", indexed=True, description="Business role"),
-                    DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Creation time"),
-                ],
-            ),
-            DatabaseEntity(
-                name="audit_logs",
-                description="Immutable audit trail for major business and administrative actions.",
-                fields=[
-                    DatabaseField(name="id", data_type="UUID", description="Primary key"),
-                    DatabaseField(name="actor_id", data_type="UUID", indexed=True, description="User who triggered the event"),
-                    DatabaseField(name="event_type", data_type="VARCHAR(80)", indexed=True, description="Domain event type"),
-                    DatabaseField(name="entity_name", data_type="VARCHAR(80)", description="Affected entity"),
-                    DatabaseField(name="metadata", data_type="JSONB", description="Structured event details"),
-                    DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Creation time"),
-                ],
-            ),
-        ]
-        relationships = [
-            DatabaseRelationship(
-                source="audit_logs",
-                target="users",
-                relationship="many-to-one",
-                description="Every audit log entry is attributed to a user or system actor.",
+        is_curated_domain = (
+            "charger" in lower_text
+            or "station" in lower_text
+            or requirements.domain == "EV Charging Booking Platform"
+            or "prescription" in lower_text
+            or requirements.domain == "Online Pharmacy"
+        )
+        # Platform tables exist only with evidence: curated domains reference
+        # users throughout, otherwise identity/audit tables require explicit
+        # auth and audit requirements (audit attribution implies users).
+        entities: list[DatabaseEntity] = []
+        if is_curated_domain or self._auth_evidence(requirements) or self._audit_evidence(requirements):
+            entities.append(
+                DatabaseEntity(
+                    name="users",
+                    description="Core platform users with role-based access.",
+                    fields=[
+                        DatabaseField(name="id", data_type="UUID", description="Primary key"),
+                        DatabaseField(name="email", data_type="VARCHAR(255)", indexed=True, description="Unique login email"),
+                        DatabaseField(name="full_name", data_type="VARCHAR(255)", description="Display name"),
+                        DatabaseField(name="role", data_type="VARCHAR(50)", indexed=True, description="Business role"),
+                        DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Creation time"),
+                    ],
+                )
             )
-        ]
+        relationships: list[DatabaseRelationship] = []
+        if is_curated_domain or self._audit_evidence(requirements):
+            entities.append(
+                DatabaseEntity(
+                    name="audit_logs",
+                    description="Immutable audit trail for major business and administrative actions.",
+                    fields=[
+                        DatabaseField(name="id", data_type="UUID", description="Primary key"),
+                        DatabaseField(name="actor_id", data_type="UUID", indexed=True, description="User who triggered the event"),
+                        DatabaseField(name="event_type", data_type="VARCHAR(80)", indexed=True, description="Domain event type"),
+                        DatabaseField(name="entity_name", data_type="VARCHAR(80)", description="Affected entity"),
+                        DatabaseField(name="metadata", data_type="JSONB", description="Structured event details"),
+                        DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Creation time"),
+                    ],
+                )
+            )
+            relationships.append(
+                DatabaseRelationship(
+                    source="audit_logs",
+                    target="users",
+                    relationship="many-to-one",
+                    description="Every audit log entry is attributed to a user or system actor.",
+                )
+            )
+        pattern_assumptions: list[str] = []
 
         if "charger" in lower_text or "station" in lower_text or requirements.domain == "EV Charging Booking Platform":
             entities.extend(
@@ -325,62 +369,60 @@ class DatabaseGenerator:
                 ]
             )
         else:
-            entities.extend(
-                [
-                    DatabaseEntity(
-                        name="workflows",
-                        description="Primary business workflow records for the generated platform.",
-                        fields=[
-                            DatabaseField(name="id", data_type="UUID", description="Primary key"),
-                            DatabaseField(name="owner_id", data_type="UUID", indexed=True, description="Owning user"),
-                            DatabaseField(name="status", data_type="VARCHAR(40)", indexed=True, description="Workflow status"),
-                            DatabaseField(name="payload", data_type="JSONB", description="Domain-specific data"),
-                            DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Creation time"),
-                        ],
-                    ),
-                    DatabaseEntity(
-                        name="notifications",
-                        description="Outbound user and system notification requests.",
-                        fields=[
-                            DatabaseField(name="id", data_type="UUID", description="Primary key"),
-                            DatabaseField(name="user_id", data_type="UUID", indexed=True, description="Recipient"),
-                            DatabaseField(name="channel", data_type="VARCHAR(40)", description="Delivery channel"),
-                            DatabaseField(name="status", data_type="VARCHAR(40)", indexed=True, description="Delivery status"),
-                            DatabaseField(name="payload", data_type="JSONB", description="Message content"),
-                        ],
-                    ),
-                ]
+            # Entity-driven model: every table comes from the brief's domain
+            # entities (never generic platform placeholders), with platform
+            # tables added only when identity/audit evidence requires them.
+            domain_entities = self._generate_from_blueprint_entities(requirements)
+            entities.extend(domain_entities)
+            inferred_relationships, assumed_links = self._relationships_for_entities(
+                requirements, domain_entities
             )
-            relationships.extend(
-                [
-                    DatabaseRelationship(
-                        source="workflows",
-                        target="users",
-                        relationship="many-to-one",
-                        description="Each workflow belongs to a user or account.",
-                    ),
-                    DatabaseRelationship(
-                        source="notifications",
-                        target="users",
-                        relationship="many-to-one",
-                        description="Notification recipients map to platform users.",
-                    ),
-                ]
-            )
+            relationships.extend(inferred_relationships)
+            for assumed in assumed_links:
+                pattern_assumptions.append(
+                    f"Line-item link for {assumed} is a structural assumption; confirm the parent records."
+                )
 
-        indexes = [
-            "CREATE INDEX idx_users_role ON users(role);",
-            "CREATE INDEX idx_audit_logs_event_type ON audit_logs(event_type);",
-            "CREATE INDEX idx_audit_logs_actor_id ON audit_logs(actor_id);",
-        ]
+        entity_names = {entity.name for entity in entities}
+        indexes = []
+        if "users" in entity_names:
+            indexes.append("CREATE INDEX idx_users_role ON users(role);")
+        if "audit_logs" in entity_names:
+            indexes.extend(
+                [
+                    "CREATE INDEX idx_audit_logs_event_type ON audit_logs(event_type);",
+                    "CREATE INDEX idx_audit_logs_actor_id ON audit_logs(actor_id);",
+                ]
+            )
+        for entity in entities:
+            for field in entity.fields:
+                if field.indexed and field.name not in {"role", "event_type", "actor_id"}:
+                    indexes.append(
+                        f"CREATE INDEX idx_{entity.name}_{field.name} ON {entity.name}({field.name});"
+                    )
         normalization_notes = [
             "Core transactional tables are normalized to third normal form.",
             "JSONB is reserved for extensible metadata, not for high-cardinality relational joins.",
             "Indexing prioritizes role lookups, status filters, and audit/event retrieval paths.",
         ]
+        normalization_notes.extend(pattern_assumptions)
+        if any(entity.bounded_context for entity in entities):
+            normalization_notes.append(
+                "Tables carry their owning bounded context; relationships prefer "
+                "aggregate-root ownership inferred from workflow and requirement co-mention."
+            )
 
         sql_schema = self._render_sql(entities, relationships)
         sample_inserts = self._sample_inserts(entities)
+
+        # Every table carries an owning bounded context, including curated
+        # domains, so ownership and consistency checks work uniformly.
+        fallback_contexts = cluster_entities([entity.name for entity in entities])
+        for entity in entities:
+            if not entity.bounded_context:
+                entity.bounded_context = fallback_contexts.get(
+                    entity.name, to_display_name(entity.name)
+                )
 
         return DatabaseDesign(
             database_engine="PostgreSQL",
@@ -391,6 +433,281 @@ class DatabaseGenerator:
             sql_schema=sql_schema,
             sample_inserts=sample_inserts,
         )
+
+    def _auth_evidence(self, requirements: RequirementModel) -> bool:
+        return auth_evidence(
+            *requirements.functional_requirements,
+            *requirements.non_functional_requirements,
+            *requirements.constraints,
+        )
+
+    def _audit_evidence(self, requirements: RequirementModel) -> bool:
+        return audit_evidence(
+            *requirements.functional_requirements,
+            *requirements.non_functional_requirements,
+            *requirements.constraints,
+        )
+
+    def _entity_kind(self, identifier: str) -> str:
+        from app.services.domain_inference import singularize
+
+        tokens = {singularize(part) for part in identifier.split("_")}
+        if tokens & _PARTY_TOKENS:
+            return "party"
+        if tokens & _CATALOG_TOKENS:
+            return "catalog"
+        if tokens & _TRANSACTIONAL_TOKENS:
+            return "transactional"
+        return "general"
+
+    def _mentioned_identifiers(self, text: str, identifiers: list[str]) -> list[str]:
+        """Identifiers mentioned in the text, in order of first appearance.
+
+        Matching is tolerant (singular/plural, partner/partnerships) so
+        brief wording still grounds the model without inventing concepts.
+        """
+        tokens = tokenize(text)
+        singular_tokens = [singularize(token) for token in tokens]
+        positions: dict[str, int] = {}
+        for identifier in identifiers:
+            parts = [part for part in identifier.split("_") if len(part) > 2]
+            if not parts:
+                continue
+            hits = [
+                self._part_position(part, tokens, singular_tokens) for part in parts
+            ]
+            if all(position is not None for position in hits):
+                positions[identifier] = min(position for position in hits if position is not None)
+        return sorted(positions, key=lambda name: positions[name])
+
+    @staticmethod
+    def _part_position(part: str, tokens: list[str], singular_tokens: list[str]) -> int | None:
+        for index, (token, singular) in enumerate(zip(tokens, singular_tokens)):
+            if part == token or part == singular:
+                return index
+            if len(part) >= 5 and (
+                singular.startswith(part) or part.startswith(singular)
+            ):
+                return index
+        return None
+
+    def _generate_from_blueprint_entities(
+        self, requirements: RequirementModel
+    ) -> list[DatabaseEntity]:
+        """Build tables from the brief's domain entities with kind-based
+        lifecycle fields. Every table traces to an extracted domain concept."""
+        identifiers = [to_identifier(hint.name) for hint in requirements.domain_entities]
+        identifiers = [item for item in identifiers if item]
+        contexts = cluster_entities(identifiers)
+        entities: list[DatabaseEntity] = []
+        for hint, identifier in zip(requirements.domain_entities, identifiers, strict=False):
+            if not identifier or any(entity.name == identifier for entity in entities):
+                continue
+            if identifier in {"users", "audit_logs", "notifications"}:
+                # Platform tables are added once, with evidence, by the caller.
+                continue
+            display = to_display_name(identifier)
+            context = contexts.get(identifier, display)
+            kind = self._entity_kind(identifier)
+            fields = [DatabaseField(name="id", data_type="UUID", description="Primary key")]
+            if kind == "party":
+                fields.extend(
+                    [
+                        DatabaseField(name="name", data_type="VARCHAR(255)", description=f"{display} display name"),
+                        DatabaseField(name="code", data_type="VARCHAR(80)", indexed=True, description=f"{display} business code"),
+                        DatabaseField(name="status", data_type="VARCHAR(40)", indexed=True, description="Lifecycle status"),
+                        DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Creation time"),
+                    ]
+                )
+            elif kind == "catalog":
+                fields.extend(
+                    [
+                        DatabaseField(name="name", data_type="VARCHAR(255)", description=f"{display} display name"),
+                        DatabaseField(name="sku", data_type="VARCHAR(80)", indexed=True, description="Stock keeping unit or catalog code"),
+                        DatabaseField(name="status", data_type="VARCHAR(40)", indexed=True, description="Catalog availability"),
+                    ]
+                )
+            elif kind == "transactional":
+                fields.extend(
+                    [
+                        DatabaseField(name="status", data_type="VARCHAR(40)", indexed=True, description="Lifecycle status"),
+                        DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Creation time"),
+                        DatabaseField(name="updated_at", data_type="TIMESTAMPTZ", nullable=True, description="Last change time"),
+                    ]
+                )
+            else:
+                fields.extend(
+                    [
+                        DatabaseField(name="name", data_type="VARCHAR(255)", description=f"{display} display name"),
+                        DatabaseField(name="status", data_type="VARCHAR(40)", indexed=True, description="Lifecycle status"),
+                        DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Creation time"),
+                    ]
+                )
+            entities.append(
+                DatabaseEntity(
+                    name=identifier,
+                    description=(
+                        f"{display} in the {context} bounded context "
+                        f"({hint.description or 'domain record'})."
+                    ),
+                    fields=fields,
+                    bounded_context=context,
+                )
+            )
+        return entities
+
+    def _relationships_for_entities(
+        self, requirements: RequirementModel, entities: list[DatabaseEntity]
+    ) -> tuple[list[DatabaseRelationship], list[str]]:
+        """Infer ownership relationships from workflow structure, requirement
+        co-mention, compound containment, line-item patterns, and enumeration
+        flow. Every rule is structural (no domain hardcoding); pattern-based
+        assumptions are returned for review notes."""
+        identifiers = [entity.name for entity in entities]
+        by_name = {entity.name: entity for entity in entities}
+        relationships: list[DatabaseRelationship] = []
+        seen: set[tuple[str, str]] = set()
+        assumed: list[str] = []
+
+        def _link(source: str, target: str, reason: str, *, fk: bool = True) -> None:
+            if source == target or (source, target) in seen:
+                return
+            if source not in by_name or target not in by_name:
+                return
+            seen.add((source, target))
+            if fk:
+                target_singular = target[:-1] if target.endswith("s") and not target.endswith("ss") else target
+                fk_field = f"{target_singular}_id"
+                if not any(field.name == fk_field for field in by_name[source].fields):
+                    by_name[source].fields.insert(
+                        1,
+                        DatabaseField(
+                            name=fk_field,
+                            data_type="UUID",
+                            indexed=True,
+                            description=f"Owning {to_display_name(target)} reference",
+                        ),
+                    )
+            relationships.append(
+                DatabaseRelationship(
+                    source=source,
+                    target=target,
+                    relationship="many-to-one",
+                    description=reason,
+                )
+            )
+
+        # Workflow aggregate roots own their related entities.
+        for workflow in requirements.domain_workflows:
+            members = [to_identifier(name) for name in workflow.related_entities]
+            members = [name for name in members if name in by_name]
+            if len(members) >= 2:
+                root, others = members[0], members[1:]
+                for other in others:
+                    _link(other, root, f"{other} belongs to {root} via the {workflow.name} workflow.")
+        # Transactional records reference co-mentioned parties and catalogs.
+        for requirement in requirements.functional_requirements:
+            mentioned = self._mentioned_identifiers(requirement, identifiers)
+            parties = [name for name in mentioned if self._entity_kind(name) == "party"]
+            catalogs = [name for name in mentioned if self._entity_kind(name) == "catalog"]
+            transactions = [name for name in mentioned if self._entity_kind(name) == "transactional"]
+            for transaction in transactions:
+                for party in parties:
+                    _link(
+                        transaction,
+                        party,
+                        f"{transaction} references {party} (co-mentioned requirement).",
+                    )
+                for catalog in catalogs:
+                    _link(
+                        transaction,
+                        catalog,
+                        f"{transaction} references {catalog} (co-mentioned requirement).",
+                    )
+        # Compound containment: order_items belongs to orders (compared on
+        # singularized tokens so plural blueprint names resolve).
+        from app.services.domain_inference import singularize as _singularize
+
+        token_sets = {
+            name: {_singularize(part) for part in name.split("_")}
+            for name in identifiers
+        }
+        for source in identifiers:
+            source_tokens = token_sets[source]
+            for target in identifiers:
+                if len(target) >= len(source):
+                    continue
+                if token_sets[target] < source_tokens:
+                    _link(source, target, f"{source} belongs to {target} (compound containment).")
+        # Line-item pattern: X_items lines reference their parent order and
+        # the first catalog entity (assumption, flagged for review).
+        catalog_entities = [name for name in identifiers if self._entity_kind(name) == "catalog"]
+        for source in identifiers:
+            if not (source.endswith("_items") or source.endswith("_lines") or source.endswith("_entries")):
+                continue
+            if catalog_entities:
+                _link(
+                    source,
+                    catalog_entities[0],
+                    f"{source} references catalog {catalog_entities[0]} (line-item pattern; confirm).",
+                )
+                assumed.append(source)
+        # Enumeration flow: "suppliers, facilities, partners, warehouses..."
+        # after a movement verb describes a handoff chain; consecutive pairs
+        # get flows-to links. Plain capability enumerations (no movement or
+        # path language) never create flow links. Identifiers appearing
+        # before the movement verb (the thing being moved, e.g. "Products
+        # move through...") are skipped.
+        movement_verbs = ("move", "moves", "flow", "flows", "travel", "travels", "pass", "passes", "route", "routes")
+        for sentence in self._enumeration_sentences(requirements):
+            lowered = sentence.casefold()
+            has_movement = (
+                any(f" {verb} " in f" {lowered} " for verb in movement_verbs)
+                or " through " in lowered
+            )
+            if not has_movement:
+                continue
+            chain = [
+                name for name in self._mentioned_identifiers(sentence, identifiers)
+                if name in by_name
+            ]
+            verb_at = min(
+                (lowered.find(f" {verb} ") for verb in movement_verbs if f" {verb} " in lowered),
+                default=-1,
+            )
+            if verb_at >= 0:
+                lead_text = lowered[:verb_at]
+                chain = [
+                    name for name in chain
+                    if not any(
+                        part in lead_text
+                        for part in name.split("_")
+                    )
+                ]
+            for first, second in zip(chain, chain[1:]):
+                if (first, second) in seen or (second, first) in seen:
+                    continue
+                seen.add((first, second))
+                relationships.append(
+                    DatabaseRelationship(
+                        source=first,
+                        target=second,
+                        relationship="flows-to",
+                        description=f"{first} hands off to {second} (enumeration flow; confirm cardinality).",
+                    )
+                )
+        if assumed:
+            return relationships, sorted(set(assumed))
+        return relationships, []
+
+    def _enumeration_sentences(self, requirements: RequirementModel) -> list[str]:
+        """Source sentences enumerating 3+ domain entities in sequence."""
+        sentences: list[str] = []
+        for requirement in requirements.functional_requirements:
+            segments = re.split(r",\s*|\s+and\s+", requirement)
+            if len(segments) >= 4:
+                sentences.append(requirement)
+        return sentences
 
     def _generate_from_hints(self, requirements: RequirementModel) -> DatabaseDesign:
         entities: list[DatabaseEntity] = []
@@ -458,6 +775,72 @@ class DatabaseGenerator:
                         )
                     )
 
+        contexts = cluster_entities([entity.name for entity in entities])
+        for entity in entities:
+            entity.bounded_context = contexts.get(entity.name, to_display_name(entity.name))
+
+        # Platform tables only with evidence, same rule as the blueprint path.
+        platform_entities: list[DatabaseEntity] = []
+        if auth_evidence(
+            *requirements.functional_requirements,
+            *requirements.non_functional_requirements,
+            *requirements.constraints,
+        ):
+            platform_entities.append(
+                DatabaseEntity(
+                    name="users",
+                    description="Core platform users with role-based access.",
+                    fields=[
+                        DatabaseField(name="id", data_type="UUID", description="Primary key"),
+                        DatabaseField(name="email", data_type="VARCHAR(255)", indexed=True, description="Unique login email"),
+                        DatabaseField(name="role", data_type="VARCHAR(50)", indexed=True, description="Business role"),
+                    ],
+                    bounded_context="Identity",
+                )
+            )
+            indexes.append("CREATE INDEX idx_users_role ON users(role);")
+        if audit_evidence(
+            *requirements.functional_requirements,
+            *requirements.non_functional_requirements,
+            *requirements.constraints,
+        ):
+            if not any(entity.name == "users" for entity in platform_entities):
+                platform_entities.append(
+                    DatabaseEntity(
+                        name="users",
+                        description="Core platform users with role-based access.",
+                        fields=[
+                            DatabaseField(name="id", data_type="UUID", description="Primary key"),
+                            DatabaseField(name="email", data_type="VARCHAR(255)", indexed=True, description="Unique login email"),
+                            DatabaseField(name="role", data_type="VARCHAR(50)", indexed=True, description="Business role"),
+                        ],
+                        bounded_context="Identity",
+                    )
+                )
+                indexes.append("CREATE INDEX idx_users_role ON users(role);")
+            platform_entities.append(
+                DatabaseEntity(
+                    name="audit_logs",
+                    description="Immutable audit trail for major business and administrative actions.",
+                    fields=[
+                        DatabaseField(name="id", data_type="UUID", description="Primary key"),
+                        DatabaseField(name="actor_id", data_type="UUID", indexed=True, description="Attribution reference"),
+                        DatabaseField(name="event_type", data_type="VARCHAR(80)", indexed=True, description="Domain event type"),
+                    ],
+                    bounded_context="Governance",
+                )
+            )
+            relationships.append(
+                DatabaseRelationship(
+                    source="audit_logs",
+                    target="users",
+                    relationship="many-to-one",
+                    description="Every audit log entry is attributed to a user or system actor.",
+                )
+            )
+            indexes.append("CREATE INDEX idx_audit_logs_event_type ON audit_logs(event_type);")
+        entities = [*platform_entities, *entities]
+
         return DatabaseDesign(
             database_engine="PostgreSQL (architecture recommendation)",
             entities=entities,
@@ -468,22 +851,9 @@ class DatabaseGenerator:
                 "Attribute types and relationships are provisional until the open data-model questions are answered.",
                 "Use object storage alongside the relational model if binary or high-volume data requires it.",
             ],
-            sql_schema=self._render_dynamic_sql(entities),
+            sql_schema=self._render_sql(entities, relationships),
             sample_inserts="-- Sample records are intentionally omitted until domain values are confirmed.",
         )
-
-    def _render_dynamic_sql(self, entities: list[DatabaseEntity]) -> str:
-        statements: list[str] = []
-        for entity in entities:
-            columns: list[str] = []
-            for field in entity.fields:
-                suffix = " PRIMARY KEY DEFAULT gen_random_uuid()" if field.name == "id" else ""
-                nullable = "" if field.nullable else " NOT NULL"
-                columns.append(f"  {field.name} {field.data_type}{suffix}{nullable}")
-            statements.extend(
-                [f"CREATE TABLE {entity.name} (", ",\n".join(columns), ");", ""]
-            )
-        return "\n".join(statements).rstrip()
 
     def _identifier(self, value: str) -> str:
         identifier = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
@@ -544,6 +914,21 @@ class DatabaseGenerator:
             ("workflows", "owner_id"): "users(id)",
             ("notifications", "user_id"): "users(id)",
         }
+        # Dynamic foreign keys from inferred ownership relationships.
+        for relation in relationships:
+            if relation.relationship != "many-to-one":
+                continue
+            singular = (
+                relation.target[:-1]
+                if relation.target.endswith("s") and not relation.target.endswith("ss")
+                else relation.target
+            )
+            relationship_map.setdefault(
+                (relation.source, f"{singular}_id"), f"{relation.target}(id)"
+            )
+            relationship_map.setdefault(
+                (relation.source, f"{relation.target}_id"), f"{relation.target}(id)"
+            )
 
         for entity in entities:
             lines.append(f"CREATE TABLE {entity.name} (")
@@ -566,10 +951,16 @@ class DatabaseGenerator:
 
     def _sample_inserts(self, entities: list[DatabaseEntity]) -> str:
         entity_names = {entity.name for entity in entities}
-        lines = [
-            "INSERT INTO users (id, email, full_name, role, created_at)",
-            "VALUES (gen_random_uuid(), 'admin@archai.dev', 'ArchAI Admin', 'admin', NOW());",
-        ]
+        lines = []
+        if "users" in entity_names:
+            lines.extend(
+                [
+                    "INSERT INTO users (id, email, full_name, role, created_at)",
+                    "VALUES (gen_random_uuid(), 'admin@archai.dev', 'ArchAI Admin', 'admin', NOW());",
+                ]
+            )
+        else:
+            lines.append("-- No identity seed: add user records once the auth model is confirmed.")
         if "products" in entity_names:
             lines.extend(
                 [

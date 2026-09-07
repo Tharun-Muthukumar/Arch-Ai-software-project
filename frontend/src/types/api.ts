@@ -30,7 +30,7 @@ export interface RequirementModel {
   integrations: string[]
   data_characteristics: string[]
   open_questions: string[]
-  analysis_source: 'predefined-blueprint' | 'ollama-pretrained' | 'conservative-fallback' | 'legacy'
+  analysis_source: 'predefined-blueprint' | 'ollama-pretrained' | 'deterministic-extraction' | 'conservative-fallback' | 'legacy'
   analysis_warnings: string[]
 }
 
@@ -126,6 +126,7 @@ export interface DatabaseEntity {
   name: string
   description: string
   fields: DatabaseField[]
+  bounded_context?: string | null
 }
 
 export interface DatabaseRelationship {
@@ -186,6 +187,7 @@ export interface DeploymentPlan {
   scaling_strategy: string[]
   security_controls: string[]
   cloud_recommendation: string
+  stack_rationale?: string[]
 }
 
 export interface ImpactAssessment {
@@ -528,11 +530,19 @@ export interface TwinCaseStudy {
   source_note: string
 }
 
+export interface TwinSimilarMetric {
+  metric: string
+  user_score: number
+  case_score: number
+  delta: number
+}
+
 export interface TwinMatch {
   case_study: TwinCaseStudy
   similarity_score: number
   overlap_services: string[]
   rationale: string
+  similar_metrics: TwinSimilarMetric[]
 }
 
 export interface TwinMatchRequest {
@@ -621,4 +631,5 @@ export interface WorkspaceCreatePayload {
   budget?: string
   preferred_cloud?: string
   constraints: string[]
+  team_size?: number
 }

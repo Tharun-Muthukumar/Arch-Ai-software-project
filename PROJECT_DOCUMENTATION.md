@@ -5,7 +5,7 @@
 ArchAI is a web application that takes a plain-English project brief and automatically generates a complete software architecture package. You describe what you want to build, and ArchAI produces:
 
 - Structured requirements (actors, functional/non-functional requirements, constraints)
-- Three architecture alternatives (Modular Monolith, Microservices, Serverless) with weighted comparison scores
+- Three most-suitable architecture alternatives selected from an expanded catalog (modular monolith, service-based, microservices, serverless, plus hybrids) with weighted comparison scores
 - Seven UML diagrams (Use Case, Activity, Sequence, Class, ER, Component, Deployment)
 - Database schema design with SQL DDL
 - REST API endpoint specifications
@@ -62,7 +62,7 @@ When a user submits a project brief, ArchAI runs a 9-step generation pipeline:
 ```
 1. Requirement Analyzer   -->  Extracts actors, features, constraints from the brief
 2. Clarification Engine   -->  Identifies gaps, generates follow-up questions
-3. Architecture Generator -->  Creates 3 architecture alternatives
+3. Architecture Generator -->  Selects the 3 most suitable styles from the catalog (Ollama second opinion when available, deterministic fallback otherwise)
 4. Comparison Engine      -->  Scores each architecture on 12 weighted metrics
 5. Recommendation Engine  -->  Picks the best option with reasoning
 6. Database Generator     -->  Generates entity-relationship schema + SQL DDL
@@ -81,11 +81,11 @@ The system recognizes four domains out of the box:
 - **E-Commerce** - products, orders, payments, shipments
 - **Learning Platform** - courses, enrollments, lessons, submissions, notifications
 
-Known domains use built-in requirement knowledge. An unrecognized brief is sent raw to Ollama before any fallback is constructed. Qwen returns a constrained JSON structure containing the domain, requirements, actors, entities, workflows, integrations, data characteristics, assumptions, and open questions. Pydantic validates that response, and grounding guards remove unsupported numeric constraints and unsolicited named technologies. The validated model then drives the same architecture, scoring, database, API, diagram, deployment, and documentation pipeline. No new domain file is needed.
+Known domains use built-in requirement knowledge, matched by scored keyword evidence (a single generic word is never enough to claim a domain). An unrecognized brief is sent raw to Ollama before any fallback is constructed. Qwen returns a constrained JSON structure containing the domain, requirements, actors, entities, workflows, integrations, data characteristics, assumptions, and open questions. Pydantic validates that response, and grounding guards remove unsupported numeric constraints, unsolicited named technologies, and ungrounded actors. The validated model then drives the same architecture, scoring, database, API, diagram, deployment, and documentation pipeline. No new domain file is needed.
 
 ### Ollama Extraction and Fallback
 
-If Ollama is running locally with the `qwen3:8b` model, unknown-domain extraction uses temperature zero, a fixed seed, and a Pydantic-derived JSON schema. Explicit restrictions and integration clauses from the source text are preserved after extraction. If Ollama is unavailable or its output fails validation, ArchAI retains the raw user requirement, marks the domain and scale as unknown, and asks clarification questions instead of substituting a generic digital-platform blueprint.
+If Ollama is running locally with the `qwen3:8b` model, unknown-domain extraction uses temperature zero, a fixed seed, and a Pydantic-derived JSON schema. Explicit restrictions and integration clauses from the source text are preserved after extraction. If Ollama is unavailable or its output fails validation, ArchAI runs deterministic extraction over the brief wording (role/entity/capability/integration inference with medium-confidence markings) instead of substituting a generic digital-platform blueprint. Only inputs with no extractable structure keep the honest empty fallback with explicit open questions.
 
 ---
 
@@ -316,7 +316,7 @@ npm run smoke
 
 ## Key Design Decisions
 
-1. **Known blueprints plus raw-input LLM extraction** - Known domains use curated blueprints. Unknown domains go directly from the raw brief to schema-validated Ollama extraction. Without Ollama, the system remains usable but intentionally leaves domain details unresolved.
+1. **Known blueprints plus raw-input LLM extraction plus deterministic inference** - Known domains use curated blueprints (evidence-scored matching). Unknown domains go directly from the raw brief to schema-validated Ollama extraction with actor/entity grounding guards. Without Ollama, deterministic brief-wording extraction keeps any structured domain propagating downstream; only structureless inputs keep the honest empty fallback.
 
 2. **Workspace JSON plus normalized accounts** - Generated architecture state stays in one workspace JSON document, while users, sessions, conversation messages, and sharing permissions use normalized relational tables.
 

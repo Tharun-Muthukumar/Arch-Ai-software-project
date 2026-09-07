@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { GitCompareArrows, Play, Route, TriangleAlert } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { simulateCounterfactual } from '../../lib/api'
@@ -56,6 +56,14 @@ export function CounterfactualSimulator({ workspace }: { workspace: Workspace })
   const update = (key: keyof CounterfactualFormValues, value: string | boolean) => {
     setValues((current) => ({ ...current, [key]: value }))
   }
+
+  // Simulations snapshot one workspace revision: discard the result when the
+  // workspace changes so a stale before/after comparison is never shown.
+  const workspaceStamp = `${workspace.id}:${workspace.updated_at}`
+  useEffect(() => {
+    setResult(null)
+    setError('')
+  }, [workspaceStamp])
 
   const run = async (event: FormEvent) => {
     event.preventDefault()

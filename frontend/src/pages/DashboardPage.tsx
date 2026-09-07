@@ -7,11 +7,11 @@ import { WorkspaceForm } from '../components/workspace/WorkspaceForm'
 import {
   answerClarifications,
   createWorkspace,
-  getApiBaseUrl,
 } from '../lib/api'
+import { WORKSPACE_WRITE_KEY, syncWorkspaceResult } from '../lib/workspaceSync'
 import { formatUpdatedAt, getActiveWorkspace, getErrorMessage } from '../lib/utils'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
-import type { Workspace, WorkspaceCreatePayload } from '../types/api'
+import type { WorkspaceCreatePayload } from '../types/api'
 
 const resultLinks = [
   { to: '/wizard', label: 'Requirements', icon: Layers3 },
@@ -30,23 +30,21 @@ export function DashboardPage() {
     searchParams.get('workspace'),
   )
   const createMutation = useMutation({
+    mutationKey: [...WORKSPACE_WRITE_KEY, 'create'],
     mutationFn: (payload: WorkspaceCreatePayload) => createWorkspace(payload),
     onSuccess: (nextWorkspace) => {
-      queryClient.setQueryData<Workspace[]>(
-        ['workspaces', getApiBaseUrl()],
-        (currentWorkspaces) => {
-          const remainingWorkspaces = (currentWorkspaces ?? []).filter(
-            (item) => item.id !== nextWorkspace.id,
-          )
-          return [nextWorkspace, ...remainingWorkspaces]
-        },
-      )
-      void queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-      navigate(`/wizard?workspace=${nextWorkspace.id}`)
+      syncWorkspaceResult(queryClient, nextWorkspace)
+      // Stay on the overview: Phase 2 (follow-up questions) lives here, so
+      // scroll straight to it instead of sending the user to another page.
+      navigate(`/dashboard?workspace=${nextWorkspace.id}#clarifications`)
+      window.setTimeout(() => {
+        document.getElementById('clarifications')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 150)
     },
   })
 
   const clarificationMutation = useMutation({
+    mutationKey: [...WORKSPACE_WRITE_KEY, 'clarifications'],
     mutationFn: (answers: Record<string, string>) => {
       if (!workspace) {
         throw new Error('No workspace is selected.')
@@ -54,16 +52,7 @@ export function DashboardPage() {
       return answerClarifications(workspace.id, answers)
     },
     onSuccess: (nextWorkspace) => {
-      queryClient.setQueryData<Workspace[]>(
-        ['workspaces', getApiBaseUrl()],
-        (currentWorkspaces) => {
-          const remainingWorkspaces = (currentWorkspaces ?? []).filter(
-            (item) => item.id !== nextWorkspace.id,
-          )
-          return [nextWorkspace, ...remainingWorkspaces]
-        },
-      )
-      void queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+      syncWorkspaceResult(queryClient, nextWorkspace)
       navigate(`/wizard?workspace=${nextWorkspace.id}`)
     },
   })

@@ -15,6 +15,7 @@ const initialValues = {
   budget: '',
   preferred_cloud: '',
   constraints: '',
+  team_size: '',
 }
 
 export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
@@ -40,6 +41,7 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const teamSize = Number.parseInt(values.team_size, 10)
     onSubmit({
       title: values.title.trim(),
       description: values.description.trim(),
@@ -50,6 +52,7 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
         .split(',')
         .map((constraint) => constraint.trim())
         .filter(Boolean),
+      team_size: Number.isFinite(teamSize) && teamSize > 0 ? Math.min(teamSize, 1000) : undefined,
     })
   }
 
@@ -61,6 +64,7 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
       budget: sampleProject.budget ?? 'medium',
       preferred_cloud: sampleProject.preferred_cloud ?? 'AWS',
       constraints: sampleProject.constraints.join(', '),
+      team_size: sampleProject.team_size ? String(sampleProject.team_size) : '6',
     })
   }
 
@@ -142,13 +146,34 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
         </div>
 
         <label className="block space-y-1">
+          <span className="text-sm font-medium">Team size (engineers)</span>
+          <input
+            type="number"
+            min={1}
+            max={1000}
+            step={1}
+            required
+            value={values.team_size}
+            onChange={(event) => updateField('team_size', event.target.value)}
+            className="input-shell"
+            placeholder="e.g. 6"
+          />
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Used for Conway&apos;s Law team fit, ownership boundaries, scoring, and budget estimates.
+          </span>
+        </label>
+
+        <label className="block space-y-1">
           <span className="text-sm font-medium">Constraints</span>
           <input
             value={values.constraints}
             onChange={(event) => updateField('constraints', event.target.value)}
             className="input-shell"
-            placeholder="PCI-aware checkout, must use PostgreSQL, SSO required..."
+            placeholder="Must use PostgreSQL; SSO required; 99.99% availability..."
           />
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Separate constraints with semicolons or new lines so multi-part statements stay complete.
+          </span>
         </label>
       </div>
 

@@ -12,7 +12,7 @@ export function ComparisonTable({ comparison }: ComparisonTableProps) {
     <div className="panel overflow-x-auto">
       <div className="flex items-center justify-between gap-3">
         <span className="pill">Scorecards</span>
-        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Higher is better</span>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Higher is better · deterministic model outputs, not objective measurements</span>
       </div>
 
       <table className="mt-4 min-w-full text-sm">

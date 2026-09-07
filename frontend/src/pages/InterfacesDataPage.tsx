@@ -95,6 +95,7 @@ export function InterfacesDataPage() {
       fields: operation === 'delete' ? [] : [
         { key: 'name', label: 'Entity name', required: true, placeholder: 'orders' },
         { key: 'description', label: 'Description', type: 'textarea', required: true },
+        { key: 'bounded_context', label: 'Owning bounded context', placeholder: 'Orders' },
         { key: 'fields', label: 'Attributes', type: 'database-fields' },
       ],
     })
@@ -112,6 +113,7 @@ export function InterfacesDataPage() {
         { key: 'deployment_strategy', label: 'Deployment strategy', placeholder: 'Rolling, blue/green, canary, or undecided' },
         { key: 'availability_configuration', label: 'Availability configuration', type: 'textarea', placeholder: 'Known failover or redundancy requirements.' },
         { key: 'target_stack', label: 'Target stack', type: 'tags' },
+        { key: 'stack_rationale', label: 'Stack rationale', type: 'tags', help: 'Which workload needs each technology.' },
         { key: 'docker_services', label: 'Container services', type: 'tags' },
         { key: 'kubernetes_modules', label: 'Orchestration modules', type: 'tags' },
         { key: 'scaling_strategy', label: 'Scaling strategy', type: 'tags' },
@@ -187,7 +189,7 @@ export function InterfacesDataPage() {
           <div className="entity-grid">
             {workspace.database_design.entities.map((entity, index) => (
               <section key={`${entity.name}-${index}`} className="panel min-w-0">
-                <div className="flex items-start justify-between gap-3"><div><span className="id-badge">DATA-{String(index + 1).padStart(3, '0')}</span><h3 className="panel-title mt-2">{entity.name}</h3><p className="panel-description">{entity.description}</p></div><div className="row-actions"><button type="button" className="icon-button" title="Edit entity" aria-label={`Edit ${entity.name}`} onClick={() => entityEdit('update', entity, index)}><Edit3 className="h-3.5 w-3.5" /></button><button type="button" className="icon-button danger-hover" title="Delete entity" aria-label={`Delete ${entity.name}`} onClick={() => entityEdit('delete', entity, index)}><Trash2 className="h-3.5 w-3.5" /></button></div></div>
+                <div className="flex items-start justify-between gap-3"><div><span className="id-badge">DATA-{String(index + 1).padStart(3, '0')}</span>{entity.bounded_context ? <span className="pill ml-2">{entity.bounded_context}</span> : null}<h3 className="panel-title mt-2">{entity.name}</h3><p className="panel-description">{entity.description}</p></div><div className="row-actions"><button type="button" className="icon-button" title="Edit entity" aria-label={`Edit ${entity.name}`} onClick={() => entityEdit('update', entity, index)}><Edit3 className="h-3.5 w-3.5" /></button><button type="button" className="icon-button danger-hover" title="Delete entity" aria-label={`Delete ${entity.name}`} onClick={() => entityEdit('delete', entity, index)}><Trash2 className="h-3.5 w-3.5" /></button></div></div>
                 <div className="field-list mt-4">{entity.fields.map((field) => <div key={field.name}><code>{field.name}</code><span>{field.data_type}{field.nullable ? ' · nullable' : ''}</span>{field.indexed ? <KeyRound className="h-3.5 w-3.5" aria-label="Indexed" /> : null}</div>)}</div>
               </section>
             ))}
@@ -209,6 +211,9 @@ export function InterfacesDataPage() {
           </section>
           <div className="editor-grid">
             <ReadOnlyList title="Target stack" values={workspace.deployment_plan.target_stack} icon={<Cloud />} />
+            {(workspace.deployment_plan.stack_rationale?.length ?? 0) > 0 ? (
+              <ReadOnlyList title="Stack rationale — which workload needs each technology" values={workspace.deployment_plan.stack_rationale ?? []} icon={<Cloud />} />
+            ) : null}
             <ReadOnlyList title="Scaling" values={workspace.deployment_plan.scaling_strategy} icon={<Network />} />
             <ReadOnlyList title="Observability" values={workspace.deployment_plan.observability} icon={<Braces />} />
             <ReadOnlyList title="Security controls" values={workspace.deployment_plan.security_controls} icon={<ShieldCheck />} />

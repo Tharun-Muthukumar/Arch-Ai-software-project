@@ -8,6 +8,7 @@ export const sampleProject: WorkspaceCreatePayload = {
     'The company wants a polished first release for city-wide pilots, then expansion across additional regions. Reliability, map accuracy, payment integrity, and clear operator tooling are all critical. The first release should be web-first, with mobile apps planned next.',
   budget: 'medium',
   preferred_cloud: 'AWS',
+  team_size: 6,
   constraints: [
     'Must use PostgreSQL',
     'Must support SSO for admin users',

@@ -27,7 +27,10 @@ _SHARED_UNIT_ARCHITECTURES = {"modular-monolith", "monolithic", "layered", "clea
 _SERVICE_ARCHITECTURES = {
     "event-driven-microservices", "microservices", "event-driven", "event_driven",
     "serverless-platform", "serverless",
+    "service-based", "service_based",
+    "hybrid-event-serverless",
 }
+_HYBRID_MODULAR_ARCHITECTURES = {"hybrid-modular-serverless"}
 _PENALTIES = {"high": 3.0, "medium": 1.5, "low": 0.5}
 
 ROLE_CATALOG: dict[str, list[RoleDefinition]] = {
@@ -128,6 +131,110 @@ ROLE_CATALOG: dict[str, list[RoleDefinition]] = {
             essential=True,
         ),
     ],
+    "service-based": [
+        RoleDefinition(
+            role_name="Backend/Service Owners",
+            description="Own the small set of coarse services, their versioned APIs, and the consistency rules inside each service boundary.",
+            suggested_percentage=0.40,
+            min_headcount=1,
+            essential=True,
+        ),
+        RoleDefinition(
+            role_name="Frontend Engineers",
+            description="Own the client application and its integration with the coarse service APIs.",
+            suggested_percentage=0.20,
+            min_headcount=1,
+            essential=True,
+        ),
+        RoleDefinition(
+            role_name="QA/Testing",
+            description="Own service-level contract tests plus end-to-end coverage across the coarse service boundaries.",
+            suggested_percentage=0.20,
+            min_headcount=1,
+            essential=True,
+        ),
+        RoleDefinition(
+            role_name="DevOps (part-time/shared)",
+            description="Maintains container pipelines, environments, and observability for a handful of deployables without a full platform team.",
+            suggested_percentage=0.20,
+            min_headcount=0,
+            essential=False,
+        ),
+    ],
+    "hybrid-modular-serverless": [
+        RoleDefinition(
+            role_name="Backend Core Engineers",
+            description="Own the cohesive transactional core, its modules, API contracts, and release-ready integration.",
+            suggested_percentage=0.35,
+            min_headcount=1,
+            essential=True,
+        ),
+        RoleDefinition(
+            role_name="Frontend Engineers",
+            description="Own the client experience and its integration with core APIs and edge-triggered flows.",
+            suggested_percentage=0.20,
+            min_headcount=1,
+            essential=True,
+        ),
+        RoleDefinition(
+            role_name="Serverless/Edge Engineers",
+            description="Own the bursty or asynchronous edge handlers, idempotent writes, retries, and function observability.",
+            suggested_percentage=0.20,
+            min_headcount=0,
+            essential=False,
+        ),
+        RoleDefinition(
+            role_name="QA/Testing",
+            description="Covers core regression plus core-edge contract and failure-handling tests across two compute models.",
+            suggested_percentage=0.15,
+            min_headcount=1,
+            essential=True,
+        ),
+        RoleDefinition(
+            role_name="Cloud/Infrastructure (shared)",
+            description="Configures core hosting, managed functions, queues, identity, and shared production monitoring.",
+            suggested_percentage=0.10,
+            min_headcount=0,
+            essential=False,
+        ),
+    ],
+    "hybrid-event-serverless": [
+        RoleDefinition(
+            role_name="Backend/Service Owners",
+            description="Own the stable coarse services, their APIs, and the versioned events they publish.",
+            suggested_percentage=0.30,
+            min_headcount=1,
+            essential=True,
+        ),
+        RoleDefinition(
+            role_name="Platform & DevOps",
+            description="Owns the event backbone, container hosting, per-service pipelines, and cross-boundary observability.",
+            suggested_percentage=0.20,
+            min_headcount=1,
+            essential=True,
+        ),
+        RoleDefinition(
+            role_name="Frontend Engineers",
+            description="Own the client application and gateway-facing journeys across services and managed endpoints.",
+            suggested_percentage=0.15,
+            min_headcount=1,
+            essential=True,
+        ),
+        RoleDefinition(
+            role_name="Serverless Consumers",
+            description="Own the elastic event consumers, idempotent handlers, retry budgets, and consumer projections.",
+            suggested_percentage=0.15,
+            min_headcount=0,
+            essential=False,
+        ),
+        RoleDefinition(
+            role_name="QA/Testing",
+            description="Own contract, event-compatibility, and end-to-end tests across services and serverless consumers.",
+            suggested_percentage=0.20,
+            min_headcount=1,
+            essential=True,
+        ),
+    ],
 }
 
 _ROLE_CATALOG_ALIASES = {
@@ -138,12 +245,14 @@ _ROLE_CATALOG_ALIASES = {
     "event-driven": "event-driven-microservices",
     "event_driven": "event-driven-microservices",
     "serverless": "serverless-platform",
+    "service_based": "service-based",
 }
 
 
 def _catalog_for(architecture_id: str) -> list[RoleDefinition]:
     """Resolve implementation aliases to one architecture-specific role catalog."""
-    return ROLE_CATALOG[_ROLE_CATALOG_ALIASES.get(architecture_id, architecture_id)]
+    resolved = _ROLE_CATALOG_ALIASES.get(architecture_id, architecture_id)
+    return ROLE_CATALOG.get(resolved, ROLE_CATALOG["service-based"])
 
 
 def _allocate_headcounts(roles: list[RoleDefinition], team_size: int) -> list[int]:
@@ -217,6 +326,8 @@ def _ownership_units(architecture: ArchitectureOption, entities: list[str]) -> l
     """Return the units that can receive independent role ownership."""
     if architecture.id in _SHARED_UNIT_ARCHITECTURES:
         return ["Application tier"]
+    if architecture.id in _HYBRID_MODULAR_ARCHITECTURES:
+        return ["Application core", "Serverless edge handlers"]
     if architecture.id in _SERVICE_ARCHITECTURES:
         return entities or [component.name for component in architecture.components] or ["Application service"]
     return entities or [component.name for component in architecture.components] or ["Application tier"]
@@ -261,30 +372,79 @@ def detect_friction(
     team_fit_plan: TeamFitPlan,
     ownership: list[OwnershipSuggestion],
 ) -> list[FrictionPoint]:
-    """Apply fixed Conway's Law mismatch rules to staffed recommended roles."""
+    """Apply fixed Conway's Law mismatch rules to staffed recommended roles.
+
+    Conway's Law maps communication structure to system structure: a single
+    deployable fits a small collocated team, while independently operated
+    services need enough staffed ownership capacity per boundary.
+    """
     units = _ownership_units(architecture, entities)
     teams = _active_role_teams(team_fit_plan)
     team_names = [team.name for team in teams]
+    team_size = team_fit_plan.total_team_size
     points: list[FrictionPoint] = []
-    if architecture.id in _SHARED_UNIT_ARCHITECTURES and len(teams) > 1:
-        points.append(FrictionPoint(
-            description=f"{len(teams)} roles will all commit to the same deployable unit; expect merge/release contention.",
-            severity="high",
-            affected_components=units,
-            affected_teams=team_names,
-        ))
-    if architecture.id in {"event-driven-microservices", "microservices", "event-driven", "event_driven"} and len(units) < len(teams):
-        owners = {item.suggested_team for item in ownership}
-        shared_roles = [team.name for team in teams if team.name not in owners]
-        points.append(FrictionPoint(
-            description=(
-                f"Only {len(units)} service boundary/boundaries exist for {len(teams)} staffed roles; "
-                f"{', '.join(shared_roles or team_names)} will be idle or forced to co-own services."
-            ),
-            severity="medium",
-            affected_components=units,
-            affected_teams=shared_roles or team_names,
-        ))
+    distributed_ids = {
+        "event-driven-microservices", "microservices", "event-driven", "event_driven",
+        "service-based", "service_based", "hybrid-event-serverless",
+        "serverless-platform", "serverless",
+    }
+    if architecture.id in _SHARED_UNIT_ARCHITECTURES:
+        if team_size >= 13 or len(teams) >= 5:
+            points.append(FrictionPoint(
+                description=f"{team_size} people across {len(teams)} roles share one deployable unit; expect merge, release, and ownership contention (Conway mismatch for large teams).",
+                severity="high",
+                affected_components=units,
+                affected_teams=team_names,
+            ))
+        elif team_size >= 7:
+            points.append(FrictionPoint(
+                description=f"{team_size} people across {len(teams)} roles share one deployable unit; coordination cost will grow as parallel work increases.",
+                severity="medium",
+                affected_components=units,
+                affected_teams=team_names,
+            ))
+    if architecture.id in _HYBRID_MODULAR_ARCHITECTURES:
+        if team_size <= 2:
+            points.append(FrictionPoint(
+                description=f"Only {team_size} people must cover both the application core and serverless edge handlers; edge work will compete with core delivery.",
+                severity="medium",
+                affected_components=units,
+                affected_teams=team_names,
+            ))
+        if team_size >= 13:
+            points.append(FrictionPoint(
+                description=f"{team_size} people on a hybrid core-plus-edge shape may outgrow the single core; plan which bounded context splits next.",
+                severity="low",
+                affected_components=units,
+                affected_teams=team_names,
+            ))
+    if architecture.id in distributed_ids:
+        if team_size <= 6 and architecture.id in {"event-driven-microservices", "microservices", "event-driven", "event_driven", "hybrid-event-serverless"}:
+            points.append(FrictionPoint(
+                description=f"Only {team_size} people must operate {len(units)} distributed boundaries plus platform/eventing work; ownership capacity is insufficient for independently deployed services.",
+                severity="high",
+                affected_components=units,
+                affected_teams=team_names,
+            ))
+        elif team_size <= 6:
+            points.append(FrictionPoint(
+                description=f"A {team_size}-person team will stretch to cover {len(units)} service boundaries plus delivery and QA; keep service count small.",
+                severity="medium",
+                affected_components=units,
+                affected_teams=team_names,
+            ))
+        if len(units) < len(teams):
+            owners = {item.suggested_team for item in ownership}
+            shared_roles = [team.name for team in teams if team.name not in owners]
+            points.append(FrictionPoint(
+                description=(
+                    f"Only {len(units)} service boundary/boundaries exist for {len(teams)} staffed roles; "
+                    f"{', '.join(shared_roles or team_names)} will be idle or forced to co-own services."
+                ),
+                severity="medium",
+                affected_components=units,
+                affected_teams=shared_roles or team_names,
+            ))
     ownership_counts = Counter(item.suggested_team for item in ownership)
     for team in teams:
         if team.member_count < 2 and ownership_counts[team.name] > 2:
@@ -297,8 +457,8 @@ def detect_friction(
             ))
     if len(units) > len(teams) * 3:
         points.append(FrictionPoint(
-            description=f"{len(units)} service boundaries for {len(teams)} staffed roles may be over-decomposed relative to maintenance capacity.",
-            severity="low",
+            description=f"{len(units)} service boundaries for {len(teams)} staffed roles are over-decomposed relative to maintenance capacity; merge boundaries or grow ownership.",
+            severity="medium",
             affected_components=units,
             affected_teams=team_names,
         ))
@@ -333,10 +493,15 @@ def check_fit(
     ownership = suggest_ownership(architecture, analysis.detected_entities, team_fit_plan)
     friction_points = detect_friction(architecture, analysis.detected_entities, team_fit_plan, ownership)
     fit_score = compute_fit_score(architecture, analysis.detected_entities, team_fit_plan, friction_points)
+    staffed_roles = len([role for role in team_fit_plan.roles if role.recommended_headcount > 0])
+    unit_count = len(_ownership_units(architecture, analysis.detected_entities))
     return ConwayFitResult(
         fit_score=fit_score,
         team_fit_plan=team_fit_plan,
         ownership_mapping=ownership,
         friction_points=friction_points,
-        summary=f"Conway fit is {fit_score}/10. {friction_points[0].description}",
+        summary=(
+            f"Conway fit is {fit_score}/10 for a {constraints.team_size}-person team on {architecture.name}: "
+            f"{staffed_roles} staffed roles map to {unit_count} ownership units. {friction_points[0].description}"
+        ),
     )

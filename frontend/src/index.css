@@ -105,6 +105,23 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
   }
   .nav-link.is-compact { @apply justify-center px-0; }
 
+  .nav-instant-tooltip {
+    position: fixed;
+    left: 76px;
+    z-index: 60;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    pointer-events: none;
+    color: var(--text);
+    background: var(--surface-strong);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+
   .profile-link {
     @apply flex min-w-0 items-center gap-3 rounded-md p-2 transition-colors hover:bg-white/5;
   }
@@ -328,8 +345,10 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
   .diagram-state p { @apply mt-1 break-words text-xs leading-5 text-muted; }
 
   .skeleton { @apply animate-pulse rounded-lg; background: var(--surface-strong); }
-  .diagram-canvas { @apply flex min-w-max justify-center; }
-  .diagram-canvas svg { width: auto; min-width: 720px; max-width: none !important; height: auto; min-height: 340px; }
+  .diagram-canvas { @apply flex w-full justify-center; }
+  .diagram-canvas.fit { @apply block text-center; }
+  .diagram-canvas.fit svg { width: auto !important; max-width: 100% !important; height: auto !important; max-height: 62vh !important; min-width: 0 !important; min-height: 0 !important; margin: 0 auto; }
+  .diagram-canvas.scaled svg { width: 100% !important; height: auto !important; min-width: 0 !important; min-height: 0 !important; }
   .diagram-canvas svg .edgePath .path,
   .diagram-canvas svg .flowchart-link,
   .diagram-canvas svg .relation { stroke: #aab4be !important; }
@@ -364,7 +383,6 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
   .data-table td:last-child { border-bottom: 0; }
   .diagram-viewport { min-height: 340px; }
   .diagram-scroll-region { padding: 12px; }
-  .diagram-canvas svg { min-width: 620px; min-height: 280px; }
   .data-table td p { max-width: 100%; }
   .data-table td .row-actions { justify-content: flex-start; }
 }

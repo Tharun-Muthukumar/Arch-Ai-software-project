@@ -120,6 +120,12 @@ export function BlastRadiusPage() {
     resetResilienceState()
   }, [resetResilienceState])
 
+  // A simulation is a snapshot of one architecture revision: clear it as soon
+  // as the workspace regenerates so a stale blast radius is never shown.
+  useEffect(() => {
+    resetAll()
+  }, [workspace?.id, workspace?.updated_at, resetAll])
+
   const toggleMitigation = useCallback((id: string) => {
     setSelectedMitigations(prev => {
       const next = new Set(prev)
