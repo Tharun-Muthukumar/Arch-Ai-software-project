@@ -1,12 +1,70 @@
 export interface Actor {
+  id?: string | null
   name: string
   description: string
+  actor_type?: 'human' | 'organizational' | 'external-partner' | 'external-system' | 'device' | 'event-source' | 'machine' | 'unknown'
+  responsibilities?: string[]
+  owning_boundary?: string | null
+  permissions?: string[]
+}
+
+export interface BoundedContext {
+  id: string
+  name: string
+  responsibilities: string[]
+  owned_entities: string[]
+  integrations: string[]
 }
 
 export interface DomainEntityHint {
+  id?: string | null
   name: string
   description: string
   attributes: string[]
+  bounded_context?: string | null
+  lifecycle_fields?: string[]
+}
+
+export interface IntegrationDetail {
+  id: string
+  name: string
+  integration_type: string
+  purpose: string
+  external_owner?: string | null
+  protocol: string[]
+  data_formats: string[]
+  interaction_mode: 'synchronous' | 'asynchronous' | 'batch' | 'unknown'
+  security_mechanisms: string[]
+  reliability_requirements: string[]
+  bounded_context?: string | null
+}
+
+export interface TechnicalCharacteristic {
+  id: string
+  category: string
+  value: string
+  status: 'confirmed' | 'inferred' | 'assumed' | 'user-edited'
+}
+
+export interface ProjectProfile {
+  classification: string
+  team_size?: number | null
+  concurrent_users?: number | null
+  event_volume_per_day?: number | null
+  geographic_scope: string
+  criticality: string
+  integration_complexity: string
+  availability_target_percent?: number | null
+  workload_variability: string
+  data_complexity: string
+  regulatory_sensitivity: string
+}
+
+export interface ConfidenceReport {
+  input_completeness: number
+  inference_confidence: number
+  architecture_confidence: number
+  rationale: string[]
 }
 
 export interface DomainWorkflowHint {
@@ -27,8 +85,13 @@ export interface RequirementModel {
   assumptions: string[]
   domain_entities: DomainEntityHint[]
   domain_workflows: DomainWorkflowHint[]
+  bounded_contexts?: BoundedContext[]
   integrations: string[]
   data_characteristics: string[]
+  integration_details?: IntegrationDetail[]
+  technical_characteristics?: TechnicalCharacteristic[]
+  project_profile?: ProjectProfile
+  confidence?: ConfidenceReport
   open_questions: string[]
   analysis_source: 'predefined-blueprint' | 'ollama-pretrained' | 'deterministic-extraction' | 'conservative-fallback' | 'legacy'
   analysis_warnings: string[]
@@ -54,6 +117,7 @@ export interface ArchitectureComponent {
   responsibility: string
   technologies: string[]
   interactions: string[]
+  dependencies?: string[]
 }
 
 export interface ArchitectureOption {
@@ -78,7 +142,12 @@ export interface ArchitectureOption {
 export interface MetricScore {
   metric: string
   score: number
+  direction?: 'maximize' | 'minimize'
+  normalized_score?: number | null
   explanation: string
+  weight?: number | null
+  contribution?: number | null
+  requirement_signals?: string[]
 }
 
 export interface ArchitectureScorecard {
@@ -86,6 +155,7 @@ export interface ArchitectureScorecard {
   architecture_name: string
   overall_score: number
   weighted_score: number
+  ranking_score?: number | null
   metric_scores: MetricScore[]
   strengths: string[]
   risks: string[]
@@ -188,6 +258,12 @@ export interface DeploymentPlan {
   security_controls: string[]
   cloud_recommendation: string
   stack_rationale?: string[]
+  replicas_per_region?: number | null
+  total_baseline_replicas?: number | null
+  availability_target_percent?: number | null
+  failover_mode?: string | null
+  rto?: string | null
+  rpo?: string | null
 }
 
 export interface ImpactAssessment {
@@ -341,8 +417,6 @@ export type CounterfactualVariable =
   | 'peak_traffic_multiplier'
   | 'availability_percent'
   | 'latency_ms'
-  | 'budget_level'
-  | 'monthly_budget_change_percent'
   | 'team_size'
   | 'geographic_regions'
   | 'realtime_required'
@@ -375,7 +449,6 @@ export interface CounterfactualSnapshot {
   architecture_name: string
   suitability_score: number
   rank: number
-  monthly_cost_estimate_usd?: number | null
   resilience_score: number
   risk_score: number
   risk_level: 'Low' | 'Medium' | 'High'
@@ -494,6 +567,7 @@ export interface ConwayFitResult {
 export interface ConwayFitRequest {
   architecture: ArchitectureOption
   entities: string[]
+  bounded_contexts?: BoundedContext[]
   constraints: ProjectConstraints
 }
 
@@ -528,6 +602,15 @@ export interface TwinCaseStudy {
   summary: string
   lesson: string
   source_note: string
+  evidence_type?: string
+  evidence_confidence?: 'low' | 'medium' | 'high'
+  domain_tags?: string[]
+  capability_tags?: string[]
+  workload_tags?: string[]
+  scale_tags?: string[]
+  data_tags?: string[]
+  reliability_tags?: string[]
+  integration_tags?: string[]
 }
 
 export interface TwinSimilarMetric {
@@ -543,6 +626,22 @@ export interface TwinMatch {
   overlap_services: string[]
   rationale: string
   similar_metrics: TwinSimilarMetric[]
+  domain_similarity: number | null
+  capability_similarity: number | null
+  architecture_similarity: number | null
+  workload_similarity: number | null
+  scale_similarity: number | null
+  technology_similarity: number | null
+  data_similarity: number | null
+  reliability_similarity: number | null
+  integration_similarity: number | null
+  industry_similarity: number | null
+  architecture_precedent_similarity: number | null
+  technology_precedent_similarity: number | null
+  domain_compatible: boolean
+  match_strength: 'strong' | 'domain-relevant' | 'best-available' | 'architecture-only'
+  dimension_evidence?: Record<string, boolean>
+  evidence_notice: string
 }
 
 export interface TwinMatchRequest {
@@ -550,43 +649,21 @@ export interface TwinMatchRequest {
   recommended_architecture_id: string
   deployment_stack: string[]
   weights?: Record<string, number>
+  domain?: string
+  domain_signals?: string[]
+  capability_signals?: string[]
+  workload_signals?: string[]
+  data_signals?: string[]
+  reliability_signals?: string[]
+  integration_signals?: string[]
+  project_profile?: ProjectProfile
+  similarity_weights?: Record<string, number>
 }
 
 export interface ProjectConstraints {
   team_size: number
-  budget_level: 'low' | 'medium' | 'high'
   expected_scale: string
   timeline_weeks: number
-}
-
-export interface BudgetLineItem {
-  label: string
-  monthly_cost_usd: number
-  category: 'infrastructure' | 'team' | 'tooling'
-}
-
-export interface ScaleBudget {
-  scale_tier: string
-  total_monthly_usd: number
-  line_items: BudgetLineItem[]
-}
-
-export interface BudgetEstimate {
-  architecture_id: string
-  budgets_by_scale: ScaleBudget[]
-  assumptions: string[]
-}
-
-export interface BudgetEstimateRequest {
-  architecture: ArchitectureOption
-  deployment_stack: string[]
-  constraints: ProjectConstraints
-}
-
-export interface BudgetCompareRequest {
-  architectures: ArchitectureOption[]
-  deployment_stacks: Record<string, string[]>
-  constraints: ProjectConstraints
 }
 
 export interface Workspace {
@@ -628,7 +705,6 @@ export interface WorkspaceCreatePayload {
   title: string
   description: string
   business_context?: string
-  budget?: string
   preferred_cloud?: string
   constraints: string[]
   team_size?: number

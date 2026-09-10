@@ -55,6 +55,15 @@ _NON_ENTITY_NOUNS = frozenset(
     overview summary context quotidian analytic analytics insight insights
     visibility intelligence metric metrics dashboard dashboards volume volumes
     throughput workload workloads capacity capacities utilization
+    million millions thousand thousands year years credential credentials check
+    checks webhook webhooks format formats protocol protocols realtime real time
+    availability security identity authentication authorization
+    asynchronously asynchronous synchronously synchronous encryption encrypted
+    auditability financial modernization modernize incremental regional
+    authoritative strong consistency idempotency duplicate prevention
+    operator operators manager managers administrator administrators engineer engineers
+    logistic logistics operational operation near real realtime
+    status statuses change changes update updates
     """.split()
 )
 
@@ -71,7 +80,7 @@ def tokenize(text: str) -> list[str]:
 def singularize(word: str) -> str:
     """Lightweight English singularization for entity/role normalization."""
     lower = word.lower()
-    if lower in {"sales", "analytics", "news", "premises", "series", "species", "headquarters"}:
+    if lower in {"sales", "analytics", "news", "premises", "series", "species", "headquarters", "customs"}:
         return lower
     if lower.endswith("ies") and len(lower) > 4:
         return lower[:-3] + "y"
@@ -87,9 +96,31 @@ def _content_tokens(text: str) -> list[str]:
 
 
 def split_sentences(text: str) -> list[str]:
-    """Split prose into sentences on terminal punctuation (never on commas)."""
-    parts = re.split(r"(?<=[.!?;])\s+", text or "")
-    return [part.strip() for part in parts if part.strip()]
+    """Return complete semantic statements without comma-fragmentation.
+
+    Newlines and bullets are legitimate statement boundaries; commas are not.
+    A conjunction-led or low-information continuation is joined to its parent
+    instead of becoming an orphan such as ``And tracking.`` or ``Billing.``.
+    This function is the sole sentence splitter used by domain extraction.
+    """
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"(?m)^\s*(?:[-*•]|\d+[.)])\s*", "", normalized)
+    raw_parts = re.split(r"(?<=[.!?;])(?:\s+|$)|\n+", normalized)
+    statements: list[str] = []
+    for raw in raw_parts:
+        candidate = " ".join(raw.split()).strip()
+        if not candidate:
+            continue
+        candidate = candidate.rstrip("; ")
+        words = tokenize(candidate)
+        conjunction_led = bool(re.match(r"^(?:and|or|while|because|but|with|including)\b", candidate, re.I))
+        low_information = len([word for word in words if word not in _ENGLISH_STOPWORDS]) < 3
+        if statements and (conjunction_led or low_information):
+            connector = " " if statements[-1].endswith((".", "!", "?")) else ", "
+            statements[-1] = f"{statements[-1]}{connector}{candidate}"
+            continue
+        statements.append(candidate)
+    return statements
 
 
 def to_display_name(snake_or_phrase: str) -> str:
@@ -122,6 +153,7 @@ _HUMAN_ROLE_NOUNS = frozenset(
     cashier teller clerk receptionist concierge host marketer seller merchant
     buyer purchaser sponsor owner founder director executive chief president
     assistant associate partner associate aide operative steward warden
+    passenger traveler traveller crew attendant personnel
     """.split()
 )
 
@@ -156,45 +188,164 @@ _ROLE_PATTERN = re.compile(
     r"representatives?|reps?|officers?|agents?|coordinators?|analysts?|"
     r"auditors?|reviewers?|supervisors?|specialists?|consultants?|advisors?|"
     r"drivers?|couriers?|customers?|clients?|members?|patients?|students?|"
+    r"passengers?|travelers?|travellers?|crew|staff|personnel|attendants?|"
     r"learners?|instructors?|teachers?|tutors?|doctors?|nurses?|pharmacists?|"
     r"partners?|suppliers?|distributors?|retailers?|wholesalers?|vendors?|"
     r"manufacturers?|bottlers?|carriers?|brokers?|dealers?|resellers?|"
     r"technicians?|inspectors?|handlers?|marketers?|sellers?|merchants?|"
-    r"buyers?|owners?|directors?|executives?|assistants?|teams?|"
+    r"buyers?|owners?|directors?|executives?|assistants?|teams?|users?|"
     r"controllers?|devices?|sensors?|instruments?))\b",
     flags=re.IGNORECASE,
 )
 
 
-_LEADING_STRIP_WORDS = frozenset(
-    {"integration", "integrations", "coordination", "commerce", "use", "support", "exchange", "flow", "movement"}
+_INVALID_ACTOR_MODIFIERS = frozenset(
+    """
+    that which who whom whose what whatever whoever this these those
+    each every any all some many much more most such where when how why if whether
+    both either neither one other another its their our your my his her the a an
+    allow allows allowing allowed
+    provide provides providing provided
+    enable enables enabling enabled
+    ensure ensures ensuring ensured
+    deliver delivers delivering delivered
+    resolve resolves resolving resolved
+    help helps helping helped
+    require requires requiring required
+    include includes including included
+    support supports supporting supported
+    serve serves serving served
+    connect connects connecting connected
+    send sends sending sent
+    receive receives receiving received
+    perform performs performing performed
+    handle handles handling handled
+    manage manages managing managed
+    process processes processing processed
+    track tracks tracking tracked
+    place places placing placed
+    make makes making made
+    take takes taking took
+    get gets getting got
+    give gives giving gave
+    let lets letting
+    have has had having
+    do does did doing
+    create creates creating created
+    update updates updating updated
+    delete deletes deleting deleted
+    view views viewing viewed
+    search searches searching searched
+    access accesses accessing accessed
+    order orders ordering ordered
+    pay pays paying paid
+    ship ships shipping shipped
+    book books booking booked
+    cancel cancels canceling canceled
+    refund refunds refunding refunded
+    protect protects protecting protected
+    notify notifies notifying notified
+    authenticate authenticates authenticating authenticated
+    verify verifies verifying verified
+    authorize authorizes authorizing
+    assign assigns assigning assigned
+    register registers registering registered
+    record records recording recorded
+    submit submits submitting submitted
+    review reviews reviewing reviewed
+    approve approves approving approved
+    execute executes executing executed
+    run runs running ran
+    monitor monitors monitoring monitored
+    collect collects collecting collected
+    coordinate coordinates coordinating coordinated
+    stream streams streaming streamed
+    generate generates generating generated
+    build builds building built
+    use uses using used
+    need needs needing needed
+    want wants wanting wanted
+    expect expects expecting expected
+    facilitate facilitates facilitating facilitated
+    assist assists assisting assisted
+    operate operates operating operated
+    offer offers offering offered
+    to for from with by in on at of into onto through across over under
+    before after during as and or but while because since so plus via per
+    about against among between without within
+    must should shall can could may might will would
+    is are was were be been being
+    shipment shipments issue issues item items product products feature features
+    detail details data information request requests response responses
+    error errors message messages result results option options report reports
+    document documents file files transaction transactions account accounts
+    payment payments solution solutions application applications platform platforms
+    system systems software capability capabilities website tool tools module modules
+    commerce exchange flow movement
+    secure safely securely safe fast quick easy simple good better best
+    real-time realtime automated automatic seamless reliable scalable
+    efficient effective complete accurate robust flexible online digital mobile web
+    directly easily automatically manually daily weekly monthly
+    """.split()
 )
 
-_LEADING_PREPOSITIONS = frozenset(
-    {"with", "through", "from", "to", "and", "via", "between", "across", "for", "by", "of", "in", "on", "plus"}
+_VALID_ROLE_PREFIXES = frozenset(
+    """
+    delivery station fleet platform system store warehouse plant facility
+    customer client sales marketing operations support technical security
+    field quality logistics dispatch product project cloud data help desk
+    regional global corporate central independent external internal third
+    local national senior junior chief lead key strategic primary secondary
+    licensed certified registered approved authorized designated dedicated
+    remote onsite partner affiliated contracted service team
+    """.split()
 )
 
 
 def _normalize_role(raw: str) -> str:
-    words = [word.strip("/-") for word in raw.strip().split() if word.strip("/-")]
-    words = [word for word in words if word.lower() not in {"the", "a", "an", "and", "of", "for", "to"}]
-    # Strip leading non-modifier nouns ("Integration With Retailer" -> "Retailer")
-    # and prepositions ("Through Ingredient Supplier" -> "Ingredient Supplier").
-    while len(words) > 1 and (
-        words[0].lower() in _LEADING_STRIP_WORDS
-        or words[0].lower() in _LEADING_PREPOSITIONS
-    ):
-        words = words[1:]
-    if not words:
+    # Regex look-behind can capture preceding clause objects ("samples and reviewers").
+    if re.search(r"\b(?:and|while|but)\b", raw, flags=re.I):
+        raw = re.split(r"\b(?:and|while|but)\b", raw, flags=re.I)[-1]
+    # Keep hyphens between words for compound titles like "customer-service"
+    raw_cleaned = raw.replace("-", " ")
+    words = [word.strip("/-.,;:'\"") for word in raw_cleaned.strip().split() if word.strip("/-.,;:'\"")]
+    words = [word for word in words if word.lower() not in {"the", "a", "an", "and", "of", "for", "to", "in", "on", "at"}]
+
+    # Strip any leading words that cannot legitimately modify a role
+    while len(words) > 1:
+        w0 = words[0].lower()
+        w0_stem = singularize(w0)
+        w0_base = re.sub(r"(?:ing|ed|es|s)$", "", w0)
+        if (
+            w0 in _INVALID_ACTOR_MODIFIERS
+            or w0_stem in _INVALID_ACTOR_MODIFIERS
+            or w0_base in _INVALID_ACTOR_MODIFIERS
+            or w0 in _ENGLISH_STOPWORDS
+            or w0 in _PREPOSITIONS
+        ):
+            # Do not strip if it is an explicitly recognized domain role prefix
+            if w0 not in _VALID_ROLE_PREFIXES and w0_stem not in _VALID_ROLE_PREFIXES:
+                words = words[1:]
+                continue
+        break
+
+    if not words or len(words) > 4:
+        return ""
+    if any(w.lower() in {"from", "into", "onto", "under", "over"} for w in words):
         return ""
     if len(words) == 1:
-        normalized = [singularize(words[0]).capitalize()]
-    else:
-        normalized = [
-            *(word.capitalize() for word in words[:-1]),
-            singularize(words[-1]).capitalize(),
-        ]
+        w = words[0].lower()
+        if w in _INVALID_ACTOR_MODIFIERS or w in _GENERIC_ACTOR_NAMES or w in _ENGLISH_STOPWORDS:
+            return ""
+        return singularize(words[0]).capitalize()
+
+    normalized = [
+        *(word.capitalize() for word in words[:-1]),
+        singularize(words[-1]).capitalize(),
+    ]
     name = " ".join(normalized)
+    if "/" in name:
+        name = name.split("/", 1)[1].strip()
     if name.casefold() in _GENERIC_ACTOR_NAMES:
         return ""
     return name
@@ -204,7 +355,13 @@ def _classify_role(name: str) -> str:
     """Classify an actor as human, organizational, external-system, or machine."""
     tokens = set(tokenize(name))
     if tokens & _MACHINE_ROLE_NOUNS:
+        # Devices/sensors/controllers are machine participants; named
+        # integration endpoints (gateway, webhook, ERP) are external systems.
+        if tokens & {"gateway", "gateways", "webhook", "webhooks", "api", "apis", "erp", "integration", "integrations"}:
+            return "external-system"
         return "machine"
+    if tokens & {"partner", "partners", "supplier", "suppliers", "vendor", "vendors", "provider", "providers", "retailer", "retailers", "wholesaler", "wholesalers", "distributor", "distributors", "carrier", "carriers", "manufacturer", "manufacturers"}:
+        return "external-partner"
     if tokens & _ORGANIZATIONAL_ROLE_NOUNS:
         return "organizational"
     return "human"
@@ -264,7 +421,7 @@ _ADJECTIVE_TOPICS = frozenset(
     {"global", "regional", "local", "central", "daily", "real", "large",
      "small", "high", "low", "core", "key", "existing", "new", "major",
      "primary", "secondary", "various", "multiple", "single", "complex",
-     "hybrid", "independent", "food"}
+     "hybrid", "independent", "food", "near-real-time", "real-time", "realtime", "high-volume", "low-volume"}
 )
 
 _MANAGEMENT_PATTERN = re.compile(
@@ -281,6 +438,25 @@ _COMPOUND_KEEP_HEADS = frozenset(
     {"line", "order", "record", "item", "rule", "log", "entry", "report",
      "event", "forecast", "plan", "chain", "network", "group", "unit",
      "node", "point", "cycle", "window", "session", "profile", "account"}
+)
+
+_ENUMERATION_ENTITY_BLOCKLIST = frozenset(
+    {"high-volume", "low-volume", "real-time", "near-real-time", "global", "regional",
+     "secure", "regulated", "business", "operational", "clinical", "audit", "workflow",
+     "trail", "risk", "processing", "management", "operations", "information"}
+)
+
+# Concrete record/aggregate heads that are meaningful even when the brief uses
+# them in the singular.  The extractor still requires the word to be present;
+# this list does not inject entities into unrelated domains.
+_EXPLICIT_ENTITY_HEADS = frozenset(
+    """
+    account appointment assessment beneficiary booking card catalog course
+    customer delivery device enrollment event facility forecast ingredient
+    inspection invoice ledger lesson measurement notification order patient
+    payment prescription product reading report reservation risk sensor
+    shipment station student submission supplier transaction transfer warehouse
+    """.split()
 )
 
 
@@ -345,6 +521,48 @@ def _candidate_entity_scores(source_text: str) -> dict[str, float]:
     for singular, count in frequencies.items():
         add(singular, 1.0 + min(count, 4) * 0.75)
 
+    # Singular business concepts are common in compact briefs (for example,
+    # "the ledger is authoritative"). Preserve only exact, concrete heads.
+    for token in tokenize(lower):
+        singular = singularize(token)
+        if singular in _EXPLICIT_ENTITY_HEADS:
+            add(singular, 2.4)
+
+    # In compound record phrases such as "aircraft assignments" or "device
+    # readings", the modifier is often the durable business object while the
+    # head is a property/event. Recover that object structurally instead of
+    # maintaining a list of domain-specific nouns.
+    property_heads = (
+        "assignments?", "bookings?", "schedules?", "events?", "notifications?",
+        "statuses?", "updates?", "changes?", "information", "operations?",
+        "readings?", "measurements?",
+    )
+    for match in re.finditer(
+        rf"\b([a-z][a-z-]{{2,}})\s+(?:{'|'.join(property_heads)})\b",
+        lower,
+    ):
+        modifier = singularize(match.group(1))
+        if (
+            modifier not in _NON_ENTITY_NOUNS
+            and modifier not in _CAPABILITY_VERBS
+            and modifier not in _ADJECTIVE_TOPICS
+        ):
+            add(modifier, 2.6)
+
+    # A small number of compound records are semantically implied by explicit
+    # domain language. They remain inferred downstream and keep source
+    # evidence; no vendor or architecture choice is introduced here.
+    if "ledger" in lower and re.search(r"\b(?:double-entry|authoritative|posting|journal)\b", lower):
+        add("ledger_entry", 4.5)
+        scores.pop("ledger", None)
+    if re.search(r"\bfraud\b", lower) and re.search(r"\b(?:assess|assessment|score|scoring|investigat)\w*\b", lower):
+        add("risk_assessment", 3.8)
+        scores.pop("assessment", None)
+        scores.pop("risk", None)
+    if re.search(r"\b(?:regulatory|compliance)\b", lower) and re.search(r"\breport\w*\b", lower):
+        add("regulatory_report", 3.8)
+        scores.pop("report", None)
+
     # Enumerated lists of plural nouns ("suppliers, facilities, partners,
     # warehouses, distributors") strongly signal sibling domain entities,
     # even when adjectives intervene ("manufacturing facilities").
@@ -368,6 +586,31 @@ def _candidate_entity_scores(source_text: str) -> dict[str, float]:
                     ):
                         continue
                     add(singular, 1.5)
+
+    # Explicit capability lists often use singular nouns ("production,
+    # bottling, inventory, warehouses...").  The old plural-only heuristic
+    # dropped the most important concepts in exactly these statements.  This
+    # structural rule accepts sibling items only in a list of three or more
+    # and always takes the noun head; it is not a domain keyword table.
+    for sentence in split_sentences(lower):
+        if not re.search(r"\b(?:manage|track|monitor|process|coordinate|support|include|cover)\w*\b", sentence):
+            continue
+        segments = [part.strip(" .") for part in re.split(r",\s*|\s+and\s+", sentence)]
+        if len(segments) < 3:
+            continue
+        for segment in segments:
+            words = [word for word in tokenize(segment) if word not in _ENGLISH_STOPWORDS]
+            if not words:
+                continue
+            while words and (words[0] in _CAPABILITY_VERBS or words[0].rstrip("s") in _CAPABILITY_VERBS):
+                words = words[1:]
+            if not words:
+                continue
+            head = singularize(words[-1])
+            if head in _NON_ENTITY_NOUNS or head in _ENUMERATION_ENTITY_BLOCKLIST or len(head) < 3:
+                continue
+            identifier = head if len(words) == 1 or head not in _COMPOUND_KEEP_HEADS else "_".join(singularize(word) for word in words)
+            add(identifier, 2.25)
 
     # Hyphenated compounds such as "food-service" customers are modifiers, skip.
     scores.pop("food_service", None)
@@ -395,7 +638,30 @@ def extract_entities(
     # Rank by score, breaking ties by first appearance so the brief's own
     # emphasis order wins over alphabetical order.
     order = _candidate_order(source_text)
+    invalid_exact = {
+        "retail", "reporting", "residency", "analyst", "officer", "operator",
+        "asynchronously", "synchronously", "financial", "auditability",
+        "encryption", "modernization", "suspicious", "assess",
+    }
+    # Occupational roles are actors, not persisted business records. A small
+    # set of domain parties (customer, patient, student, member, client) can
+    # legitimately be both and remains eligible.
+    invalid_exact |= _HUMAN_ROLE_NOUNS - {
+        "customer", "client", "member", "patient", "student", "learner",
+        "supplier", "partner", "carrier", "vendor", "provider", "passenger",
+        "traveler", "traveller",
+    }
+    role_tokens = _HUMAN_ROLE_NOUNS | {"business"}
     ranked = sorted(scores, key=lambda key: (-scores[key], order.get(key, 10**9), key))
+    ranked = [
+        identifier for identifier in ranked
+        if identifier not in invalid_exact
+        and not (set(identifier.split("_")) & (_CAPABILITY_VERBS - _EXPLICIT_ENTITY_HEADS))
+        and not (
+            len(identifier.split("_")) > 1
+            and set(identifier.split("_")) & role_tokens
+        )
+    ]
     return ranked[: max(1, limit)]
 
 
@@ -456,6 +722,9 @@ _CAPABILITY_VERBS = frozenset(
     operate record register review approve configure integrate synchronize
     inspect fulfill dispatch integration visit view create update delete
     expand expands expanding serve serves serving move moves moving
+    search searches searching book books booking check checks checking
+    receive receives receiving send sends sending cancel cancels cancelling
+    make makes making
     """.split()
 )
 
@@ -505,7 +774,9 @@ _ENUMERATION_FRAMING = re.compile(
 _CAPABILITY_NOUNS = frozenset(
     {"management", "analytics", "insights", "insight", "planning", "tracking",
      "monitoring", "processing", "scheduling", "operations", "oversight",
-     "coordination", "administration", "intelligence", "visibility"}
+     "coordination", "administration", "intelligence", "visibility", "search",
+     "upload", "verification", "checkout", "control", "controls", "update",
+     "updates"}
 )
 
 # Uninflected action verbs: the only tokens that may start a workflow label
@@ -515,16 +786,26 @@ _BASE_ACTION_VERBS = frozenset(
      "handle", "support", "provide", "forecast", "analyze", "maintain",
      "operate", "record", "register", "review", "approve", "configure",
      "integrate", "synchronize", "inspect", "fulfill", "dispatch", "expand",
-     "serve", "move", "visit", "view", "create", "update", "delete"}
+     "serve", "move", "visit", "view", "create", "update", "delete",
+     "search", "book", "check", "receive", "make", "send", "cancel"}
 )
 
 
 def _split_enumeration(sentence: str) -> list[str]:
     """Split 'Key capabilities include A, B, and C' into item clauses."""
-    if not re.search(r"\binclud", sentence, flags=re.IGNORECASE):
+    if re.search(r"\binclud", sentence, flags=re.IGNORECASE):
+        list_source = sentence
+    elif re.match(r"^(?:build|create|develop)\b", sentence, flags=re.I) and re.search(
+        r"\bwith\b", sentence, flags=re.I
+    ):
+        # "Build a product with search, upload, verification, ..." is a
+        # capability list. Keeping it as one FR causes diagrams to truncate
+        # the actual behavior to the framing noun ("Online pharmacy").
+        list_source = re.split(r"\bwith\b", sentence, maxsplit=1, flags=re.I)[1]
+    else:
         return [sentence]
     items: list[str] = []
-    for chunk in re.split(r";\s+", sentence):
+    for chunk in re.split(r";\s+", list_source):
         # Split comma lists only when they enumerate (3+ segments).
         segments = re.split(r",\s+", chunk)
         if len(segments) < 3:
@@ -613,35 +894,91 @@ _SYSTEM_HEAD_BLOCKLIST = frozenset(
 
 def _integration_sync_hint(clause: str) -> str:
     lower = clause.casefold()
-    if any(marker in lower for marker in ("real-time", "realtime", "live", "stream", "event")):
+    if re.search(r"\b(?:real-time|realtime|live|streams?|events?|event-driven|webhooks?)\b", lower):
         return "event-driven"
-    if any(marker in lower for marker in ("batch", "nightly", "periodic", "scheduled sync", "etl")):
+    if re.search(r"\b(?:batch|nightly|periodic|scheduled sync|etl)\b", lower):
         return "batch"
+    if re.search(r"\b(?:rest|graphql|grpc|soap|request/response|request-response)\b", lower):
+        return "synchronous"
     return "unspecified"
 
 
-def _integration_purpose(name: str, clause: str) -> str:
-    lower_name = name.lower()
-    lower_clause = clause.casefold()
-    if "sso" in lower_name or "oauth" in lower_name or "oidc" in lower_name or "identity" in lower_clause:
-        return "workforce identity and access"
-    if "erp" in lower_name:
-        return "system-of-record business operations"
-    if "wms" in lower_name or "warehouse" in lower_name:
-        return "warehouse operations"
-    if "mes" in lower_name or "manufacturing" in lower_name:
-        return "manufacturing execution"
-    if "retailer" in lower_name:
-        return "downstream sales channel exchange"
-    if "wholesaler" in lower_name:
-        return "wholesale channel exchange"
-    if "distributor" in lower_name or "partner" in lower_name or "supplier" in lower_name:
-        return "partner network exchange"
-    if "logistic" in lower_clause or "ship" in lower_clause:
-        return "logistics coordination"
-    if "analytic" in lower_clause:
-        return "analytics feed"
-    return "domain data exchange"
+def _boundary_evidence(name: str, source_text: str) -> str:
+    """Return non-integration clauses that describe a named boundary.
+
+    Purpose and transport are taken from nearby source evidence. A missing
+    purpose stays explicitly unknown instead of becoming a generic, invented
+    ``domain data exchange`` contract.
+    """
+    boundary_tokens = {
+        singularize(token) for token in tokenize(name)
+        if token not in {"external", "legacy", "system", "systems"}
+    }
+    evidence: list[str] = []
+    for sentence in split_sentences(source_text):
+        if re.search(r"\bintegrat\w*\s+with\b", sentence, re.I):
+            continue
+        sentence_tokens = {singularize(token) for token in tokenize(sentence)}
+        if boundary_tokens and boundary_tokens & sentence_tokens:
+            evidence.append(sentence)
+    return " ".join(evidence)
+
+
+def _integration_purpose(name: str, clause: str, source_text: str = "") -> str:
+    evidence = _boundary_evidence(name, source_text)
+    boundary_tokens = [
+        singularize(token) for token in tokenize(name)
+        if token not in {"external", "legacy", "system", "systems"}
+    ]
+    if len(boundary_tokens) > 1:
+        boundary_tokens = boundary_tokens[-1:]
+    terms: list[str] = []
+    for boundary in boundary_tokens:
+        for match in re.finditer(
+            rf"\b{re.escape(boundary)}s?\s+([a-z][a-z-]+(?:\s+[a-z][a-z-]+)?)",
+            evidence,
+            re.I,
+        ):
+            following = " ".join(tokenize(match.group(1))[:2])
+            following = re.split(
+                r"\b(?:and|or|while|with|through|across|because|must|should|can|using|without|that)\b",
+                following,
+                maxsplit=1,
+            )[0].strip()
+            if following and following.split()[0] not in {
+                "system", "systems", "platform", "staff", "network",
+            }:
+                terms.append(f"{boundary} {following}")
+    terms = list(dict.fromkeys(terms))[:3]
+    if terms:
+        return "Support " + ", ".join(terms)
+    # The integration clause itself proves the boundary, but not its business
+    # purpose. Preserve that epistemic distinction for downstream review.
+    return "Purpose not specified in the brief"
+
+
+def _integration_record(name: str, clause: str, source_text: str) -> str:
+    evidence = " ".join((clause, _boundary_evidence(name, source_text)))
+    purpose = _integration_purpose(name, clause, source_text)
+    protocols = [
+        value for value in ("REST", "GraphQL", "gRPC", "SOAP", "EDI", "SFTP", "Webhook")
+        if re.search(
+            rf"(?<![a-z0-9]){re.escape(value)}{'s?' if value == 'Webhook' else ''}(?![a-z0-9])",
+            evidence,
+            re.I,
+        )
+    ]
+    formats = [
+        value for value in ("JSON", "XML", "CSV", "Avro", "Parquet")
+        if re.search(rf"(?<![a-z0-9]){re.escape(value)}(?![a-z0-9])", evidence, re.I)
+    ]
+    parts = [f"{name}: {purpose}.", "Ownership: external."]
+    if protocols:
+        parts.append(f"Protocol: {'/'.join(protocols)}.")
+    if formats:
+        parts.append(f"Formats: {'/'.join(formats)}.")
+    parts.append(f"Sync: {_integration_sync_hint(evidence)}.")
+    return " ".join(parts)
 
 
 def _integration_covered(name: str, found: dict[str, str]) -> bool:
@@ -679,22 +1016,15 @@ def extract_integrations(
     for sentence in split_sentences(text):
         for acronym in _SYSTEM_ACRONYMS:
             if re.search(rf"\b{re.escape(acronym)}\b", sentence):
-                purpose = _integration_purpose(acronym, sentence)
                 if not _integration_covered(acronym, found):
-                    found[acronym] = (
-                        f"{acronym}: {purpose}. Ownership: external. "
-                        f"Sync: {_integration_sync_hint(sentence)}."
-                    )
+                    found[acronym] = _integration_record(acronym, sentence, text)
         for match in _SYSTEM_NAME_PATTERN.finditer(sentence):
             qualifier, core = match.group(1) or "", match.group(2)
             if core.lower() in _SYSTEM_CORE_BLOCKLIST:
                 continue
             name = re.sub(r"\s+", " ", f"{qualifier.strip()} {core}".strip().title() + " Systems")
             if not _integration_covered(name, found):
-                found[name] = (
-                    f"{name}: {_integration_purpose(name, sentence)}. "
-                    f"Ownership: external. Sync: {_integration_sync_hint(sentence)}."
-                )
+                found[name] = _integration_record(name, sentence, text)
         for match in _LOWERCASE_SYSTEM_PATTERN.finditer(sentence):
             qualifier, core = (match.group(1) or "").strip(), match.group(2).strip()
             core = re.sub(r"^(and|or|the|a|an)\s+", "", core, flags=re.IGNORECASE)
@@ -703,10 +1033,7 @@ def extract_integrations(
                 continue
             name = re.sub(r"\s+", " ", f"{qualifier} {core}".strip().title() + " Systems")
             if not _integration_covered(name, found):
-                found[name] = (
-                    f"{name}: {_integration_purpose(name, sentence)}. "
-                    f"Ownership: external. Sync: {_integration_sync_hint(sentence)}."
-                )
+                found[name] = _integration_record(name, sentence, text)
         integration_match = re.search(
             r"integrat\w*\s+with\s+([^.;]+)", sentence, flags=re.IGNORECASE
         )
@@ -714,6 +1041,12 @@ def extract_integrations(
             targets = re.split(r",\s*|\s+and\s+", integration_match.group(1))
             for target in targets:
                 target = re.sub(r"^(legacy|existing|external|third-party)\s+", "", target.strip(), flags=re.IGNORECASE).rstrip(".")
+                target = re.split(
+                    r"\s+(?:while|so\s+that|in\s+order\s+to|to\s+allow|using|via|over)\b",
+                    target,
+                    maxsplit=1,
+                    flags=re.I,
+                )[0].strip()
                 if len(target) < 4 or len(target) > 60:
                     continue
                 if target.lower() in {"management", "manufacturing", "monitoring", "tracking"}:
@@ -724,10 +1057,7 @@ def extract_integrations(
                 if not name or name.casefold() in _GENERIC_ACTOR_NAMES:
                     continue
                 if not _integration_covered(name, found):
-                    found[name] = (
-                        f"{name}: {_integration_purpose(name, sentence)}. "
-                        f"Ownership: external. Sync: {_integration_sync_hint(sentence)}."
-                    )
+                    found[name] = _integration_record(name, sentence, text)
     return list(found.values())[: max(1, limit)]
 
 
@@ -736,6 +1066,13 @@ def extract_integrations(
 # --------------------------------------------------------------------------
 
 DOMAIN_FAMILIES: tuple[tuple[str, dict[str, int]], ...] = (
+    (
+        "Logistics and Transportation",
+        {"parcel": 4, "shipment": 3, "tracking": 2, "carrier": 3,
+         "route": 3, "vehicle": 2, "delivery": 3, "customs": 3,
+         "warehouse": 2, "fleet": 3, "consignment": 4, "dispatch": 2,
+         "facility": 1, "logistics": 3},
+    ),
     (
         "Manufacturing and Distribution",
         {"manufacturing": 3, "production": 2, "bottling": 4, "bottler": 3,
@@ -767,6 +1104,13 @@ DOMAIN_FAMILIES: tuple[tuple[str, dict[str, int]], ...] = (
         {"banking": 3, "ledger": 3, "settlement": 2, "underwriting": 3,
          "portfolio": 2, "brokerage": 3, "insurance": 2, "actuarial": 3,
          "kyc": 3, "fintech": 2},
+    ),
+    (
+        "Media and Streaming",
+        {"media": 3, "streaming": 4, "video": 3, "audio": 2,
+         "content": 2, "playback": 4, "viewer": 3, "subscriber": 2,
+         "recommendation": 2, "encoding": 3, "transcoding": 4,
+         "catalog": 1, "live broadcast": 4, "cdn": 3},
     ),
     (
         "Software and SaaS",
@@ -982,6 +1326,21 @@ _CONTEXT_STOPWORDS = frozenset(
      "info", "information", "detail", "details", "service", "services"}
 )
 
+_SEMANTIC_CONTEXT_FAMILIES: tuple[tuple[str, frozenset[str]], ...] = (
+    ("Ledger and Accounts", frozenset({"ledger", "balance", "account", "transaction", "journal"})),
+    ("Payments and Transfers", frozenset({"payment", "transfer", "beneficiary", "card", "settlement", "invoice"})),
+    ("Risk and Compliance", frozenset({"fraud", "risk", "assessment", "compliance", "regulatory"})),
+    ("Identity and Access", frozenset({"identity", "credential", "permission", "role", "session"})),
+    ("Communications", frozenset({"notification", "message", "alert", "preference"})),
+    ("Orders and Fulfillment", frozenset({"order", "shipment", "delivery", "booking", "reservation", "checkout"})),
+    ("Catalog and Inventory", frozenset({"product", "catalog", "inventory", "sku", "ingredient", "recipe"})),
+    ("Learning", frozenset({"course", "lesson", "enrollment", "student", "submission"})),
+    ("Care Delivery", frozenset({"patient", "appointment", "prescription", "treatment", "clinical"})),
+    ("Production", frozenset({"production", "manufacturing", "inspection", "facility", "plant"})),
+    ("Supply Network", frozenset({"supplier", "warehouse", "distributor", "carrier", "logistic"})),
+    ("Telemetry", frozenset({"sensor", "device", "reading", "measurement", "telemetry"})),
+)
+
 
 def _entity_tokens(name: str) -> list[str]:
     parts = re.split(r"_", to_identifier(name))
@@ -1018,6 +1377,13 @@ def cluster_entities(names: list[str]) -> dict[str, str]:
         )
         if candidates:
             contexts[name] = to_display_name(candidates[0])
+            continue
+        semantic = next(
+            (label for label, family_tokens in _SEMANTIC_CONTEXT_FAMILIES if set(tokens) & family_tokens),
+            None,
+        )
+        if semantic:
+            contexts[name] = semantic
             continue
         # Standalone: keep the full multi-word name ("Supply Chain", not "Chain").
         if len(tokens) > 1:

@@ -1,12 +1,6 @@
-import logging
 import re
 
-from pydantic import BaseModel, Field, ValidationError
-
 from app.schemas.domain import ArchitectureComponent, ArchitectureOption, RequirementModel
-from app.services.ai.client import OllamaStructuredClient
-
-logger = logging.getLogger(__name__)
 
 CATALOG_IDS = [
     "modular-monolith",
@@ -18,15 +12,7 @@ CATALOG_IDS = [
 ]
 
 
-class _ArchitectureSelection(BaseModel):
-    selected_ids: list[str] = Field(min_length=3, max_length=3)
-    rationale: str = ""
-
-
 class ArchitectureGenerator:
-    def __init__(self) -> None:
-        self.ai_client = OllamaStructuredClient()
-
     def generate(
         self,
         requirements: RequirementModel,
@@ -34,9 +20,11 @@ class ArchitectureGenerator:
         *,
         refine_with_ai: bool = False,
     ) -> list[ArchitectureOption]:
+        # Kept for API compatibility; architecture choice and prose are now
+        # deterministic so scoring can never contradict a model override.
+        del refine_with_ai
         answers = answers or {}
-        deterministic = self._deterministic_shortlist(requirements, answers)
-        selected_ids = self._ollama_shortlist(requirements, answers, deterministic) or deterministic
+        selected_ids = self._deterministic_shortlist(requirements, answers)
         builders = {
             "modular-monolith": lambda: self._modular_monolith(requirements),
             "service-based": lambda: self._service_based(requirements),
@@ -45,105 +33,74 @@ class ArchitectureGenerator:
             "hybrid-modular-serverless": lambda: self._hybrid_modular_serverless(requirements, answers),
             "hybrid-event-serverless": lambda: self._hybrid_event_serverless(requirements),
         }
-        options = [builders[option_id]() for option_id in selected_ids]
-        if not refine_with_ai or requirements.analysis_source == "ollama-pretrained":
-            return options
-        refinable_fields = {"overview"}
-        refinement_seed = {
-            "architectures": [
-                {
-                    "id": item.id,
-                    "name": item.name,
-                    **{
-                        field: getattr(item, field)
-                        for field in refinable_fields
-                    },
-                }
-                for item in options
+        return [self._wire_runtime_dependencies(builders[option_id]()) for option_id in selected_ids]
+
+    @staticmethod
+    def _wire_runtime_dependencies(option: ArchitectureOption) -> ArchitectureOption:
+        """Attach explicit runtime service/data edges for impact analysis."""
+        components = option.components
+
+        def matching(*markers: str) -> list[str]:
+            return [
+                item.name for item in components
+                if any(marker in item.name.casefold() for marker in markers)
             ]
-        }
-        refined = self.ai_client.refine("architecture-generation", refinement_seed)
-        if refined and isinstance(refined.get("architectures"), list):
-            try:
-                patches = {
-                    item["id"]: item
-                    for item in refined["architectures"]
-                    if isinstance(item, dict) and isinstance(item.get("id"), str)
-                }
-                return [
-                    ArchitectureOption.model_validate(
-                        {
-                            **option.model_dump(),
-                            **{
-                                field: patches.get(option.id, {}).get(
-                                    field,
-                                    getattr(option, field),
-                                )
-                                for field in refinable_fields
-                            },
-                        }
-                    )
-                    for option in options
-                ]
-            except (KeyError, TypeError, ValueError):
-                return options
-        return options
+
+        clients = matching("client", "interface", "web app", "static web")
+        entries = matching("gateway", "domain api", "managed api")
+        stores = matching("database", "data layer", "data platform", "persistence", "postgresql")
+        buses = matching("event backbone", "event bus", "message broker")
+        integrations = matching("integration service", "integration adapters")
+        services = [
+            item.name for item in components
+            if item.name not in {*clients, *entries, *stores, *buses, *integrations}
+            and any(marker in item.name.casefold() for marker in ("service", "core", "orchestrator", "handler", "consumer", "processing"))
+        ]
+
+        for component in components:
+            dependencies: list[str] = []
+            if component.name in clients:
+                dependencies.extend(entries or services[:2])
+            elif component.name in entries:
+                dependencies.extend(services[:4])
+            elif component.name in integrations:
+                dependencies.extend(buses or stores[:1])
+            elif component.name in services:
+                dependencies.extend(stores[:1])
+                if buses and component.name not in buses:
+                    dependencies.extend(buses)
+                if "workflow" in component.name.casefold() or "orchestrator" in component.name.casefold():
+                    dependencies.extend(integrations[:1])
+            component.dependencies = list(dict.fromkeys(
+                name for name in dependencies if name != component.name
+            ))
+        return option
 
     # ------------------------------------------------------------------
-    # Selection: deterministic shortlist + Ollama hybrid/second opinion
+    # Selection: deterministic, direction-aware shortlist
     # ------------------------------------------------------------------
 
     def _deterministic_shortlist(
         self, requirements: RequirementModel, answers: dict[str, str]
     ) -> list[str]:
         scores = self._suitability_scores(requirements, answers)
-        ranked = sorted(CATALOG_IDS, key=lambda option_id: (-scores[option_id], CATALOG_IDS.index(option_id)))
-        return ranked[:3]
-
-    def _ollama_shortlist(
-        self,
-        requirements: RequirementModel,
-        answers: dict[str, str],
-        deterministic: list[str],
-    ) -> list[str] | None:
         signals = self._signals(requirements, answers)
-        scores = self._suitability_scores(requirements, answers)
-        try:
-            result = self.ai_client.generate(
-                "architecture-selection",
-                {
-                    "domain": requirements.domain,
-                    "summary": requirements.summary,
-                    "scale_profile": requirements.scale_profile,
-                    "candidate_ids": CATALOG_IDS,
-                    "candidates": [
-                        {"id": option_id, "score": round(scores[option_id], 1)}
-                        for option_id in CATALOG_IDS
-                    ],
-                    "deterministic_shortlist": deterministic,
-                    "signals": signals,
-                },
-                response_schema=_ArchitectureSelection.model_json_schema(),
-                num_predict=220,
-                num_ctx=4096,
-                minimum_timeout_seconds=60,
-            )
-        except Exception as exc:  # pragma: no cover - defensive; client already swallows network errors
-            logger.info("Skipping Ollama architecture selection: %s", exc)
-            return None
-        if not result:
-            return None
-        try:
-            selection = _ArchitectureSelection.model_validate(result)
-        except ValidationError as exc:
-            logger.info("Ignoring invalid Ollama architecture selection: %s", exc.errors()[0]["msg"])
-            return None
-        unique_ids = list(dict.fromkeys(selection.selected_ids))
-        if len(unique_ids) != 3 or any(option_id not in CATALOG_IDS for option_id in unique_ids):
-            return None
-        if unique_ids != deterministic:
-            logger.info("Ollama architecture selection adjusted shortlist to %s", unique_ids)
-        return unique_ids
+        # Events by themselves justify an event boundary, not a functions
+        # runtime. Serverless candidates require an explicit elasticity
+        # signal (bursty/seasonal/batch). Cloud preference influences scores
+        # but never overrides this gate: a managed-cloud preference alone
+        # must not force serverless into strongly-consistent domains.
+        eligible = list(CATALOG_IDS)
+        if not signals["variable_demand"]:
+            eligible = [
+                option_id for option_id in eligible
+                if option_id not in {
+                    "serverless-platform", "hybrid-modular-serverless",
+                    "hybrid-event-serverless",
+                }
+            ]
+        ranked = sorted(eligible, key=lambda option_id: (-scores[option_id], CATALOG_IDS.index(option_id)))
+        return ranked[:3]
 
     def _signals(self, requirements: RequirementModel, answers: dict[str, str]) -> dict:
         text = " ".join(
@@ -152,7 +109,7 @@ class ArchitectureGenerator:
             + requirements.constraints
             + requirements.data_characteristics
         ).lower()
-        team_size = self._parse_team_size(answers)
+        team_size = requirements.project_profile.team_size or self._parse_team_size(answers)
         regions = self._parse_int(answers.get("geographic_regions", "0"))
         latency_match = re.search(r"(?:latency|response time)[^\d]{0,20}(\d+)\s*ms", text)
         return {
@@ -160,22 +117,33 @@ class ArchitectureGenerator:
             "team_size": team_size or "unknown",
             "entity_count": len(requirements.domain_entities),
             "workflow_count": len(requirements.domain_workflows),
-            "integration_count": len(requirements.integrations),
+            "integration_count": len(requirements.integration_details) or len(requirements.integrations),
             "realtime_or_event_driven": any(
                 marker in text
                 for marker in ("realtime", "real-time", "event processing", "stream", "telemetry", "sensor")
             ),
-            "strict_availability": any(
-                marker in text for marker in ("99.99", "four nines", "strict availability")
-            ),
+            "strict_availability": bool(
+                (requirements.project_profile.availability_target_percent or 0) >= 99.99
+            ) or any(marker in text for marker in ("99.99", "four nines", "strict availability")),
             "low_latency_ms": int(latency_match.group(1)) if latency_match else None,
             "compliance_sensitive": any(
                 marker in text for marker in ("audit", "compliance", "pci", "hipaa", "gdpr", "soc2", "regulated")
             ),
-            "budget": (answers.get("budget") or "").lower() or "unknown",
             "regions": regions,
             "cloud": answers.get("preferred_cloud") or "unknown",
             "variable_demand": any(marker in text for marker in ("bursty", "spiky", "variable demand", "seasonal", "batch")),
+            "stateful_or_strong_consistency": any(marker in text for marker in (
+                "stateful", "strong consistency", "transactional", "ledger", "settlement", "exactly once",
+            )),
+            "ordered_events": any(marker in text for marker in (
+                "event ordering", "ordered event", "in order", "sequence", "partition key",
+            )),
+            "long_running_workflows": any(marker in text for marker in (
+                "long-running", "long running", "multi-step", "human approval", "saga",
+            )),
+            "legacy_integration": any(marker in text for marker in (
+                "legacy", "mainframe", "erp", "soap", "edi", "sftp",
+            )),
         }
 
     def _suitability_scores(
@@ -202,7 +170,7 @@ class ArchitectureGenerator:
             add("event-driven-microservices", 8)
             add("serverless-platform", 6)
             add("modular-monolith", 2)
-        elif scale == "startup-scale":
+        elif scale == "small-scale":
             add("modular-monolith", 12)
             add("hybrid-modular-serverless", 10)
             add("serverless-platform", 6)
@@ -243,6 +211,12 @@ class ArchitectureGenerator:
             add("service-based", 4)
             add("hybrid-modular-serverless", 4)
             add("modular-monolith", -6)
+        else:
+            # Distributed event topologies require an actual asynchronous or
+            # streaming workload; scale and team size alone cannot invent one.
+            add("event-driven-microservices", -16)
+            add("hybrid-event-serverless", -16)
+            add("service-based", 4)
 
         if signals["strict_availability"]:
             add("event-driven-microservices", 8)
@@ -268,24 +242,6 @@ class ArchitectureGenerator:
             add("event-driven-microservices", -2)
             add("hybrid-event-serverless", -2)
 
-        budget = signals["budget"]
-        if budget == "low":
-            if scale == "high-scale":
-                add("modular-monolith", 4)
-                add("hybrid-modular-serverless", 4)
-                add("serverless-platform", -4)
-                add("event-driven-microservices", -10)
-                add("hybrid-event-serverless", -6)
-            else:
-                add("modular-monolith", 8)
-                add("hybrid-modular-serverless", 6)
-                add("serverless-platform", 4)
-                add("event-driven-microservices", -10)
-                add("hybrid-event-serverless", -6)
-        elif budget == "high":
-            add("event-driven-microservices", 4)
-            add("hybrid-event-serverless", 4)
-
         if isinstance(signals["regions"], int) and signals["regions"] > 1:
             add("event-driven-microservices", 8)
             add("hybrid-event-serverless", 8)
@@ -295,11 +251,20 @@ class ArchitectureGenerator:
             add("modular-monolith", -10)
 
         cloud = str(signals["cloud"]).lower()
+        normalized_cloud = cloud.replace("/", " ").replace("-", " ")
+        is_hybrid_cloud = "hybrid" in normalized_cloud or "multi cloud" in normalized_cloud
         if cloud in {"aws", "azure", "gcp"}:
             add("serverless-platform", 6)
             add("hybrid-event-serverless", 4)
             add("hybrid-modular-serverless", 4)
             add("event-driven-microservices", 2)
+        elif is_hybrid_cloud:
+            # Hybrid/multi-cloud is a confirmed deployment constraint: reward
+            # portable shapes without forcing a single vendor's serverless.
+            add("hybrid-event-serverless", 4)
+            add("hybrid-modular-serverless", 4)
+            add("event-driven-microservices", 2)
+            add("service-based", 2)
         elif cloud in {"on-premise", "on premise", "onprem", "self-hosted"}:
             add("modular-monolith", 6)
             add("service-based", 4)
@@ -326,6 +291,32 @@ class ArchitectureGenerator:
             add("hybrid-modular-serverless", 8)
             add("hybrid-event-serverless", 6)
             add("modular-monolith", -2)
+
+        if signals["stateful_or_strong_consistency"]:
+            add("modular-monolith", 5)
+            add("service-based", 5)
+            add("hybrid-modular-serverless", 3)
+            add("event-driven-microservices", -3)
+            add("hybrid-event-serverless", -3)
+            add("serverless-platform", -8)
+
+        if signals["ordered_events"]:
+            add("event-driven-microservices", 8)
+            add("hybrid-event-serverless", 6)
+            add("service-based", 2)
+            add("serverless-platform", -4)
+
+        if signals["long_running_workflows"]:
+            add("service-based", 4)
+            add("hybrid-modular-serverless", 4)
+            add("hybrid-event-serverless", 3)
+            add("serverless-platform", -5)
+
+        if signals["legacy_integration"]:
+            add("service-based", 6)
+            add("hybrid-modular-serverless", 4)
+            add("event-driven-microservices", 2)
+            add("serverless-platform", -6)
 
         return scores
 
@@ -766,18 +757,59 @@ class ArchitectureGenerator:
         self, requirements: RequirementModel, event_driven: bool = False
     ) -> list[str]:
         flows: list[str] = []
+        decision_text = " ".join([
+            requirements.summary,
+            requirements.domain,
+            *(entity.name for entity in requirements.domain_entities),
+            *requirements.functional_requirements,
+            *requirements.non_functional_requirements,
+            *requirements.constraints,
+            *(item.value for item in requirements.technical_characteristics),
+        ]).casefold()
+        financial_core = "ledger" in decision_text and any(
+            marker in decision_text
+            for marker in ("strong consistency", "strongly consistent", "double-entry", "authoritative")
+        )
+        asynchronous_reactions = any(
+            marker in decision_text
+            for marker in ("asynchronous", "async", "fraud", "notification", "analytics")
+        )
+        if financial_core:
+            flows.extend([
+                "An authenticated payment or transfer command enters the Ledger and Accounts boundary with an idempotency key and expected account version.",
+                "The financial core validates funds and invariants, locks the affected accounts, writes a balanced debit/credit posting set, and advances authoritative balances in one strongly consistent database transaction.",
+                "Only after that transaction commits does the outbox publish immutable transaction facts; consumers cannot mutate the authoritative ledger.",
+            ])
+            if asynchronous_reactions:
+                flows.append(
+                    "Fraud assessment, notifications, analytics, and regulatory projections consume committed facts asynchronously with deduplication, retries, dead-letter handling, and reconciliation."
+                )
         for workflow in requirements.domain_workflows[:3]:
-            mode = "publishes a durable event after" if event_driven else "processes"
-            flows.append(
-                f"{workflow.primary_actor} {mode} {workflow.name.lower()}, involving "
-                f"{', '.join(workflow.related_entities) or 'the confirmed domain records'}."
-            )
-        if requirements.integrations:
-            flows.append(
-                "Integration adapters exchange validated data with: "
-                + ", ".join(requirements.integrations[:4])
-                + "."
-            )
+            entity_name = workflow.related_entities[0] if workflow.related_entities else "domain record"
+            entity = next((
+                item for item in requirements.domain_entities
+                if item.name.casefold() == entity_name.casefold()
+            ), None)
+            owner = entity.bounded_context if entity and entity.bounded_context else "owning bounded context"
+            if event_driven:
+                event_name = f"{''.join(entity_name.title().split())}Changed"
+                flows.extend([
+                    f"{workflow.primary_actor} sends a versioned {workflow.name} command to the {owner} API with an idempotency key and correlation ID.",
+                    f"The {owner} validates invariants, changes {entity_name} state transactionally, and publishes {event_name} through the event backbone after commit.",
+                    f"Subscribed bounded contexts and integration adapters consume {event_name}; duplicates are ignored, ordered keys preserve required sequence, and failed deliveries retry before dead-lettering and reconciliation.",
+                ])
+            else:
+                flows.append(
+                    f"{workflow.primary_actor} sends a typed {workflow.name} request to the {owner}; the boundary validates the command, changes {entity_name} state, and returns the current version."
+                )
+        if requirements.integration_details:
+            for integration in requirements.integration_details[:3]:
+                mode = integration.interaction_mode
+                formats = "/".join(integration.data_formats) or "a versioned payload"
+                protocols = "/".join(integration.protocol) or "a confirmed protocol"
+                flows.append(
+                    f"The {integration.bounded_context or 'integration boundary'} exchanges {formats} with {integration.name} over {protocols} in {mode} mode, with explicit retries and reconciliation."
+                )
         return flows or ["The domain flow remains provisional until workflow questions are answered."]
 
     def _requires_event_processing(self, requirements: RequirementModel) -> bool:
@@ -785,6 +817,8 @@ class ArchitectureGenerator:
             requirements.functional_requirements
             + requirements.non_functional_requirements
             + requirements.data_characteristics
+            + requirements.constraints
+            + [item.value for item in requirements.technical_characteristics]
         ).lower()
         return any(
             token in text

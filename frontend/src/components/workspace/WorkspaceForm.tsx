@@ -12,7 +12,6 @@ const initialValues = {
   title: '',
   description: '',
   business_context: '',
-  budget: '',
   preferred_cloud: '',
   constraints: '',
   team_size: '',
@@ -46,10 +45,9 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
       title: values.title.trim(),
       description: values.description.trim(),
       business_context: values.business_context.trim(),
-      budget: values.budget || undefined,
       preferred_cloud: values.preferred_cloud || undefined,
       constraints: values.constraints
-        .split(',')
+        .split(/[;\n]+/)
         .map((constraint) => constraint.trim())
         .filter(Boolean),
       team_size: Number.isFinite(teamSize) && teamSize > 0 ? Math.min(teamSize, 1000) : undefined,
@@ -61,7 +59,6 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
       title: sampleProject.title,
       description: sampleProject.description,
       business_context: sampleProject.business_context ?? '',
-      budget: sampleProject.budget ?? 'medium',
       preferred_cloud: sampleProject.preferred_cloud ?? 'AWS',
       constraints: sampleProject.constraints.join(', '),
       team_size: sampleProject.team_size ? String(sampleProject.team_size) : '6',
@@ -113,21 +110,7 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
           />
         </label>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="block space-y-1">
-            <span className="text-sm font-medium">Budget</span>
-            <select
-              value={values.budget}
-              onChange={(event) => updateField('budget', event.target.value)}
-              className="input-shell"
-            >
-              <option value="">Not specified</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-          </label>
-
+        <div>
           <label className="block space-y-1">
             <span className="text-sm font-medium">Cloud</span>
             <select
@@ -159,13 +142,14 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
             placeholder="e.g. 6"
           />
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            Used for Conway&apos;s Law team fit, ownership boundaries, scoring, and budget estimates.
+            Used for Conway&apos;s Law team fit, ownership boundaries, and scoring.
           </span>
         </label>
 
         <label className="block space-y-1">
           <span className="text-sm font-medium">Constraints</span>
-          <input
+          <textarea
+            rows={3}
             value={values.constraints}
             onChange={(event) => updateField('constraints', event.target.value)}
             className="input-shell"
@@ -187,7 +171,7 @@ export function WorkspaceForm({ isPending, onSubmit }: WorkspaceFormProps) {
           <div className="min-w-0 text-sm">
             <p className="font-medium">Analyzing the brief</p>
             <p className="mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              {elapsedSeconds}s elapsed. Unseen domains use local Ollama/Qwen before the remaining designs are generated.
+              {elapsedSeconds}s elapsed. Completed sections are shown alongside this form as soon as they are ready.
             </p>
           </div>
         </div>

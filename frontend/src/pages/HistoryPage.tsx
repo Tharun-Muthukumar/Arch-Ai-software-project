@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowUpRight,
   Clock3,
+  History,
   LoaderCircle,
   Search,
   Share2,
@@ -154,8 +155,14 @@ export function HistoryPage() {
 
         <section className="panel min-w-0">
           {!selectedId ? (
-            <div className="flex h-full min-h-72 items-center justify-center text-center text-sm text-muted">
-              Select a conversation to view its prompts and generated result.
+            <div className="flex h-full min-h-80 flex-col items-center justify-center gap-3 p-8 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-lg border" style={{ borderColor: 'var(--card-border)', background: 'var(--surface-strong)' }}>
+                <History className="h-6 w-6" style={{ color: 'var(--accent)' }} />
+              </div>
+              <h3 className="text-sm font-semibold">No conversation selected</h3>
+              <p className="max-w-xs text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                Choose a conversation from the sidebar to inspect architectural decisions, prompts, and run history.
+              </p>
             </div>
           ) : detailQuery.isLoading ? (
             <div className="flex items-center gap-2 text-sm text-muted"><LoaderCircle className="h-4 w-4 animate-spin" /> Loading conversation...</div>

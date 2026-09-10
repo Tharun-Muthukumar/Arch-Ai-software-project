@@ -347,6 +347,66 @@ def simulate_failure(
     arch_scores = comparison_matrix.get(architecture.id, {})
     fault_isolation = arch_scores.get("fault_isolation", 5)
 
+    # Prefer the generated, project-specific dependency graph. Each edge is
+    # ``consumer -> required component`` and therefore represents an actual
+    # service/data dependency. Older saved architectures without these edges
+    # retain the role-based compatibility path below.
+    if any(component.dependencies for component in architecture.components):
+        component_names = {component.name for component in architecture.components}
+        dependencies = {
+            component.name: [name for name in component.dependencies if name in component_names]
+            for component in architecture.components
+        }
+        reverse: dict[str, list[str]] = {name: [] for name in component_names}
+        for consumer, required in dependencies.items():
+            for dependency in required:
+                reverse.setdefault(dependency, []).append(consumer)
+
+        status_by_name: dict[str, tuple[str, str | None]] = {
+            failed_component: ("down", None)
+        }
+        queue = [failed_component]
+        while queue:
+            unavailable = queue.pop(0)
+            unavailable_role = component_to_role.get(unavailable, "app_service")
+            for consumer in reverse.get(unavailable, []):
+                previous = status_by_name.get(consumer)
+                # Shared event/integration/cache dependencies degrade their
+                # consumers; exclusive data/auth/API dependencies take the
+                # direct consumer down. A service behind an aggregator only
+                # removes part of that aggregator's capability.
+                consumer_dependencies = dependencies.get(consumer, [])
+                degraded_dependency = unavailable_role in {
+                    "message_broker", "cache", "external_integration",
+                } or (
+                    unavailable_role in {"app_service", "business_logic"}
+                    and len(consumer_dependencies) > 1
+                )
+                new_status = "degraded" if degraded_dependency else "down"
+                reason = f"runtime dependency unavailable: {unavailable}"
+                if previous and previous[0] == "down":
+                    continue
+                status_by_name[consumer] = (new_status, reason)
+                if new_status == "down":
+                    queue.append(consumer)
+
+        statuses = []
+        for component in architecture.components:
+            status, reason = status_by_name.get(component.name, ("healthy", None))
+            statuses.append(ComponentStatus(
+                component=component.name,
+                role=component_to_role[component.name],
+                status=status,
+                reason=reason,
+            ))
+        return BlastRadiusResult(
+            failed_component=failed_component,
+            architecture_id=architecture.id,
+            statuses=statuses,
+            impact_summary=_build_impact_summary(failed_component, statuses),
+            severity_score=_compute_severity(fault_isolation, statuses),
+        )
+
     rules = _resolve_rules(architecture.id)
     # Build lookup: affected_role -> (status, reason) for the failed role
     propagation: dict[str, tuple[str, str | None]] = {}

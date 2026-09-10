@@ -183,7 +183,7 @@ software-project/
 ## Workspace Lifecycle
 
 ### Phase 1: Creation
-1. User enters a project brief (title, description, business context, budget, cloud preference, constraints)
+1. User enters a project brief (title, description, business context, cloud preference, constraints, and team size)
 2. Backend analyzes the brief and extracts requirements
 3. If the system detects gaps, it generates clarification questions
 4. All artifacts are generated (architectures, diagrams, DB schema, APIs, deployment plan, documentation)

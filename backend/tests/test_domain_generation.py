@@ -110,7 +110,6 @@ def test_ecommerce_domain_keeps_commerce_concepts(client):
                 "Support catalog search, promotions, refunds, and seller payouts."
             ),
             "business_context": "Launch a consumer marketplace with fast checkout and trusted payments.",
-            "budget": "medium",
             "constraints": [],
         },
     )
@@ -125,7 +124,7 @@ def test_ecommerce_domain_keeps_commerce_concepts(client):
 
 
 def test_manufacturing_domain_has_no_ecommerce_leakage(client):
-    response = client.post("/api/v1/workspaces", json={**BEVERAGE_BRIEF, "budget": "high"})
+    response = client.post("/api/v1/workspaces", json=BEVERAGE_BRIEF)
     assert response.status_code == 201, response.text
     workspace = response.json()
     requirements = workspace["requirements"]
@@ -170,7 +169,7 @@ def test_manufacturing_domain_has_no_ecommerce_leakage(client):
 def test_beverage_scenario_end_to_end_with_clarifications(client):
     create_response = client.post(
         "/api/v1/workspaces",
-        json={**BEVERAGE_BRIEF, "budget": "high", "preferred_cloud": "AWS", "team_size": 350},
+        json={**BEVERAGE_BRIEF, "preferred_cloud": "AWS", "team_size": 350},
     )
     assert create_response.status_code == 201, create_response.text
     workspace_id = create_response.json()["id"]
@@ -218,7 +217,7 @@ def test_beverage_scenario_end_to_end_with_clarifications(client):
     assert all(entity.get("bounded_context") for entity in workspace["database_design"]["entities"])
     assert "REFERENCES" in workspace["database_design"]["sql_schema"]
     groups = [group["name"] for group in workspace["api_design"]["groups"]]
-    assert "Authentication" in groups
+    assert "Identity and Access" in groups
     assert "Core Workflows" not in groups
     assert any(
         endpoint.get("requirement_ids")
@@ -256,7 +255,6 @@ def test_saas_domain_differs_from_manufacturing(client):
                 "Self-serve SaaS with monthly releases. Tenants expect data isolation, "
                 "SSO login, and usage metering for billing."
             ),
-            "budget": "medium",
             "constraints": [],
         },
     )
@@ -334,7 +332,7 @@ def test_conway_staffing_totals_match_team_size():
     )
     for size in (1, 5, 13, 350):
         plan = suggest_roles(
-            option, ProjectConstraints(team_size=size, budget_level="medium", expected_scale="x")
+            option, ProjectConstraints(team_size=size, expected_scale="x")
         )
         assert plan.total_team_size == size
         assert sum(role.recommended_headcount for role in plan.roles) == size

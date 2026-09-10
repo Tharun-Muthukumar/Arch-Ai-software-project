@@ -132,7 +132,15 @@ def test_unknown_domain_graph_serializes_and_traces_requirements(client, monkeyp
             if edge.target_node_id == candidate.id
             and edge.source_node_id in requirement_by_id
         ]
-        assert [item.name for item in linked_requirements] == [candidate.description]
+        linked_ids = {item.id for item in linked_requirements}
+        explicit_ids = {
+            requirement_id
+            for endpoint in candidate.metadata["endpoint_details"]
+            for requirement_id in endpoint["requirement_ids"]
+            if requirement_id in requirement_by_id
+        }
+        assert explicit_ids
+        assert explicit_ids <= linked_ids
 
     component = next(
         node for node in graph.nodes if node.type in {"architecture_component", "service_module"}

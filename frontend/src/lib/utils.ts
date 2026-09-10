@@ -13,7 +13,10 @@ export function getActiveWorkspace(
     return null
   }
 
-  return workspaces.find((workspace) => workspace.id === workspaceId) ?? workspaces[0]
+  if (workspaceId) {
+    return workspaces.find((workspace) => workspace.id === workspaceId) ?? null
+  }
+  return workspaces[0]
 }
 
 export function formatMetricName(metric: string) {

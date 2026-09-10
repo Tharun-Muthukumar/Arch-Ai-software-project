@@ -8,6 +8,11 @@ import httpx
 
 from app.core.config import get_settings
 from app.services.ai.prompts import build_structured_prompt
+from app.services.generation_runtime import (
+    GENERATION_TELEMETRY,
+    PROJECT_GENERATION_CACHE,
+    stable_input_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +33,24 @@ class OllamaStructuredClient:
     ) -> dict[str, Any] | None:
         if not self.settings.ollama_enabled:
             return None
+
+        project_id = str(input_data.get("project_id") or "")
+        cache_payload = {
+            "stage": stage,
+            "model": self.settings.ollama_model,
+            "input": input_data,
+            "schema": response_schema,
+            "num_predict": num_predict,
+            "num_ctx": num_ctx,
+        }
+        cache_hash = stable_input_hash(cache_payload)
+        if project_id:
+            cached = PROJECT_GENERATION_CACHE.get(
+                project_id, cache_hash, f"llm:{stage}"
+            )
+            if cached is not None:
+                GENERATION_TELEMETRY.section(project_id, f"llm:{stage}", 0.0, True)
+                return cached
 
         source_fingerprint = None
         if raw_requirement := input_data.get("raw_requirement"):
@@ -65,6 +88,8 @@ class OllamaStructuredClient:
 
         try:
             started_at = perf_counter()
+            if project_id:
+                GENERATION_TELEMETRY.llm_call(project_id, stage)
             with httpx.Client(
                 base_url=self.settings.ollama_base_url,
                 timeout=max(self.settings.request_timeout_seconds, minimum_timeout_seconds),
@@ -75,11 +100,19 @@ class OllamaStructuredClient:
                 content = response_body["message"]["content"]
                 refined = json.loads(content)
                 if isinstance(refined, dict):
+                    duration_ms = (perf_counter() - started_at) * 1000
+                    if project_id:
+                        PROJECT_GENERATION_CACHE.put(
+                            project_id, cache_hash, f"llm:{stage}", refined
+                        )
+                        GENERATION_TELEMETRY.section(
+                            project_id, f"llm:{stage}", duration_ms, False
+                        )
                     logger.info(
                         "Applied Ollama output for %s%s in %.1fs (%s output tokens)",
                         stage,
                         f" fingerprint={source_fingerprint}" if source_fingerprint else "",
-                        perf_counter() - started_at,
+                        duration_ms / 1000,
                         response_body.get("eval_count", "unknown"),
                     )
                     return refined
@@ -90,4 +123,3 @@ class OllamaStructuredClient:
 
     def refine(self, stage: str, seed: dict[str, Any]) -> dict[str, Any] | None:
         return self.generate(stage, seed)
-

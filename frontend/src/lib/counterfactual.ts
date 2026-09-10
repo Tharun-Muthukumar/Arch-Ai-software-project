@@ -7,7 +7,6 @@ const NUMERIC_VARIABLES = new Set<CounterfactualVariable>([
   'peak_traffic_multiplier',
   'availability_percent',
   'latency_ms',
-  'monthly_budget_change_percent',
   'team_size',
   'geographic_regions',
   'data_volume_multiplier',

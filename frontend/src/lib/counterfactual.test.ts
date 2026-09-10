@@ -8,8 +8,6 @@ describe('buildCounterfactualChanges', () => {
       peak_traffic_multiplier: '10',
       availability_percent: '99.99',
       latency_ms: '',
-      budget_level: 'low',
-      monthly_budget_change_percent: '-40',
       team_size: '5',
       geographic_regions: '',
       realtime_required: true,

@@ -265,6 +265,19 @@ class WorkspaceEditService:
             requirements.functional_requirements
             + requirements.non_functional_requirements
             + requirements.constraints
+            + requirements.integrations
+            + [
+                " ".join(
+                    [
+                        integration.name,
+                        integration.purpose,
+                        integration.interaction_mode,
+                        *integration.protocol,
+                        *integration.data_formats,
+                    ]
+                )
+                for integration in requirements.integration_details
+            ]
         )
         lower_text = req_text.casefold()
         entity_tokens: set[str] = set()
@@ -274,38 +287,27 @@ class WorkspaceEditService:
         for group in workspace.api_design.groups:
             group_tokens |= {token for token in tokenize(group.name) if len(token) > 2}
 
-        # Major capabilities must exist as entities or API groups. Each
-        # keyword maps to tokens that acceptably cover it, so related
-        # concepts (production covering manufacturing) do not false-positive.
-        capability_coverage: tuple[tuple[str, set[str]], ...] = (
-            ("manufacturing", {"manufacturing", "production", "facility", "plant"}),
-            ("production", {"production", "manufacturing", "plant"}),
-            ("bottling", {"bottling", "bottler", "partner"}),
-            ("facility", {"facility", "plant", "warehouse", "site"}),
-            ("warehouse", {"warehouse", "storage", "inventory"}),
-            ("inventory", {"inventory", "stock", "warehouse"}),
-            ("shipment", {"shipment", "delivery", "distribution", "logistics"}),
-            ("forecast", {"forecast", "planning", "demand"}),
-            ("distributor", {"distributor", "partner", "dealer"}),
-            ("retailer", {"retailer", "store", "customer"}),
-        )
+        # Each inferred workflow must be anchored by at least one domain entity
+        # or API resource. This is domain-agnostic and does not rely on a
+        # catalogue of test-scenario nouns.
         model_tokens = entity_tokens | group_tokens
-        req_token_set = {
-            singularize(token) for token in tokenize(req_text) if len(token) > 2
-        }
-        uncovered = [
-            keyword
-            for keyword, acceptable in capability_coverage
-            if singularize(keyword) in req_token_set and not (acceptable & model_tokens)
-        ]
+        uncovered = []
+        for workflow in requirements.domain_workflows:
+            workflow_tokens = {
+                singularize(token)
+                for token in tokenize(" ".join([workflow.name, workflow.description, *workflow.related_entities]))
+                if len(token) > 3
+            }
+            if workflow_tokens and not (workflow_tokens & model_tokens):
+                uncovered.append(workflow.name)
         if uncovered:
             warnings.append(
                 ConsistencyIssue(
                     code="capability-without-model",
                     severity="warning",
                     message=(
-                        "Capabilities mentioned in requirements have no matching "
-                        f"domain entity or API group: {', '.join(uncovered)}. "
+                        "Business workflows have no matching domain entity or API group: "
+                        f"{', '.join(uncovered)}. "
                         "Confirm whether the model is incomplete."
                     ),
                 )
@@ -333,6 +335,7 @@ class WorkspaceEditService:
                 for group in workspace.api_design.groups
                 for endpoint in group.endpoints
                 if endpoint.auth_required is not True
+                and group.name.casefold() != "identity and access"
                 and not any(marker in endpoint.path.lower() for marker in public_markers)
             ]
             if exposed:
@@ -370,6 +373,131 @@ class WorkspaceEditService:
                 )
             )
 
+        confirmed_availability = requirements.project_profile.availability_target_percent
+        if confirmed_availability is not None:
+            actual_availability = workspace.deployment_plan.availability_target_percent
+            if actual_availability != confirmed_availability:
+                warnings.append(
+                    ConsistencyIssue(
+                        code="availability-propagation-mismatch",
+                        severity="error",
+                        message=(
+                            f"Confirmed availability {confirmed_availability}% does not match the deployment plan "
+                            f"({actual_availability if actual_availability is not None else 'unconfirmed'})."
+                        ),
+                    )
+                )
+
+        confirmed_integrations = {
+            item.name.casefold() for item in requirements.integration_details
+            if any(evidence.status == "confirmed" for evidence in item.source_evidence)
+        }
+        represented_integrations = " ".join(
+            [
+                *(item.name for item in requirements.integration_details),
+                *(component.responsibility for architecture in workspace.architectures for component in architecture.components),
+            ]
+        ).casefold()
+        missing_integrations = [
+            name for name in confirmed_integrations if name not in represented_integrations
+        ]
+        if missing_integrations:
+            warnings.append(
+                ConsistencyIssue(
+                    code="confirmed-integration-not-propagated",
+                    severity="error",
+                    message="Confirmed integrations have no downstream consumer: " + ", ".join(sorted(missing_integrations)) + ".",
+                )
+            )
+
+        if requirements.security_model.human_authentication or requirements.security_model.service_authentication:
+            api_security = {
+                mechanism.casefold()
+                for group in workspace.api_design.groups
+                for endpoint in group.endpoints
+                for mechanism in endpoint.security_mechanisms
+            }
+            expected_security = {
+                mechanism.casefold()
+                for mechanism in [
+                    *requirements.security_model.human_authentication,
+                    *requirements.security_model.service_authentication,
+                    *requirements.security_model.partner_authentication,
+                    *requirements.security_model.authorization,
+                    *requirements.security_model.data_protection,
+                ]
+            }
+            if expected_security - api_security:
+                warnings.append(
+                    ConsistencyIssue(
+                        code="security-not-propagated-to-api",
+                        severity="warning",
+                        message="Confirmed security controls are absent from generated API contracts: " + ", ".join(sorted(expected_security - api_security)) + ".",
+                    )
+                )
+            deployment_security = " ".join(workspace.deployment_plan.security_controls).casefold()
+            missing_in_deployment = {
+                mechanism for mechanism in expected_security
+                if mechanism not in deployment_security
+                and not (
+                    mechanism in {"oauth2/oidc", "sso", "mfa", "rbac"}
+                    and "identity controls" in deployment_security
+                )
+            }
+            if missing_in_deployment:
+                warnings.append(ConsistencyIssue(
+                    code="security-not-propagated-to-deployment",
+                    severity="warning",
+                    message="Confirmed security controls are absent from deployment controls: " + ", ".join(sorted(missing_in_deployment)) + ".",
+                ))
+
+        if workspace.comparison.scorecards:
+            ranked = sorted(
+                workspace.comparison.scorecards,
+                key=lambda item: (
+                    -(item.ranking_score if item.ranking_score is not None else item.weighted_score),
+                    item.architecture_id,
+                ),
+            )
+            if workspace.recommendation.recommended_architecture_id != ranked[0].architecture_id:
+                warnings.append(ConsistencyIssue(
+                    code="recommendation-score-contradiction",
+                    severity="error",
+                    message=(
+                        "The recommended architecture is not the top direction-aware weighted score; "
+                        "regenerate comparison and recommendation together."
+                    ),
+                    related_ids=[
+                        workspace.recommendation.recommended_architecture_id,
+                        ranked[0].architecture_id,
+                    ],
+                ))
+
+        confirmed_technical = {
+            (item.category.casefold(), item.value.casefold())
+            for item in requirements.technical_characteristics
+            if item.status in {"confirmed", "user-edited"}
+        }
+        technical_text = " ".join(requirements.data_characteristics).casefold()
+        missing_technical = [
+            value for _, value in confirmed_technical if value not in technical_text
+        ]
+        if missing_technical:
+            warnings.append(ConsistencyIssue(
+                code="confirmed-technical-data-not-propagated",
+                severity="error",
+                message="Confirmed technical/data facts are missing from the canonical data characteristics: " + ", ".join(sorted(missing_technical)) + ".",
+            ))
+
+        if requirements.project_profile.concurrent_users or requirements.project_profile.event_volume_per_day:
+            scaling_text = " ".join(workspace.deployment_plan.scaling_strategy).casefold()
+            if not any(marker in scaling_text for marker in ("scale", "capacity", "replica", "concurrency", "event")):
+                warnings.append(ConsistencyIssue(
+                    code="traffic-not-propagated-to-deployment",
+                    severity="warning",
+                    message="Confirmed traffic or event volume has no deployment scaling response.",
+                ))
+
         # Every domain entity should resolve to an API capability, where
         # capability means a matching group, endpoint path, or endpoint purpose.
         exempt_groups = {"authentication", "users"}
@@ -397,6 +525,15 @@ class WorkspaceEditService:
                         ),
                     )
                 )
+
+        declared_contexts = {context.name.casefold() for context in requirements.bounded_contexts}
+        for entity in requirements.domain_entities:
+            if not entity.bounded_context or entity.bounded_context.casefold() not in declared_contexts:
+                warnings.append(ConsistencyIssue(
+                    code="domain-entity-owner-mismatch",
+                    severity="warning",
+                    message=f"Domain entity '{entity.name}' is not owned by a declared bounded context.",
+                ))
 
         # Every domain entity should declare an owning bounded context.
         for entity in workspace.database_design.entities:
@@ -440,6 +577,7 @@ class WorkspaceEditService:
         generated = self.ai_client.generate(
             "workspace-semantic-edit",
             {
+                "project_id": workspace.id,
                 "raw_requirement": {
                     "raw_edit": raw_text,
                     "target_type": target_type,
@@ -598,17 +736,21 @@ class WorkspaceEditService:
         if target_type == "diagram_layout":
             return []
         if target_type == "architecture_component":
-            return ["comparison", "recommendation", "diagrams", "causal_graph", "documentation"]
+            # A topology edit changes evaluation and deployment views, but it
+            # does not change the canonical business data model or interfaces.
+            return ["comparison", "recommendation", "deployment", "diagrams", "causal_graph", "documentation"]
         if target_type == "api_endpoint":
+            # Preserve the user's endpoint edit. Only derived traceability and
+            # documentation consume it; architecture scoring does not.
             return ["causal_graph", "documentation"]
         if target_type == "database_entity":
-            return ["diagrams", "causal_graph", "documentation"]
+            return ["api", "diagrams", "causal_graph", "documentation"]
         if target_type == "deployment":
             return ["diagrams", "causal_graph", "documentation"]
         if target_type == "non_functional_requirement":
             return [
                 "clarifications", "architectures", "comparison", "recommendation",
-                "deployment", "diagrams", "causal_graph", "documentation",
+                "database", "api", "deployment", "diagrams", "causal_graph", "documentation",
             ]
         return [
             "clarifications", "architectures", "comparison", "recommendation",
@@ -706,7 +848,9 @@ class WorkspaceEditService:
             "deployment_model", "replicas", "regions", "deployment_strategy",
             "availability_configuration", "target_stack", "docker_services", "kubernetes_modules",
             "cicd_pipeline", "observability", "scaling_strategy", "security_controls",
-            "cloud_recommendation", "stack_rationale",
+            "cloud_recommendation", "stack_rationale", "replicas_per_region",
+            "total_baseline_replicas", "availability_target_percent", "failover_mode",
+            "rto", "rpo", "source_evidence",
         }
         unknown = set(normalized) - allowed
         if unknown:
@@ -764,6 +908,12 @@ class WorkspaceEditService:
             None,
         )
         component_names = {item.name for item in recommended.components} if recommended else set()
+        ownership_names = {
+            *component_names,
+            *(context.name for context in workspace.requirements.bounded_contexts),
+            *(group.name for group in workspace.api_design.groups),
+            "External Integration",
+        }
         for group in workspace.api_design.groups:
             seen: set[tuple[str, str]] = set()
             for endpoint in group.endpoints:
@@ -783,9 +933,9 @@ class WorkspaceEditService:
                         + ", ".join(sorted(unknown_requirements))
                         + "."
                     )
-                if endpoint.service and endpoint.service not in component_names:
+                if endpoint.service and endpoint.service not in ownership_names:
                     raise ValueError(
-                        f"API owner {endpoint.service} is not a component in the recommended architecture."
+                        f"API owner {endpoint.service} is not a declared bounded context or architecture component."
                     )
 
     def _validate_database(self, workspace: WorkspaceResponse) -> None:

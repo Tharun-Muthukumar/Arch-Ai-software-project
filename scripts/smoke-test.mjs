@@ -104,7 +104,6 @@ async function main() {
       'Build an EV charging station booking platform for metro cities with station discovery, live charger availability, slot booking, payments, refunds, operator controls, and charging session tracking.',
     business_context:
       'The first release should support rapid city pilots with auditable payments, operator tooling, and clear charging workflows.',
-    budget: 'medium',
     preferred_cloud: 'AWS',
     constraints: [
       'Must use PostgreSQL',
@@ -313,7 +312,6 @@ async function main() {
 
   const projectConstraints = {
     team_size: 6,
-    budget_level: 'medium',
     expected_scale: workspace.requirements.scale_profile,
     timeline_weeks: 12,
   }
@@ -336,36 +334,19 @@ async function main() {
       recommended_architecture_id: recommended.id,
       deployment_stack: deploymentStack,
       weights: workspace.comparison.weights,
+      domain: workspace.requirements.domain,
+      domain_signals: workspace.requirements.domain_entities.map((entity) => entity.name),
+      capability_signals: workspace.requirements.domain_workflows.flatMap((workflow) => [workflow.name, workflow.description]),
+      workload_signals: workspace.requirements.non_functional_requirements,
+      data_signals: (workspace.requirements.technical_characteristics ?? []).map((item) => `${item.category} ${item.value}`),
+      reliability_signals: workspace.requirements.non_functional_requirements,
+      integration_signals: (workspace.requirements.integration_details ?? []).flatMap((item) => [item.name, item.interaction_mode, ...item.protocol, ...item.data_formats]),
+      project_profile: workspace.requirements.project_profile,
     }),
   })
-  assert(twins.length > 0, 'Industry-twin matching returned no results')
-
-  const budgetRequest = {
-    architecture: recommended,
-    deployment_stack: deploymentStack,
-    constraints: projectConstraints,
-  }
-  const budget = await request('/budget-estimate', {
-    method: 'POST',
-    body: JSON.stringify(budgetRequest),
-  })
-  assert(budget.budgets_by_scale.length > 0, 'Budget estimate returned no scale tiers')
-
-  const budgetComparison = await request('/budget-compare', {
-    method: 'POST',
-    body: JSON.stringify({
-      architectures: workspace.architectures,
-      deployment_stacks: Object.fromEntries(
-        workspace.architectures.map((architecture) => [architecture.id, deploymentStack]),
-      ),
-      constraints: projectConstraints,
-    }),
-  })
-  assert(
-    Object.keys(budgetComparison).length === workspace.architectures.length,
-    'Budget comparison returned an incomplete architecture set',
-  )
-  log('Team, twin, and budget insights', 'ok')
+  assert(twins.length > 0, 'Precedent matching returned no results')
+  assert(twins.every((match) => typeof match.industry_similarity === 'number'), 'Precedent dimensions are incomplete')
+  log('Team and precedent insights', 'ok')
 
   const clarificationAnswers = Object.fromEntries(
     (workspace.clarification_plan?.questions ?? [])

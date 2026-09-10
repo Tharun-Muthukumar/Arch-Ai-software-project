@@ -15,12 +15,14 @@ import {
 import { reweightArchitectures } from '../../lib/api'
 import { formatMetricName } from '../../lib/utils'
 import { chartTheme } from '../../lib/chartTheme'
+import { metricUtility } from '../../lib/architectureMetrics'
 import type {
   ComparisonResult,
   ArchitectureScorecard,
 } from '../../types/api'
 
 interface WhatIfPlaygroundProps {
+  workspaceId: string
   comparison: ComparisonResult
   onRankingChange?: (scorecards: ArchitectureScorecard[]) => void
 }
@@ -34,39 +36,23 @@ const METRICS = [
 const DEFAULT_WEIGHTS: Record<string, number> = Object.fromEntries(
   METRICS.map((m) => [m, 1.0]),
 )
-const WEIGHT_STORAGE_KEY = 'archai-insight-weights'
+const weightStorageKey = (workspaceId: string) => `archai-insight-weights:${workspaceId}`
 
-const PRESETS: { label: string; weights: Record<string, number> }[] = [
-  {
-    label: 'Startup / move fast',
-    weights: {
-      scalability: 0.5, performance: 0.8, maintainability: 1.2, security: 0.8,
-      cost: 2.5, reliability: 0.7, availability: 0.6, deployment_complexity: 2.0,
-      learning_curve: 1.8, development_time: 2.5, fault_isolation: 0.5, operational_complexity: 1.5,
-    },
-  },
-  {
-    label: 'Enterprise / reliability first',
-    weights: {
-      scalability: 1.5, performance: 1.2, maintainability: 1.5, security: 2.5,
-      cost: 0.8, reliability: 2.5, availability: 2.5, deployment_complexity: 0.8,
-      learning_curve: 0.7, development_time: 0.6, fault_isolation: 2.0, operational_complexity: 0.8,
-    },
-  },
-  {
-    label: 'Cost-constrained',
-    weights: {
-      scalability: 0.6, performance: 0.7, maintainability: 1.0, security: 1.0,
-      cost: 3.0, reliability: 0.8, availability: 0.7, deployment_complexity: 2.0,
-      learning_curve: 1.5, development_time: 2.0, fault_isolation: 0.5, operational_complexity: 1.5,
-    },
-  },
-]
+// No budget-driven presets: Cost remains only as an architecture trade-off
+// slider alongside the other criteria. Exploratory reweighting is manual so
+// saved recommendations are never silently replaced by a preset.
 
 const COLORS = ['#b45309', '#2563eb', '#16a34a', '#9333ea', '#dc2626']
 
-export function WhatIfPlayground({ comparison, onRankingChange }: WhatIfPlaygroundProps) {
-  const [weights, setWeights] = useState<Record<string, number>>(DEFAULT_WEIGHTS)
+export function WhatIfPlayground({ workspaceId, comparison, onRankingChange }: WhatIfPlaygroundProps) {
+  const [weights, setWeights] = useState<Record<string, number>>(() => {
+    try {
+      const saved = window.localStorage.getItem(weightStorageKey(workspaceId))
+      return saved ? JSON.parse(saved) as Record<string, number> : DEFAULT_WEIGHTS
+    } catch {
+      return DEFAULT_WEIGHTS
+    }
+  })
   const [rankedScorecards, setRankedScorecards] = useState<ArchitectureScorecard[]>(
     comparison.scorecards,
   )
@@ -86,8 +72,10 @@ export function WhatIfPlayground({ comparison, onRankingChange }: WhatIfPlaygrou
 
   const fetchReweighted = useCallback(
     async (currentWeights: Record<string, number>) => {
-      window.localStorage.setItem(WEIGHT_STORAGE_KEY, JSON.stringify(currentWeights))
-      window.dispatchEvent(new CustomEvent('archai:weights-changed', { detail: currentWeights }))
+      window.localStorage.setItem(weightStorageKey(workspaceId), JSON.stringify(currentWeights))
+      window.dispatchEvent(new CustomEvent('archai:weights-changed', {
+        detail: { workspaceId, weights: currentWeights },
+      }))
       setIsPending(true)
       try {
         const result = await reweightArchitectures({
@@ -102,7 +90,7 @@ export function WhatIfPlayground({ comparison, onRankingChange }: WhatIfPlaygrou
         setIsPending(false)
       }
     },
-    [matrix, onRankingChange],
+    [matrix, onRankingChange, workspaceId],
   )
 
   const handleWeightChange = useCallback(
@@ -127,25 +115,26 @@ export function WhatIfPlayground({ comparison, onRankingChange }: WhatIfPlaygrou
     setRankedScorecards(comparison.scorecards)
   }, [comparison])
 
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(weightStorageKey(workspaceId))
+      setWeights(saved ? JSON.parse(saved) as Record<string, number> : DEFAULT_WEIGHTS)
+    } catch {
+      setWeights(DEFAULT_WEIGHTS)
+    }
+  }, [workspaceId])
+
   const resetWeights = useCallback(() => {
     setWeights(DEFAULT_WEIGHTS)
     fetchReweighted(DEFAULT_WEIGHTS)
   }, [fetchReweighted])
-
-  const applyPreset = useCallback(
-    (presetWeights: Record<string, number>) => {
-      setWeights(presetWeights)
-      fetchReweighted(presetWeights)
-    },
-    [fetchReweighted],
-  )
 
   const radarData = useMemo(() => {
     return METRICS.map((metric) => {
       const row: Record<string, number | string> = { metric: formatMetricName(metric) }
       for (const sc of rankedScorecards) {
         const ms = sc.metric_scores.find((m) => m.metric === metric)
-        row[sc.architecture_name] = ms?.score ?? 0
+        row[sc.architecture_name] = ms ? metricUtility(ms) : 0
       }
       return row
     })
@@ -168,6 +157,9 @@ export function WhatIfPlayground({ comparison, onRankingChange }: WhatIfPlaygrou
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
               Drag sliders to explore how different priorities change the architecture ranking.
             </p>
+            <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+              This is an exploratory ranking. It does not silently replace the saved recommendation or ADR.
+            </p>
           </div>
           {isPending && (
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -184,16 +176,6 @@ export function WhatIfPlayground({ comparison, onRankingChange }: WhatIfPlaygrou
           >
             Reset weights
           </button>
-          {PRESETS.map((preset) => (
-            <button
-              key={preset.label}
-              type="button"
-              onClick={() => applyPreset(preset.weights)}
-              className="button-secondary text-xs"
-            >
-              {preset.label}
-            </button>
-          ))}
         </div>
 
         <div className="mt-4 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -225,6 +207,7 @@ export function WhatIfPlayground({ comparison, onRankingChange }: WhatIfPlaygrou
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="panel">
           <h3 className="text-sm font-semibold mb-2">Radar comparison</h3>
+          <p className="mb-2 text-xs" style={{ color: 'var(--text-muted)' }}>Normalized suitability: larger is better after direction-aware conversion.</p>
           <div className="h-[320px]">
             <ResponsiveContainer>
               <RadarChart data={radarData}>
@@ -250,7 +233,7 @@ export function WhatIfPlayground({ comparison, onRankingChange }: WhatIfPlaygrou
         </div>
 
         <div className="panel">
-          <h3 className="text-sm font-semibold mb-2">Ranked by weighted score</h3>
+          <h3 className="text-sm font-semibold mb-2">Exploratory ranking by weighted score</h3>
           <div className="h-[320px]">
             <ResponsiveContainer>
               <BarChart data={barData} layout="vertical" margin={{ left: 20 }}>

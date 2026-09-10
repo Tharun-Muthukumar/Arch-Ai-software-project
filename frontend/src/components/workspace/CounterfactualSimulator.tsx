@@ -14,8 +14,6 @@ const initialValues: CounterfactualFormValues = {
   peak_traffic_multiplier: '',
   availability_percent: '',
   latency_ms: '',
-  budget_level: '',
-  monthly_budget_change_percent: '',
   team_size: '',
   geographic_regions: '',
   realtime_required: false,
@@ -29,18 +27,11 @@ const numberFields = [
   ['peak_traffic_multiplier', 'Peak traffic multiplier', 'e.g. 10'],
   ['availability_percent', 'Availability %', 'e.g. 99.99'],
   ['latency_ms', 'Latency target (ms)', 'e.g. 100'],
-  ['monthly_budget_change_percent', 'Budget change %', 'e.g. -40'],
   ['team_size', 'Team size', 'e.g. 5'],
   ['geographic_regions', 'Geographic regions', 'e.g. 3'],
   ['data_volume_multiplier', 'Data volume multiplier', 'e.g. 5'],
   ['growth_rate_percent', 'Annual growth %', 'e.g. 80'],
 ] as const
-
-function money(value?: number | null) {
-  return value == null ? 'Unknown' : new Intl.NumberFormat('en-US', {
-    style: 'currency', currency: 'USD', maximumFractionDigits: 0,
-  }).format(value)
-}
 
 function score(value?: number | null, suffix = '') {
   return value == null ? 'Unknown' : `${value.toFixed(1)}${suffix}`
@@ -110,7 +101,7 @@ export function CounterfactualSimulator({ workspace }: { workspace: Workspace })
               <input
                 type="number"
                 step="any"
-                min={key === 'monthly_budget_change_percent' ? undefined : 0}
+                min={0}
                 className="input-shell"
                 value={values[key] as string}
                 onChange={(event) => update(key, event.target.value)}
@@ -118,12 +109,6 @@ export function CounterfactualSimulator({ workspace }: { workspace: Workspace })
               />
             </label>
           ))}
-          <label className="block space-y-1">
-            <span className="text-xs font-medium">Budget posture</span>
-            <select className="input-shell" value={values.budget_level as string} onChange={(event) => update('budget_level', event.target.value)}>
-              <option value="">Unchanged</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
-            </select>
-          </label>
           <label className="block space-y-1">
             <span className="text-xs font-medium">Compliance level</span>
             <select className="input-shell" value={values.compliance_level as string} onChange={(event) => update('compliance_level', event.target.value)}>
@@ -153,11 +138,10 @@ function SimulationResult({ workspace, result }: { workspace: Workspace; result:
   const rows = [
     ['Suitability', score(result.before.suitability_score), score(result.after.suitability_score)],
     ['Architecture rank', `#${result.before.rank}`, `#${result.after.rank}`],
-    ['Monthly cost estimate', money(result.before.monthly_cost_estimate_usd), money(result.after.monthly_cost_estimate_usd)],
     ['Resilience', score(result.before.resilience_score, '/10'), score(result.after.resilience_score, '/10')],
     ['Risk', `${result.before.risk_level} (${score(result.before.risk_score)})`, `${result.after.risk_level} (${score(result.after.risk_score)})`],
     ['Team fit', score(result.before.team_fit_score, '/10'), score(result.after.team_fit_score, '/10')],
-    ['Operational complexity', score(result.before.operational_complexity_score, '/10'), score(result.after.operational_complexity_score, '/10')],
+    ['Operational complexity (lower is better)', score(result.before.operational_complexity_score, '/10'), score(result.after.operational_complexity_score, '/10')],
   ]
   return (
     <>

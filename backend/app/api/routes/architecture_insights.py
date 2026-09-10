@@ -1,18 +1,14 @@
-"""Stateless deterministic endpoints for team fit, industry twins, and budgets."""
+"""Stateless deterministic endpoints for team fit and public precedents."""
 
 from fastapi import APIRouter
 
 from app.schemas.domain import (
-    BudgetCompareRequest,
-    BudgetEstimate,
-    BudgetEstimateRequest,
     ConwayFitRequest,
     ConwayFitResult,
     RequirementAnalysis,
     TwinMatch,
     TwinMatchRequest,
 )
-from app.services.budget_estimator import generate_budget
 from app.services.conway_law_engine import check_fit
 from app.services.twin_matching_engine import match_twins
 
@@ -26,6 +22,7 @@ def conway_fit(payload: ConwayFitRequest) -> ConwayFitResult:
         architecture=payload.architecture,
         analysis=RequirementAnalysis(detected_entities=payload.entities),
         constraints=payload.constraints,
+        bounded_contexts=payload.bounded_contexts,
     )
 
 
@@ -37,23 +34,13 @@ def twin_match(payload: TwinMatchRequest) -> list[TwinMatch]:
         recommended_architecture_id=payload.recommended_architecture_id,
         deployment_stack=payload.deployment_stack,
         weights=payload.weights,
+        domain=payload.domain,
+        domain_signals=payload.domain_signals,
+        capability_signals=payload.capability_signals,
+        workload_signals=payload.workload_signals,
+        data_signals=payload.data_signals,
+        reliability_signals=payload.reliability_signals,
+        integration_signals=payload.integration_signals,
+        project_profile=payload.project_profile,
+        similarity_weights=payload.similarity_weights,
     )
-
-
-@router.post("/budget-estimate", response_model=BudgetEstimate)
-def budget_estimate(payload: BudgetEstimateRequest) -> BudgetEstimate:
-    """Return an illustrative, deterministic monthly budget estimate."""
-    return generate_budget(payload.architecture, payload.deployment_stack, payload.constraints)
-
-
-@router.post("/budget-compare", response_model=dict[str, BudgetEstimate])
-def budget_compare(payload: BudgetCompareRequest) -> dict[str, BudgetEstimate]:
-    """Estimate every shortlisted architecture from one shared constraint set."""
-    return {
-        architecture.id: generate_budget(
-            architecture,
-            payload.deployment_stacks.get(architecture.id, []),
-            payload.constraints,
-        )
-        for architecture in payload.architectures
-    }

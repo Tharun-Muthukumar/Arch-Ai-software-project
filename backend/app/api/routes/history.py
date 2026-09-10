@@ -13,6 +13,7 @@ from app.schemas.account import (
     UserLookup,
 )
 from app.services.history_service import HistoryService
+from app.services.generation_runtime import GENERATION_TELEMETRY, PROJECT_GENERATION_CACHE
 from app.services.workspace_orchestrator import WorkspaceOrchestrator
 
 
@@ -92,7 +93,10 @@ def delete_history_item(
     )
     if conversation.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Only the owner can delete this conversation")
+    project_id = conversation.workspace_id
     repository.delete_conversation(conversation)
+    PROJECT_GENERATION_CACHE.invalidate_project(project_id)
+    GENERATION_TELEMETRY.invalidate_project(project_id)
 
 
 @router.post(

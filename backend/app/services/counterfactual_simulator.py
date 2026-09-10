@@ -15,7 +15,6 @@ from app.schemas.domain import (
     WorkspaceResponse,
 )
 from app.services.blast_radius_engine import simulate_failure
-from app.services.budget_estimator import generate_budget
 from app.services.causal_graph import COMPONENT_TYPES, CausalGraphService
 from app.services.comparison_engine import ComparisonEngine
 from app.services.conway_law_engine import check_fit
@@ -94,7 +93,6 @@ class CounterfactualSimulator:
             workspace.requirements,
             before_constraints,
             before_team_known,
-            self._scale_tier(workspace.requirements, changes, before=True),
         )
         after = self._snapshot(
             workspace,
@@ -104,7 +102,6 @@ class CounterfactualSimulator:
             temporary_requirements,
             after_constraints,
             after_team_known,
-            self._scale_tier(temporary_requirements, changes, before=False),
         )
 
         conflicts = self._conflicts(changes, after_ranking)
@@ -148,9 +145,8 @@ class CounterfactualSimulator:
             confidence=confidence,
             estimate_notes=[
                 "Suitability, risk, resilience, team fit, and ranking are deterministic planning scores, not measured production outcomes.",
-                "Monthly costs reuse ArchAI's illustrative budget model and are estimates, not vendor quotes.",
                 *(
-                    ["Team size was not specified, so cost uses the existing five-person planning baseline; team-fit is left unknown."]
+                    ["Team size was not specified, so team-fit is left unknown."]
                     if not before_team_known and not after_team_known
                     else []
                 ),
@@ -193,9 +189,6 @@ class CounterfactualSimulator:
             add("data_volume_multiplier", 1, float(match.group(1)))
         elif "data volume" in text and any(word in text for word in ("increase", "grow", "significant")):
             add("data_volume_multiplier", None, "significant increase")
-        if match := re.search(r"budget[^.!?]{0,20}?(decrease|reduce|increase)[^\d]{0,10}(\d+(?:\.\d+)?)%", text):
-            amount = float(match.group(2))
-            add("monthly_budget_change_percent", 0, -amount if match.group(1) != "increase" else amount)
         if "multiple region" in text or "multi-region" in text:
             add("geographic_regions", 1 if "one region" in text else None, "multiple")
         if ("realtime" in text or "real-time" in text) and any(word in text for word in ("need", "require", "become")):
@@ -231,12 +224,10 @@ class CounterfactualSimulator:
             "expected_users": users,
             "availability_percent": availability,
             "latency_ms": latency,
-            "budget_level": workspace.answers.get("budget"),
             "team_size": team or None,
             "realtime_required": any(marker in text.casefold() for marker in ("realtime", "real-time")),
             "geographic_regions": None,
             "peak_traffic_multiplier": 1,
-            "monthly_budget_change_percent": 0,
             "compliance_level": None,
             "data_volume_multiplier": 1,
             "growth_rate_percent": None,
@@ -263,11 +254,6 @@ class CounterfactualSimulator:
                 requirements.non_functional_requirements.append(f"Availability target: {value}%.")
             elif change.variable == "latency_ms":
                 requirements.non_functional_requirements.append(f"Latency target: {value} ms.")
-            elif change.variable == "budget_level":
-                answers["budget"] = str(value)
-            elif change.variable == "monthly_budget_change_percent":
-                if isinstance(value, (int, float)) and value < 0:
-                    answers["budget"] = "low"
             elif change.variable == "team_size":
                 answers["team_size"] = str(value)
             elif change.variable == "geographic_regions":
@@ -298,12 +284,8 @@ class CounterfactualSimulator:
             selected = team_change.original_value if before else team_change.hypothetical_value
             team = self._parse_number(str(selected))
         team_known = bool(team)
-        budget = answers.get("budget", "medium").casefold()
-        if budget not in {"low", "medium", "high"}:
-            budget = "medium"
         return ProjectConstraints(
             team_size=team or 5,
-            budget_level=budget,
             expected_scale=requirements.scale_profile,
             timeline_weeks=max(1, self._parse_number(answers.get("timeline_weeks", "12")) or 12),
         ), team_known
@@ -344,7 +326,6 @@ class CounterfactualSimulator:
         requirements: RequirementModel,
         constraints: ProjectConstraints,
         team_known: bool,
-        scale_tier: int,
     ) -> CounterfactualSnapshot:
         scorecard = next(item for item in scorecards if item.architecture_id == architecture.id)
         rank = next(item.rank for item in ranking if item.architecture_id == architecture.id)
@@ -359,32 +340,27 @@ class CounterfactualSimulator:
             for component in architecture.components
         ]
         risk_score = round(max(severities, default=10 - resilience), 1)
-        cost = generate_budget(architecture, self._deployment_stack(workspace), constraints)
-        monthly = cost.budgets_by_scale[scale_tier].total_monthly_usd
         team_fit = self._team_fit(architecture, requirements, constraints) if team_known else None
         return CounterfactualSnapshot(
             architecture_id=architecture.id,
             architecture_name=architecture.name,
             suitability_score=round(scorecard.weighted_score, 1),
             rank=rank,
-            monthly_cost_estimate_usd=monthly,
             resilience_score=resilience,
             risk_score=risk_score,
             risk_level="High" if risk_score >= 7 else "Medium" if risk_score >= 4 else "Low",
             team_fit_score=team_fit,
-            operational_complexity_score=round(11 - metrics.get("operational_complexity", 5), 1),
+            operational_complexity_score=round(metrics.get("operational_complexity", 5), 1),
         )
 
     def _team_fit(self, architecture, requirements, constraints) -> float:
         entities = [item.name for item in requirements.domain_entities]
-        return check_fit(architecture, RequirementAnalysis(detected_entities=entities), constraints).fit_score
-
-    def _scale_tier(self, requirements, changes, *, before: bool) -> int:
-        user_change = next((item for item in changes if item.variable == "expected_users"), None)
-        value = user_change.original_value if user_change and before else user_change.hypothetical_value if user_change else None
-        if isinstance(value, (int, float)):
-            return 0 if value <= 10_000 else 1 if value <= 250_000 else 2
-        return 2 if requirements.scale_profile == "high-scale" else 0 if requirements.scale_profile == "startup-scale" else 1
+        return check_fit(
+            architecture,
+            RequirementAnalysis(detected_entities=entities),
+            constraints,
+            requirements.bounded_contexts,
+        ).fit_score
 
     def _affected_components(self, architecture, direct, indirect, text) -> list[str]:
         graph_components = [
@@ -406,10 +382,6 @@ class CounterfactualSimulator:
     def _conflicts(self, changes, ranking) -> list[str]:
         values = {item.variable: item.hypothetical_value for item in changes}
         small_team = isinstance(values.get("team_size"), (int, float)) and values["team_size"] <= 6
-        constrained = values.get("budget_level") == "low" or (
-            isinstance(values.get("monthly_budget_change_percent"), (int, float))
-            and values["monthly_budget_change_percent"] < 0
-        )
         scale_pressure = (
             isinstance(values.get("expected_users"), (int, float)) and values["expected_users"] >= 250_000
         ) or values.get("realtime_required") is True or (
@@ -418,8 +390,6 @@ class CounterfactualSimulator:
         conflicts = []
         if scale_pressure and small_team:
             conflicts.append("Scale pressure favors stronger isolation, but the smaller team reduces the fit of independently operated services.")
-        if scale_pressure and constrained:
-            conflicts.append("Scale pressure raises infrastructure needs while the tighter budget favors incremental changes and measured hotspots.")
         distributed_ids = {"event-driven-microservices", "hybrid-event-serverless", "service-based"}
         for distributed_id in distributed_ids:
             micro = next((item for item in ranking if item.architecture_id == distributed_id), None)
@@ -482,13 +452,6 @@ class CounterfactualSimulator:
             if item.id == workspace.recommendation.recommended_architecture_id
         )
 
-    def _deployment_stack(self, workspace):
-        return list(dict.fromkeys([
-            *workspace.deployment_plan.target_stack,
-            *workspace.deployment_plan.docker_services,
-            *workspace.deployment_plan.kubernetes_modules,
-        ]))
-
     def _change_text(self, changes, scenario):
         parts = [scenario or ""]
         technical_context = {
@@ -496,8 +459,6 @@ class CounterfactualSimulator:
             "peak_traffic_multiplier": "scalability traffic throughput capacity",
             "availability_percent": "availability resilience recovery failover redundancy",
             "latency_ms": "latency performance response time",
-            "budget_level": "cost budget operational complexity",
-            "monthly_budget_change_percent": "cost budget operational complexity",
             "team_size": "team ownership operational complexity",
             "geographic_regions": "region deployment availability data residency",
             "realtime_required": "realtime event processing asynchronous stream",
@@ -512,7 +473,7 @@ class CounterfactualSimulator:
         return " ".join(parts).strip()
 
     def _profile_for_users(self, users: float) -> str:
-        return "high-scale" if users >= 250_000 else "growth-scale" if users >= 25_000 else "startup-scale"
+        return "high-scale" if users >= 250_000 else "growth-scale" if users >= 25_000 else "small-scale"
 
     def _first_number(self, text: str, pattern: str):
         match = re.search(pattern, text, flags=re.IGNORECASE)

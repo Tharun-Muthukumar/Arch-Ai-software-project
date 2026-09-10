@@ -1042,61 +1042,9 @@ class DiagramGenerator:
         )
 
     def _deployment(self, deployment_plan: DeploymentPlan) -> DiagramArtifact:
+        # Dynamic deployment only: the diagram renders the deployment plan's
+        # own services/stack so no generator-app template can leak in.
         return self._dynamic_deployment(deployment_plan)
-
-        mermaid = "\n".join(
-            [
-                "flowchart TB",
-                '    Browser["Client Browser"] --> Edge["Edge Delivery<br/>CDN / NGINX"]',
-                '    subgraph APP["Application Runtime"]',
-                "        direction LR",
-                '        API["FastAPI API"]',
-                '        Worker["Background Jobs"]',
-                "    end",
-                '    subgraph DATA["Data & Persistence"]',
-                "        direction LR",
-                '        DB["PostgreSQL"]',
-                '        Cache["Redis / Queue"]',
-                '        Artifact["Export Storage"]',
-                "    end",
-                "    Edge --> API",
-                "    API --> DB",
-                "    API --> Cache",
-                "    API --> Worker",
-                "    Worker --> Artifact",
-                "    Worker --> DB",
-            ]
-        )
-        plantuml = "\n".join(
-            [
-                "@startuml",
-                "node \"Client Browser\" as Browser",
-                "node \"Edge Delivery\\nCDN / NGINX\" as Edge",
-                "node \"Application Runtime\" {",
-                "  node \"FastAPI API\" as API",
-                "  node \"Background Jobs\" as Worker",
-                "}",
-                "node \"Data & Persistence\" {",
-                "  database PostgreSQL as DB",
-                "  queue \"Redis / Queue\" as Cache",
-                "  artifact \"Export Storage\" as Artifact",
-                "}",
-                "Browser --> Edge",
-                "Edge --> API",
-                "API --> DB",
-                "API --> Cache",
-                "API --> Worker",
-                "Worker --> Artifact",
-                "Worker --> DB",
-                "@enduml",
-            ]
-        )
-        return DiagramArtifact(
-            title="Deployment Diagram",
-            description="Shows the runtime footprint with clearer separation between edge delivery, application services, and persistence.",
-            mermaid=mermaid,
-            plantuml=plantuml,
-        )
 
     def _dynamic_deployment(self, plan: DeploymentPlan) -> DiagramArtifact:
         runtime_items = self._unique(
@@ -1151,7 +1099,19 @@ class DiagramGenerator:
     ) -> list[tuple[ArchitectureComponent, ArchitectureComponent, str]]:
         connections: list[tuple[ArchitectureComponent, ArchitectureComponent, str]] = []
         seen: set[tuple[str, str]] = set()
+        by_name = {component.name.casefold(): component for component in architecture.components}
         for component in architecture.components:
+            for dependency_name in component.dependencies:
+                target = by_name.get(dependency_name.casefold())
+                if target is None or target.name == component.name:
+                    continue
+                key = (component.name.casefold(), target.name.casefold())
+                if key not in seen:
+                    seen.add(key)
+                    connections.append((component, target, "runtime dependency"))
+        for component in architecture.components:
+            if component.dependencies:
+                continue
             for interaction in component.interactions:
                 target = next(
                     (
@@ -1334,9 +1294,21 @@ class DiagramGenerator:
             return "contains"
         if source == "notifications":
             return "sends to"
-        source_clean = source.replace("_", " ").rstrip("s")
+        if relation.relationship == "flows-to":
+            return "flows to"
+        desc_lower = relation.description.lower()
+        if "references" in desc_lower:
+            return "references"
+        if "belongs to" in desc_lower:
+            return "belongs to"
+        if "associated with" in desc_lower:
+            return "associated with"
+        if "tracks" in desc_lower:
+            return "tracks"
+        if "contains" in desc_lower:
+            return "contains"
         target_clean = target.replace("_", " ").rstrip("s")
-        return f"of {target_clean}"
+        return f"relates to {target_clean}"
 
     def _class_cardinality(self, relationship: str) -> tuple[str, str]:
         if relationship == "one-to-one":
@@ -1366,61 +1338,19 @@ class DiagramGenerator:
         return self._to_identifier(component_name).upper()
 
     def _diagram_entities(self, database_design: DatabaseDesign) -> list[DatabaseEntity]:
-        entity_names = {entity.name for entity in database_design.entities}
-        if {"stations", "chargers", "bookings"}.issubset(entity_names):
-            priority_order = [
-                "users",
-                "stations",
-                "chargers",
-                "bookings",
-                "charging_sessions",
-                "payments",
-                "audit_logs",
-            ]
-            limit = 6
-        elif {"products", "prescriptions", "orders"}.issubset(entity_names):
-            priority_order = [
-                "users",
-                "products",
-                "inventory",
-                "prescriptions",
-                "orders",
-                "order_items",
-                "payments",
-                "shipments",
-            ]
-            limit = 8
-        elif {"products", "orders"}.issubset(entity_names):
-            priority_order = [
-                "users",
-                "products",
-                "orders",
-                "order_items",
-                "payments",
-                "shipments",
-                "audit_logs",
-            ]
-            limit = 7
-        else:
-            priority_order = []
-            limit = 6
-        lookup = {entity.name: entity for entity in database_design.entities}
-        selected: list[DatabaseEntity] = []
-
-        for entity_name in priority_order:
-            entity = lookup.get(entity_name)
-            if entity and entity not in selected:
-                selected.append(entity)
-            if len(selected) == limit:
-                return selected
-
-        for entity in database_design.entities:
-            if entity not in selected:
-                selected.append(entity)
-            if len(selected) == limit:
-                break
-
-        return selected
+        # Prefer entities participating in real relationships, then preserve
+        # source order. This keeps ownership edges visible for every domain
+        # without a special-case entity list for selected industries.
+        degree = {entity.name: 0 for entity in database_design.entities}
+        for relationship in database_design.relationships:
+            if relationship.source in degree and relationship.target in degree:
+                degree[relationship.source] += 1
+                degree[relationship.target] += 1
+        ordered = sorted(
+            enumerate(database_design.entities),
+            key=lambda item: (-degree[item[1].name], item[0]),
+        )
+        return [entity for _, entity in ordered[:12]]
 
     def _to_identifier(self, value: str) -> str:
         return re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")

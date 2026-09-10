@@ -27,7 +27,7 @@ export function ProfilePage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className="mx-auto max-w-4xl space-y-4">
       <div>
         <span className="pill">Account</span>
         <h2 className="section-title mt-2">Profile</h2>

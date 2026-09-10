@@ -12,7 +12,6 @@ def test_ev_workspace_generates_clear_diagram_artifacts(client):
                 "The first release should support rapid city pilots with clear operator "
                 "tooling and auditable payment flows."
             ),
-            "budget": "medium",
             "preferred_cloud": "AWS",
             "constraints": ["Must use PostgreSQL", "Audit logs required"],
         },
@@ -68,7 +67,6 @@ def test_pharmacy_workspace_generates_domain_specific_diagrams(client):
                 "The first release needs safe prescription handling, clear stock "
                 "visibility, and operational fulfillment tracking."
             ),
-            "budget": "medium",
             "preferred_cloud": "AWS",
             "constraints": ["Must use PostgreSQL", "Audit logs required"],
         },

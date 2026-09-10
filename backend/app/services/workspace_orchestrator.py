@@ -1,6 +1,8 @@
 import copy
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from typing import Any, Callable
 
 from app.models.workspace import Workspace
 from app.repositories.workspace_repository import WorkspaceRepository
@@ -25,6 +27,7 @@ from app.schemas.domain import (
     WorkspaceMutationResponse,
     WorkspaceCreateRequest,
     WorkspaceResponse,
+    CURRENT_REQUIREMENT_MODEL_VERSION,
 )
 from app.services.api_generator import ApiGenerator
 from app.services.architecture_generator import ArchitectureGenerator
@@ -33,12 +36,21 @@ from app.services.causal_graph import GRAPH_VERSION, CausalGraphService
 from app.services.comparison_engine import ComparisonEngine
 from app.services.database_generator import DatabaseGenerator
 from app.services.deployment_generator import DeploymentGenerator
+from app.services.decision_config import ARCHITECTURE_DECISION_MODEL_VERSION
 from app.services.diagram_generator import DiagramGenerator
 from app.services.documentation_generator import DocumentationGenerator
 from app.services.impact_analyzer import ImpactAnalyzer
 from app.services.recommendation_engine import RecommendationEngine
 from app.services.requirement_analyzer import RequirementAnalyzer
 from app.services.workspace_editor import WorkspaceEditService
+from app.services.project_signals import clarification_category, hydrate_project_signals
+from app.services.generation_runtime import (
+    GENERATION_TELEMETRY,
+    PROJECT_GENERATION_CACHE,
+    CompactProjectContext,
+)
+
+ProgressCallback = Callable[[str, dict[str, Any]], None]
 
 
 class WorkspaceOrchestrator:
@@ -58,27 +70,70 @@ class WorkspaceOrchestrator:
         self.impact_analyzer = ImpactAnalyzer()
         self.workspace_editor = WorkspaceEditService()
 
-    def list_workspaces(self) -> list[WorkspaceResponse]:
-        return [self._to_response(workspace) for workspace in self.repository.list()]
+    def list_workspaces(
+        self, active_workspace_id: str | None = None
+    ) -> list[WorkspaceResponse]:
+        """List quickly and migrate at most the workspace being viewed.
+
+        Requirement-model migrations can legitimately invoke extraction.
+        Running that work for every saved project during a sidebar refresh
+        made a 38-project account perform 38 unrelated generations. The
+        active project upgrades now; the rest upgrade lazily when selected.
+        """
+        workspaces = self.repository.list()
+        upgrade_id = active_workspace_id or (workspaces[0].id if workspaces else None)
+        return [
+            self._to_response(
+                self._upgrade_legacy_workspace(workspace)
+                if workspace.id == upgrade_id
+                else workspace
+            )
+            for workspace in workspaces
+        ]
 
     def get_workspace(self, workspace_id: str) -> WorkspaceResponse | None:
         workspace = self.repository.get(workspace_id)
         if workspace is None:
             return None
+        workspace = self._upgrade_legacy_workspace(workspace)
         return self._to_response(workspace)
 
-    def create_workspace(self, payload: WorkspaceCreateRequest) -> WorkspaceResponse:
+    def create_workspace(
+        self,
+        payload: WorkspaceCreateRequest,
+        on_progress: ProgressCallback | None = None,
+        project_id: str | None = None,
+    ) -> WorkspaceResponse:
+        project_id = project_id or str(uuid.uuid4())
+        GENERATION_TELEMETRY.start(project_id)
         answers = self._seed_answers(payload)
-        requirements = self.requirement_analyzer.analyze(
-            title=payload.title,
-            description=payload.description,
-            business_context=payload.business_context,
-            answers=answers,
-            constraints=payload.constraints,
+        requirements, cache_hit, duration_ms = PROJECT_GENERATION_CACHE.get_or_compute(
+            project_id,
+            "requirements-actors-constraints-integrations",
+            payload.model_dump(mode="json"),
+            lambda: self.requirement_analyzer.analyze(
+                title=payload.title,
+                description=payload.description,
+                business_context=payload.business_context,
+                answers=answers,
+                constraints=payload.constraints,
+                project_id=project_id,
+            ),
         )
-        generated = self._generate_all(payload.title, payload.description, payload.business_context, answers, requirements)
+        GENERATION_TELEMETRY.section(project_id, "requirements", duration_ms, cache_hit)
+        self._emit_progress(on_progress, "requirements", requirements)
+        generated = self._generate_all(
+            payload.title,
+            payload.description,
+            payload.business_context,
+            answers,
+            requirements,
+            project_id=project_id,
+            on_progress=on_progress,
+        )
 
         workspace = Workspace(
+            id=project_id,
             title=payload.title,
             original_prompt=payload.description,
             business_context=payload.business_context,
@@ -99,7 +154,9 @@ class WorkspaceOrchestrator:
             documentation_markdown=generated["documentation_markdown"],
             impact_history_json=[],
         )
-        return self._to_response(self.repository.add(workspace))
+        response = self._to_response(self.repository.add(workspace))
+        GENERATION_TELEMETRY.finish(project_id)
+        return response
 
     def answer_clarifications(
         self, workspace_id: str, answers: dict[str, str]
@@ -109,6 +166,8 @@ class WorkspaceOrchestrator:
             return None
 
         merged_answers = {**(workspace.answers_json or {}), **answers}
+        if merged_answers == (workspace.answers_json or {}):
+            return self._to_response(workspace)
         requirements = RequirementModel.model_validate(workspace.requirements_json)
         question_text = {
             item.get("key", ""): item.get("question", "")
@@ -117,22 +176,54 @@ class WorkspaceOrchestrator:
         }
         requirements = self.requirement_analyzer.apply_clarifications(
             requirements,
-            answers,
+            merged_answers,
             question_text,
         )
-        generated = self._generate_all(
-            workspace.title,
-            workspace.original_prompt,
-            workspace.business_context,
-            merged_answers,
-            requirements,
-            refine_architecture=False,
-            existing_adrs=self._load_adrs(workspace),
-        )
-
         workspace.answers_json = merged_answers
-        self._apply_generated_content(workspace, generated)
+        workspace.requirements_json = requirements.model_dump()
+        sections = self._clarification_sections(answers, question_text)
+        self._regenerate_sections(workspace, sections)
+        self._rebuild_graph_and_documentation(workspace)
         return self._to_response(self.repository.save(workspace))
+
+    @staticmethod
+    def _clarification_sections(
+        answers: dict[str, str], questions: dict[str, str]
+    ) -> list[str]:
+        """Map changed canonical facts to their actual downstream consumers."""
+        sections = {"clarifications"}
+        for key in answers:
+            category = clarification_category(key, questions.get(key, ""))
+            if category in {"availability", "scale", "regional"}:
+                sections.update({
+                    "architectures", "comparison", "recommendation",
+                    "deployment", "diagrams",
+                })
+            elif category == "security":
+                sections.update({
+                    "architectures", "comparison", "recommendation", "api",
+                    "deployment", "diagrams",
+                })
+            elif category == "integrations":
+                sections.update({
+                    "architectures", "comparison", "recommendation", "database",
+                    "api", "deployment", "diagrams",
+                })
+            elif category in {"technical-data", "retention"}:
+                sections.update({
+                    "architectures", "comparison", "recommendation", "database",
+                    "api", "deployment", "diagrams",
+                })
+            else:
+                sections.update({
+                    "architectures", "comparison", "recommendation", "database",
+                    "api", "deployment", "diagrams",
+                })
+        order = (
+            "clarifications", "architectures", "comparison", "recommendation",
+            "database", "api", "deployment", "diagrams",
+        )
+        return [section for section in order if section in sections]
 
     def preview_edit(
         self, workspace_id: str, edit: WorkspaceEditRequest
@@ -155,6 +246,10 @@ class WorkspaceOrchestrator:
 
         self._record_revision(workspace, applied.description)
         self._copy_response_state(workspace, applied.workspace)
+        workspace.requirements_json = hydrate_project_signals(
+            RequirementModel.model_validate(workspace.requirements_json),
+            workspace.answers_json or {},
+        ).model_dump()
         self._regenerate_sections(workspace, applied.regenerated_sections)
 
         if applied.regenerated_sections:
@@ -207,7 +302,10 @@ class WorkspaceOrchestrator:
             return None
 
         requirements = RequirementModel.model_validate(workspace.requirements_json)
-        updated_requirements = self.requirement_analyzer.append_change(requirements, change_request)
+        updated_requirements = hydrate_project_signals(
+            self.requirement_analyzer.append_change(requirements, change_request),
+            workspace.answers_json or {},
+        )
 
         architectures = [
             ArchitectureOption.model_validate(item) for item in workspace.architectures_json
@@ -246,6 +344,9 @@ class WorkspaceOrchestrator:
         if use_keyword_extensions:
             impacted_modules.extend(keyword_impact.impacted_modules)
         impacted_modules = list(dict.fromkeys(impacted_modules))
+        regenerated_sections = self._expand_regeneration_sections(
+            ["clarifications", *impacted_modules]
+        )
         impact = ImpactAssessment(
             change_request=change_request,
             impacted_modules=impacted_modules,
@@ -253,46 +354,25 @@ class WorkspaceOrchestrator:
                 *graph_impact.reasoning,
                 *(keyword_impact.reasoning if use_keyword_extensions else []),
             ],
-            regenerated_sections=impacted_modules.copy(),
+            regenerated_sections=regenerated_sections,
             directly_affected_node_ids=graph_impact.directly_affected_node_ids,
             indirectly_affected_node_ids=graph_impact.indirectly_affected_node_ids,
             affected_artifacts=graph_impact.affected_artifacts,
         )
 
-        if "architectures" in impact.impacted_modules:
-            architectures = self.architecture_generator.generate(updated_requirements, workspace.answers_json)
-        if "comparison" in impact.impacted_modules or "architectures" in impact.impacted_modules:
-            comparison = self.comparison_engine.compare(updated_requirements, architectures, workspace.answers_json)
-        if "recommendation" in impact.impacted_modules or "architectures" in impact.impacted_modules:
-            recommendation = self.recommendation_engine.recommend(updated_requirements, architectures, comparison, workspace.answers_json)
-        if "database" in impact.impacted_modules:
-            database_design = self.database_generator.generate(updated_requirements)
-        if "api" in impact.impacted_modules:
-            api_design = self.api_generator.generate(updated_requirements, database_design)
-        if "deployment" in impact.impacted_modules:
-            deployment_plan = self.deployment_generator.generate(
-                updated_requirements, recommendation, workspace.answers_json
-            )
-
-        diagram_models = current_diagrams
-        if "diagrams" in impact.impacted_modules:
-            diagram_models = self.diagram_generator.generate(
-                updated_requirements,
-                architectures,
-                recommendation,
-                database_design,
-                deployment_plan,
-            )
-
         workspace.requirements_json = updated_requirements.model_dump()
-        workspace.architectures_json = [item.model_dump() for item in architectures]
-        workspace.comparison_json = comparison.model_dump()
-        workspace.recommendation_json = recommendation.model_dump()
-        workspace.database_design_json = database_design.model_dump()
-        workspace.api_design_json = api_design.model_dump()
-        workspace.deployment_plan_json = deployment_plan.model_dump()
-        workspace.diagrams_json = {
-            key: value.model_dump() for key, value in diagram_models.items()
+        self._regenerate_sections(workspace, impact.regenerated_sections)
+        architectures = [
+            ArchitectureOption.model_validate(item) for item in workspace.architectures_json
+        ]
+        comparison = ComparisonResult.model_validate(workspace.comparison_json)
+        recommendation = RecommendationResult.model_validate(workspace.recommendation_json)
+        database_design = DatabaseDesign.model_validate(workspace.database_design_json)
+        api_design = ApiDesign.model_validate(workspace.api_design_json)
+        deployment_plan = DeploymentPlan.model_validate(workspace.deployment_plan_json)
+        diagram_models = {
+            key: DiagramArtifact.model_validate(value)
+            for key, value in (workspace.diagrams_json or {}).items()
         }
 
         history = list(workspace.impact_history_json or [])
@@ -303,7 +383,7 @@ class WorkspaceOrchestrator:
             title=change_request[:80],
             context=change_request,
             recommendation=recommendation,
-            changed_modules=impact.impacted_modules,
+            changed_modules=impact.regenerated_sections,
         )
         adrs = [*existing_adrs, adr]
         workspace.adrs_json = [item.model_dump() for item in adrs]
@@ -335,6 +415,83 @@ class WorkspaceOrchestrator:
             workspace.documentation_markdown,
         )
 
+    @staticmethod
+    def _cached_section(
+        project_id: str,
+        section: str,
+        payload: Any,
+        producer: Callable[[], Any],
+    ) -> Any:
+        value, cache_hit, duration_ms = PROJECT_GENERATION_CACHE.get_or_compute(
+            project_id, section, payload, producer
+        )
+        GENERATION_TELEMETRY.section(project_id, section, duration_ms, cache_hit)
+        return value
+
+    @staticmethod
+    def _emit_progress(
+        callback: ProgressCallback | None,
+        section: str,
+        value: Any,
+    ) -> None:
+        if callback is None:
+            return
+        if isinstance(value, list):
+            count = len(value)
+            preview = [getattr(item, "name", str(item)) for item in value[:3]]
+        elif isinstance(value, dict):
+            count = len(value)
+            preview = [getattr(item, "title", str(key)) for key, item in list(value.items())[:3]]
+        elif isinstance(value, RequirementModel):
+            count = len(value.functional_requirements)
+            preview = [value.domain, value.summary]
+        elif isinstance(value, ClarificationPlan):
+            count = len(value.questions)
+            preview = [item.question for item in value.questions[:2]]
+        elif isinstance(value, ComparisonResult):
+            count = len(value.scorecards)
+            preview = [
+                f"{item.architecture_name}: {item.weighted_score:.1f}"
+                for item in sorted(
+                    value.scorecards,
+                    key=lambda scorecard: scorecard.weighted_score,
+                    reverse=True,
+                )[:3]
+            ]
+        elif isinstance(value, RecommendationResult):
+            count = 1
+            preview = [value.recommended_architecture_name]
+        elif isinstance(value, DatabaseDesign):
+            count = len(value.entities)
+            preview = [item.name for item in value.entities[:4]]
+        elif isinstance(value, ApiDesign):
+            count = len(value.groups)
+            preview = [item.name for item in value.groups[:4]]
+        elif isinstance(value, DeploymentPlan):
+            count = 1
+            preview = [value.deployment_model, *value.regions[:2]]
+        elif hasattr(value, "groups"):
+            count = len(value.groups)
+            preview = []
+        elif hasattr(value, "entities"):
+            count = len(value.entities)
+            preview = []
+        elif hasattr(value, "questions"):
+            count = len(value.questions)
+            preview = []
+        elif hasattr(value, "scorecards"):
+            count = len(value.scorecards)
+            preview = []
+        else:
+            count = 1
+            preview = []
+        callback(section, {
+            "section": section,
+            "status": "complete",
+            "item_count": count,
+            "preview": [item for item in preview if item],
+        })
+
     def _generate_all(
         self,
         title: str,
@@ -345,25 +502,120 @@ class WorkspaceOrchestrator:
         *,
         refine_architecture: bool = False,
         existing_adrs: list[ArchitectureDecisionRecord] | None = None,
+        project_id: str = "preview",
+        on_progress: ProgressCallback | None = None,
     ) -> dict:
-        clarification = self.clarification_engine.generate(requirements, answers)
-        architectures = self.architecture_generator.generate(
-            requirements,
-            answers,
-            refine_with_ai=refine_architecture,
+        del refine_architecture
+        compact = CompactProjectContext.build(project_id, requirements, answers)
+        context_payload = compact.cache_payload()
+
+        # Phase 1 has no cross-dependencies. These deterministic generators can
+        # run concurrently immediately after the single bundled extraction.
+        phase_one: dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="archai-phase1") as executor:
+            futures = {
+                executor.submit(
+                    self._cached_section,
+                    project_id,
+                    "clarification",
+                    context_payload,
+                    lambda: self.clarification_engine.generate(requirements, answers),
+                ): "clarification",
+                executor.submit(
+                    self._cached_section,
+                    project_id,
+                    "architectures",
+                    context_payload,
+                    lambda: self.architecture_generator.generate(requirements, answers),
+                ): "architectures",
+                executor.submit(
+                    self._cached_section,
+                    project_id,
+                    "database",
+                    context_payload,
+                    lambda: self.database_generator.generate(requirements),
+                ): "database",
+            }
+            for future in as_completed(futures):
+                section = futures[future]
+                phase_one[section] = future.result()
+                self._emit_progress(on_progress, section, phase_one[section])
+
+        clarification = phase_one["clarification"]
+        architectures = phase_one["architectures"]
+        database_design = phase_one["database"]
+
+        # Comparison only needs architectures; API design only needs the data
+        # model. They therefore form a second independent phase.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="archai-phase2") as executor:
+            futures = {
+                executor.submit(
+                    self._cached_section,
+                    project_id,
+                    "comparison",
+                    {
+                        "context": context_payload,
+                        "architectures": [item.model_dump() for item in architectures],
+                    },
+                    lambda: self.comparison_engine.compare(
+                        requirements, architectures, answers
+                    ),
+                ): "comparison",
+                executor.submit(
+                    self._cached_section,
+                    project_id,
+                    "api",
+                    {"context": context_payload, "database": database_design.model_dump()},
+                    lambda: self.api_generator.generate(requirements, database_design),
+                ): "api",
+            }
+            phase_two: dict[str, Any] = {}
+            for future in as_completed(futures):
+                section = futures[future]
+                phase_two[section] = future.result()
+                self._emit_progress(on_progress, section, phase_two[section])
+            comparison = phase_two["comparison"]
+            api_design = phase_two["api"]
+
+        recommendation = self._cached_section(
+            project_id,
+            "recommendation",
+            {
+                "context": context_payload,
+                "architectures": [item.model_dump() for item in architectures],
+                "comparison": comparison.model_dump(),
+            },
+            lambda: self.recommendation_engine.recommend(
+                requirements, architectures, comparison, answers
+            ),
         )
-        comparison = self.comparison_engine.compare(requirements, architectures, answers)
-        recommendation = self.recommendation_engine.recommend(requirements, architectures, comparison, answers)
-        database_design = self.database_generator.generate(requirements)
-        api_design = self.api_generator.generate(requirements, database_design)
-        deployment_plan = self.deployment_generator.generate(requirements, recommendation, answers)
-        diagrams = self.diagram_generator.generate(
-            requirements,
-            architectures,
-            recommendation,
-            database_design,
-            deployment_plan,
+        self._emit_progress(on_progress, "recommendation", recommendation)
+        deployment_plan = self._cached_section(
+            project_id,
+            "deployment",
+            {"context": context_payload, "recommendation": recommendation.model_dump()},
+            lambda: self.deployment_generator.generate(requirements, recommendation, answers),
         )
+        self._emit_progress(on_progress, "deployment", deployment_plan)
+        diagrams = self._cached_section(
+            project_id,
+            "diagrams",
+            {
+                "context": context_payload,
+                "architectures": [item.model_dump() for item in architectures],
+                "recommendation": recommendation.model_dump(),
+                "database": database_design.model_dump(),
+                "deployment": deployment_plan.model_dump(),
+            },
+            lambda: self.diagram_generator.generate(
+                requirements,
+                architectures,
+                recommendation,
+                database_design,
+                deployment_plan,
+            ),
+        )
+        self._emit_progress(on_progress, "diagrams", diagrams)
 
         adr = None
         if existing_adrs is None:
@@ -433,6 +685,71 @@ class WorkspaceOrchestrator:
             "causal_graph": causal_graph,
         }
 
+    def _upgrade_legacy_workspace(self, workspace: Workspace) -> Workspace:
+        """Replace stale pre-signal artifacts when an older workspace is opened.
+
+        Old records only contain string lists, so their derived API/deployment
+        views cannot reflect the canonical confirmation model.  A workspace is
+        upgraded once, detected from the persisted requirements payload; all
+        replacements remain scoped to that workspace ID and use its own saved
+        answers.  Workspaces created by this version already carry the marker.
+        """
+        raw = workspace.requirements_json or {}
+        answers = dict(workspace.answers_json or {})
+        removed_legacy_input = answers.pop("budget", None) is not None
+        if removed_legacy_input:
+            workspace.answers_json = answers
+        scorecards = (workspace.comparison_json or {}).get("scorecards", [])
+        current_decision_model = bool(scorecards) and all(
+            item.get("decision_model") == ARCHITECTURE_DECISION_MODEL_VERSION
+            for item in scorecards
+        )
+        current_requirement_model = (
+            raw.get("requirement_model_version") == CURRENT_REQUIREMENT_MODEL_VERSION
+        )
+        if (
+            raw.get("project_profile")
+            and raw.get("integration_details") is not None
+            and not removed_legacy_input
+            and current_decision_model
+            and current_requirement_model
+        ):
+            return workspace
+        GENERATION_TELEMETRY.start(workspace.id)
+        if not current_decision_model or not current_requirement_model:
+            # Semantic model upgrades must re-run extraction from this
+            # workspace's own source text. Merely hydrating an old snapshot
+            # would preserve stale actors/entities and context boundaries.
+            requirements = self.requirement_analyzer.analyze(
+                title=workspace.title,
+                description=workspace.original_prompt,
+                business_context=workspace.business_context,
+                answers=answers,
+                # Persisted requirement constraints include prior derived
+                # classifications. Feeding them back into a new semantic
+                # model preserves stale duplicates and clarification wrappers;
+                # confirmed user constraints are rebuilt from saved answers.
+                constraints=[],
+                project_id=workspace.id,
+            )
+        else:
+            requirements = hydrate_project_signals(
+                RequirementModel.model_validate(raw), answers
+            )
+        generated = self._generate_all(
+            workspace.title,
+            workspace.original_prompt,
+            workspace.business_context,
+            answers,
+            requirements,
+            existing_adrs=self._load_adrs(workspace),
+            project_id=workspace.id,
+        )
+        self._apply_generated_content(workspace, generated)
+        saved = self.repository.save(workspace)
+        GENERATION_TELEMETRY.finish(workspace.id)
+        return saved
+
     def _apply_generated_content(self, workspace: Workspace, generated: dict) -> None:
         workspace.requirements_json = generated["requirements"].model_dump()
         workspace.clarification_json = generated["clarification"].model_dump()
@@ -461,12 +778,53 @@ class WorkspaceOrchestrator:
         workspace.api_design_json = response.api_design.model_dump()
         workspace.deployment_plan_json = response.deployment_plan.model_dump()
         workspace.diagram_layouts_json = copy.deepcopy(response.diagram_layouts)
+        # Source traceability: causal graph and ADRs are downstream artifacts
+        # and must travel with the response state, otherwise edits leave stale
+        # graphs/docs behind.
+        if getattr(response, "causal_graph", None) is not None:
+            workspace.causal_graph_json = response.causal_graph.model_dump()
+        if getattr(response, "adrs", None) is not None:
+            workspace.adrs_json = [item.model_dump() for item in response.adrs]
+
+    @staticmethod
+    def _expand_regeneration_sections(sections: list[str]) -> list[str]:
+        """Return the minimal dependency closure in a stable execution order."""
+        expanded = set(sections)
+        dependencies = {
+            "architectures": {"comparison", "recommendation", "deployment", "diagrams"},
+            "comparison": {"recommendation", "deployment", "diagrams"},
+            "recommendation": {"deployment", "diagrams"},
+            "database": {"api", "diagrams"},
+            "deployment": {"diagrams"},
+        }
+        changed = True
+        while changed:
+            changed = False
+            for source, dependents in dependencies.items():
+                if source in expanded and not dependents.issubset(expanded):
+                    expanded.update(dependents)
+                    changed = True
+        order = [
+            "clarifications",
+            "architectures",
+            "database",
+            "comparison",
+            "api",
+            "recommendation",
+            "deployment",
+            "diagrams",
+        ]
+        return [section for section in order if section in expanded]
 
     def _regenerate_sections(
         self, workspace: Workspace, sections: list[str]
     ) -> None:
-        section_set = set(sections)
+        section_set = set(self._expand_regeneration_sections(sections))
         requirements = RequirementModel.model_validate(workspace.requirements_json)
+        answers = workspace.answers_json or {}
+        context_payload = CompactProjectContext.build(
+            workspace.id, requirements, answers
+        ).cache_payload()
         architectures = [
             ArchitectureOption.model_validate(item) for item in workspace.architectures_json
         ]
@@ -476,41 +834,135 @@ class WorkspaceOrchestrator:
         api_design = ApiDesign.model_validate(workspace.api_design_json)
         deployment_plan = DeploymentPlan.model_validate(workspace.deployment_plan_json)
 
-        if "clarifications" in section_set:
-            workspace.clarification_json = self.clarification_engine.generate(
-                requirements, workspace.answers_json or {}
-            ).model_dump()
-        if "architectures" in section_set:
-            architectures = self.architecture_generator.generate(
-                requirements, workspace.answers_json or {}
-            )
-        if "comparison" in section_set:
-            comparison = self.comparison_engine.compare(
-                requirements, architectures, workspace.answers_json or {}
-            )
-        if "recommendation" in section_set:
-            recommendation = self.recommendation_engine.recommend(
-                requirements, architectures, comparison, workspace.answers_json or {}
-            )
-        if "database" in section_set:
-            database_design = self.database_generator.generate(requirements)
-        if "api" in section_set:
-            api_design = self.api_generator.generate(requirements, database_design)
-        if "deployment" in section_set:
-            deployment_plan = self.deployment_generator.generate(
-                requirements, recommendation, workspace.answers_json or {}
-            )
-        if "diagrams" in section_set:
-            workspace.diagrams_json = {
-                key: value.model_dump()
-                for key, value in self.diagram_generator.generate(
-                    requirements,
-                    architectures,
-                    recommendation,
-                    database_design,
-                    deployment_plan,
-                ).items()
-            }
+        GENERATION_TELEMETRY.start(workspace.id)
+        try:
+            phase_one: dict[str, Any] = {}
+            phase_one_jobs: dict[str, Callable[[], Any]] = {}
+            if "clarifications" in section_set:
+                phase_one_jobs["clarifications"] = lambda: self._cached_section(
+                    workspace.id,
+                    "clarification",
+                    context_payload,
+                    lambda: self.clarification_engine.generate(requirements, answers),
+                )
+            if "architectures" in section_set:
+                phase_one_jobs["architectures"] = lambda: self._cached_section(
+                    workspace.id,
+                    "architectures",
+                    context_payload,
+                    lambda: self.architecture_generator.generate(requirements, answers),
+                )
+            if "database" in section_set:
+                phase_one_jobs["database"] = lambda: self._cached_section(
+                    workspace.id,
+                    "database",
+                    context_payload,
+                    lambda: self.database_generator.generate(requirements),
+                )
+            if phase_one_jobs:
+                with ThreadPoolExecutor(
+                    max_workers=len(phase_one_jobs),
+                    thread_name_prefix="archai-refresh1",
+                ) as executor:
+                    futures = {
+                        executor.submit(job): section
+                        for section, job in phase_one_jobs.items()
+                    }
+                    for future in as_completed(futures):
+                        phase_one[futures[future]] = future.result()
+
+            if "clarifications" in phase_one:
+                workspace.clarification_json = phase_one["clarifications"].model_dump()
+            architectures = phase_one.get("architectures", architectures)
+            database_design = phase_one.get("database", database_design)
+
+            phase_two: dict[str, Any] = {}
+            phase_two_jobs: dict[str, Callable[[], Any]] = {}
+            if "comparison" in section_set:
+                phase_two_jobs["comparison"] = lambda: self._cached_section(
+                    workspace.id,
+                    "comparison",
+                    {
+                        "context": context_payload,
+                        "architectures": [item.model_dump() for item in architectures],
+                    },
+                    lambda: self.comparison_engine.compare(
+                        requirements, architectures, answers
+                    ),
+                )
+            if "api" in section_set:
+                phase_two_jobs["api"] = lambda: self._cached_section(
+                    workspace.id,
+                    "api",
+                    {
+                        "context": context_payload,
+                        "database": database_design.model_dump(),
+                    },
+                    lambda: self.api_generator.generate(requirements, database_design),
+                )
+            if phase_two_jobs:
+                with ThreadPoolExecutor(
+                    max_workers=len(phase_two_jobs),
+                    thread_name_prefix="archai-refresh2",
+                ) as executor:
+                    futures = {
+                        executor.submit(job): section
+                        for section, job in phase_two_jobs.items()
+                    }
+                    for future in as_completed(futures):
+                        phase_two[futures[future]] = future.result()
+
+            comparison = phase_two.get("comparison", comparison)
+            api_design = phase_two.get("api", api_design)
+            if "recommendation" in section_set:
+                recommendation = self._cached_section(
+                    workspace.id,
+                    "recommendation",
+                    {
+                        "context": context_payload,
+                        "architectures": [item.model_dump() for item in architectures],
+                        "comparison": comparison.model_dump(),
+                    },
+                    lambda: self.recommendation_engine.recommend(
+                        requirements, architectures, comparison, answers
+                    ),
+                )
+            if "deployment" in section_set:
+                deployment_plan = self._cached_section(
+                    workspace.id,
+                    "deployment",
+                    {
+                        "context": context_payload,
+                        "recommendation": recommendation.model_dump(),
+                    },
+                    lambda: self.deployment_generator.generate(
+                        requirements, recommendation, answers
+                    ),
+                )
+            if "diagrams" in section_set:
+                diagrams = self._cached_section(
+                    workspace.id,
+                    "diagrams",
+                    {
+                        "context": context_payload,
+                        "architectures": [item.model_dump() for item in architectures],
+                        "recommendation": recommendation.model_dump(),
+                        "database": database_design.model_dump(),
+                        "deployment": deployment_plan.model_dump(),
+                    },
+                    lambda: self.diagram_generator.generate(
+                        requirements,
+                        architectures,
+                        recommendation,
+                        database_design,
+                        deployment_plan,
+                    ),
+                )
+                workspace.diagrams_json = {
+                    key: value.model_dump() for key, value in diagrams.items()
+                }
+        finally:
+            GENERATION_TELEMETRY.finish(workspace.id)
 
         workspace.architectures_json = [item.model_dump() for item in architectures]
         workspace.comparison_json = comparison.model_dump()
@@ -719,8 +1171,6 @@ class WorkspaceOrchestrator:
 
     def _seed_answers(self, payload: WorkspaceCreateRequest) -> dict[str, str]:
         answers: dict[str, str] = {}
-        if payload.budget:
-            answers["budget"] = payload.budget
         if payload.preferred_cloud:
             answers["preferred_cloud"] = payload.preferred_cloud
         if payload.constraints:

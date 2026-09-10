@@ -1,7 +1,11 @@
+import asyncio
 import json
+import logging
+import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_account_repository, get_db, get_optional_current_user
@@ -24,8 +28,10 @@ from app.schemas.domain import (
 from app.services.workspace_orchestrator import WorkspaceOrchestrator
 from app.services.counterfactual_simulator import CounterfactualSimulator
 from app.services.history_service import HistoryService
+from app.services.generation_runtime import GENERATION_TELEMETRY
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
+logger = logging.getLogger(__name__)
 
 
 def get_orchestrator(db: Session = Depends(get_db)) -> WorkspaceOrchestrator:
@@ -58,11 +64,12 @@ def require_workspace_access(
 
 @router.get("", response_model=list[WorkspaceResponse])
 def list_workspaces(
+    active_workspace_id: str | None = None,
     orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
     user: User | None = Depends(get_optional_current_user),
     history_service: HistoryService = Depends(get_history_service),
 ) -> list[WorkspaceResponse]:
-    workspaces = orchestrator.list_workspaces()
+    workspaces = orchestrator.list_workspaces(active_workspace_id)
     visible_ids = history_service.filter_workspace_ids(
         [workspace.id for workspace in workspaces], user
     )
@@ -82,6 +89,82 @@ def create_workspace(
     return workspace
 
 
+@router.post("/stream")
+async def create_workspace_stream(
+    payload: WorkspaceCreateRequest,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> StreamingResponse:
+    """Generate a workspace while emitting each completed section over SSE."""
+    project_id = str(uuid.uuid4())
+    queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    user_id = user.id if user is not None else None
+
+    def on_progress(_section: str, event: dict[str, Any]) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, ("progress", event))
+
+    async def run_generation() -> None:
+        try:
+            workspace = await asyncio.to_thread(
+                orchestrator.create_workspace,
+                payload,
+                on_progress,
+                project_id,
+            )
+            if user_id is not None and user is not None:
+                await asyncio.to_thread(
+                    history_service.create_for_workspace,
+                    user,
+                    workspace,
+                    payload.description,
+                )
+            await queue.put(
+                (
+                    "complete",
+                    {
+                        "workspace": workspace.model_dump(mode="json"),
+                        "metrics": GENERATION_TELEMETRY.snapshot(project_id),
+                    },
+                )
+            )
+        except Exception:
+            logger.exception("Streaming workspace generation failed for %s", project_id)
+            await queue.put(
+                (
+                    "error",
+                    {
+                        "message": "Workspace generation failed. Please try again.",
+                        "project_id": project_id,
+                    },
+                )
+            )
+
+    async def event_stream():
+        generation_task = asyncio.create_task(run_generation())
+        try:
+            while True:
+                event_name, data = await queue.get()
+                yield f"event: {event_name}\ndata: {json.dumps(data)}\n\n"
+                if event_name in {"complete", "error"}:
+                    break
+        finally:
+            # Generation writes a single coherent workspace. Let that safe,
+            # scoped write finish even if the browser navigates away.
+            if not generation_task.done():
+                await asyncio.shield(generation_task)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/{workspace_id}", response_model=WorkspaceResponse)
 def get_workspace(
     workspace_id: str,
@@ -94,6 +177,19 @@ def get_workspace(
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace
+
+
+@router.get("/{workspace_id}/generation-metrics")
+def get_generation_metrics(
+    workspace_id: str,
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> dict[str, Any]:
+    require_workspace_access(workspace_id, user, history_service)
+    metrics = GENERATION_TELEMETRY.snapshot(workspace_id)
+    if metrics is None:
+        raise HTTPException(status_code=404, detail="Generation metrics are unavailable")
+    return metrics
 
 
 @router.get("/{workspace_id}/causal-graph", response_model=CausalGraph)
@@ -325,4 +421,3 @@ def download_pdf(
             "Content-Disposition": f'attachment; filename="archai-{workspace_id}.pdf"'
         },
     )
-

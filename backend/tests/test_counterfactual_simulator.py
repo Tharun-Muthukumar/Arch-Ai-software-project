@@ -68,7 +68,6 @@ def unseen_workspace(client, monkeypatch):
     [
         {"variable": "expected_users", "original_value": 100_000, "hypothetical_value": 5_000_000},
         {"variable": "availability_percent", "original_value": 99.9, "hypothetical_value": 99.99},
-        {"variable": "budget_level", "original_value": "high", "hypothetical_value": "low"},
         {"variable": "team_size", "original_value": 15, "hypothetical_value": 5},
         {"variable": "realtime_required", "original_value": False, "hypothetical_value": True},
     ],
@@ -101,7 +100,7 @@ def test_natural_language_multi_change_detects_conflict_and_traverses_graph(clie
             "scenario": (
                 "What happens if our user base grows from 50K to 2 million, traffic increases 10x, "
                 "availability changes from 99.9% to 99.99%, realtime becomes required, "
-                "the team size falls from 15 to 5, and budget decreases by 40%?"
+                "the team size falls from 15 to 5?"
             )
         },
     )
@@ -111,7 +110,7 @@ def test_natural_language_multi_change_detects_conflict_and_traverses_graph(clie
     variables = {item["variable"] for item in result["changed_variables"]}
     assert {
         "expected_users", "peak_traffic_multiplier", "availability_percent",
-        "realtime_required", "team_size", "monthly_budget_change_percent",
+        "realtime_required", "team_size",
     }.issubset(variables)
     assert result["directly_affected_node_ids"]
     assert result["indirectly_affected_node_ids"]

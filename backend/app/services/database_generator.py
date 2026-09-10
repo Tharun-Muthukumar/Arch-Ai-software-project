@@ -50,7 +50,11 @@ class DatabaseGenerator:
                 sql_schema="-- Database schema pending domain clarification.",
                 sample_inserts="-- Sample records pending domain clarification.",
             )
-        if requirements.analysis_source == "ollama-pretrained" and requirements.domain_entities:
+        # Every populated canonical domain model uses the same hint-driven
+        # path. A known-domain label is not permission to inject a complete
+        # industry schema (payments, shipments, inventory, and similar
+        # records still require evidence in the brief).
+        if requirements.domain_entities:
             return self._generate_from_hints(requirements)
 
         lower_text = " ".join(requirements.functional_requirements).lower()
@@ -411,6 +415,23 @@ class DatabaseGenerator:
                 "Tables carry their owning bounded context; relationships prefer "
                 "aggregate-root ownership inferred from workflow and requirement co-mention."
             )
+        if self._needs_ledger_model(requirements):
+            existing = {entity.name for entity in entities}
+            for ledger_entity in self._ledger_entities():
+                if ledger_entity.name not in existing:
+                    entities.append(ledger_entity)
+                    existing.add(ledger_entity.name)
+            existing_pairs = {(relation.source, relation.target) for relation in relationships}
+            for relation in self._ledger_relationships():
+                if (relation.source, relation.target) not in existing_pairs:
+                    relationships.append(relation)
+            indexes.extend([
+                "CREATE UNIQUE INDEX uq_ledger_entries_idempotency ON ledger_entries(idempotency_key);",
+                "CREATE INDEX idx_ledger_entries_transaction ON ledger_entries(transaction_id);",
+            ])
+            normalization_notes.append(
+                "Ledger postings are immutable double-entry records: each transaction_id groups balanced debit/credit legs with idempotent writes."
+            )
 
         sql_schema = self._render_sql(entities, relationships)
         sample_inserts = self._sample_inserts(entities)
@@ -441,6 +462,69 @@ class DatabaseGenerator:
             *requirements.constraints,
         )
 
+    def _needs_ledger_model(self, requirements: RequirementModel) -> bool:
+        """Whether the brief demands double-entry ledger semantics."""
+        text = " ".join([
+            requirements.domain,
+            *requirements.functional_requirements,
+            *requirements.non_functional_requirements,
+            *requirements.constraints,
+            *[hint.name for hint in requirements.domain_entities],
+        ]).lower()
+        markers = ("ledger", "double-entry", "double entry", "journal", "posting", "settlement", "reconcile", "reconciliation", "chart of accounts", "debit", "credit")
+        banking = ("banking" in text or "financial services" in text) and any(
+            token in text for token in ("transfer", "transaction", "payment", "settlement", "ledger", "account")
+        )
+        return banking or any(marker in text for marker in markers)
+
+    def _ledger_entities(self) -> list[DatabaseEntity]:
+        return [
+            DatabaseEntity(
+                name="accounts",
+                description="Ledger accounts forming the chart of accounts; authoritative balance owners.",
+                fields=[
+                    DatabaseField(name="id", data_type="UUID", description="Primary key"),
+                    DatabaseField(name="code", data_type="VARCHAR(40)", indexed=True, description="Unique account code in the chart of accounts"),
+                    DatabaseField(name="name", data_type="VARCHAR(255)", description="Account display name"),
+                    DatabaseField(name="account_type", data_type="VARCHAR(40)", indexed=True, description="Asset, liability, equity, income, or expense classification"),
+                    DatabaseField(name="currency", data_type="VARCHAR(8)", description="Default ISO currency code"),
+                    DatabaseField(name="status", data_type="VARCHAR(40)", indexed=True, description="Active, frozen, or closed lifecycle state"),
+                    DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Account creation time"),
+                ],
+                bounded_context="Ledger",
+            ),
+            DatabaseEntity(
+                name="ledger_entries",
+                description="Immutable double-entry postings; debits must equal credits per transaction.",
+                fields=[
+                    DatabaseField(name="id", data_type="UUID", description="Primary key"),
+                    DatabaseField(name="transaction_id", data_type="UUID", indexed=True, description="Grouping key for the balanced debit/credit set"),
+                    DatabaseField(name="account_id", data_type="UUID", indexed=True, description="Owning ledger account"),
+                    DatabaseField(name="debit_amount", data_type="NUMERIC(18,2)", nullable=True, description="Debit leg; exactly one leg non-zero"),
+                    DatabaseField(name="credit_amount", data_type="NUMERIC(18,2)", nullable=True, description="Credit leg; exactly one leg non-zero"),
+                    DatabaseField(name="currency", data_type="VARCHAR(8)", description="ISO currency code"),
+                    DatabaseField(name="booking_order", data_type="INTEGER", indexed=True, description="Authoritative booking sequence within the account"),
+                    DatabaseField(name="idempotency_key", data_type="VARCHAR(120)", indexed=True, description="Duplicate-posting guard"),
+                    DatabaseField(name="occurred_at", data_type="TIMESTAMPTZ", indexed=True, description="Authoritative posting time"),
+                    DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Record creation time"),
+                ],
+                bounded_context="Ledger",
+            ),
+        ]
+
+    def _ledger_relationships(self) -> list[DatabaseRelationship]:
+        return [
+            DatabaseRelationship(
+                source="ledger_entries",
+                target="accounts",
+                relationship="many-to-one",
+                description="Each ledger entry posts to exactly one ledger account; balanced sets share a transaction_id.",
+                cardinality="many-to-one",
+                foreign_key="ledger_entries.account_id",
+                ownership_implication="The Ledger boundary owns postings; Accounts remain the aggregate root for balances.",
+            ),
+        ]
+
     def _audit_evidence(self, requirements: RequirementModel) -> bool:
         return audit_evidence(
             *requirements.functional_requirements,
@@ -452,6 +536,8 @@ class DatabaseGenerator:
         from app.services.domain_inference import singularize
 
         tokens = {singularize(part) for part in identifier.split("_")}
+        if tokens & {"ledger", "account", "journal", "posting", "entry", "entries"}:
+            return "ledger"
         if tokens & _PARTY_TOKENS:
             return "party"
         if tokens & _CATALOG_TOKENS:
@@ -565,12 +651,16 @@ class DatabaseGenerator:
         assumptions are returned for review notes."""
         identifiers = [entity.name for entity in entities]
         by_name = {entity.name: entity for entity in entities}
+        canonical_lookup = {
+            tuple(singularize(part) for part in name.split("_") if part): name
+            for name in identifiers
+        }
         relationships: list[DatabaseRelationship] = []
         seen: set[tuple[str, str]] = set()
         assumed: list[str] = []
 
         def _link(source: str, target: str, reason: str, *, fk: bool = True) -> None:
-            if source == target or (source, target) in seen:
+            if source == target or (source, target) in seen or (target, source) in seen:
                 return
             if source not in by_name or target not in by_name:
                 return
@@ -594,13 +684,40 @@ class DatabaseGenerator:
                     target=target,
                     relationship="many-to-one",
                     description=reason,
+                    cardinality="many-to-one",
+                    foreign_key=f"{source}.{fk_field}" if fk else None,
+                    ownership_implication=f"{target} is the aggregate owner of related {source} records.",
                 )
             )
 
         # Workflow aggregate roots own their related entities.
         for workflow in requirements.domain_workflows:
-            members = [to_identifier(name) for name in workflow.related_entities]
-            members = [name for name in members if name in by_name]
+            if not re.search(
+                r"\b(?:manage|create|make|book|assign|register|record|submit|issue|schedule"
+                r"|process|generate|execute|perform|configure|calibrate|monitor|track|analyze"
+                r"|simulate|inspect|review|collect|aggregate|transform|produce|compose|deploy"
+                r"|provision|stream|transmit|receive|upload|download|sync|coordinate|orchestrate"
+                r"|validate|verify|approve|evaluate|compute|render|publish|allocate|dispatch"
+                r"|route|measure|index|scan|update|delete|remove|modify|handle|initiate"
+                r"|maintain|store|retrieve|send|notify|trigger|run|start|stop|complete"
+                r"|fulfill|reserve|cancel|return|transfer|convert|import|export|enroll"
+                r"|grade|assess|diagnose|prescribe|administer|install|test|build|release"
+                r"|plan|design|map|connect|integrate|link)\w*\b",
+                workflow.description,
+                re.I,
+            ):
+                continue
+            members = [
+                canonical_lookup.get(
+                    tuple(
+                        singularize(part)
+                        for part in to_identifier(name).split("_")
+                        if part
+                    )
+                )
+                for name in workflow.related_entities
+            ]
+            members = list(dict.fromkeys(name for name in members if name in by_name))
             if len(members) >= 2:
                 root, others = members[0], members[1:]
                 for other in others:
@@ -623,6 +740,16 @@ class DatabaseGenerator:
                         transaction,
                         catalog,
                         f"{transaction} references {catalog} (co-mentioned requirement).",
+                    )
+            # General co-mention fallback: when no party/catalog/transactional
+            # classification matched, link any two co-mentioned entities.
+            if not parties and not catalogs and not transactions and len(mentioned) >= 2:
+                root = mentioned[0]
+                for other in mentioned[1:]:
+                    _link(
+                        other,
+                        root,
+                        f"{other} associated with {root} (co-mentioned in requirement).",
                     )
         # Compound containment: order_items belongs to orders (compared on
         # singularized tokens so plural blueprint names resolve).
@@ -696,6 +823,49 @@ class DatabaseGenerator:
                         description=f"{first} hands off to {second} (enumeration flow; confirm cardinality).",
                     )
                 )
+        # Universal FK injection fallback: if all heuristics above produced
+        # fewer relationships than max(1, len(entities) - 1), fill gaps using
+        # co-occurrence counting from functional requirements, then a simple
+        # chain as the final fallback.
+        min_desired = max(1, len(entities) - 1)
+        if len(relationships) < min_desired and len(entities) >= 2:
+            # Build co-occurrence matrix from functional requirements.
+            pair_counts: dict[tuple[str, str], int] = {}
+            for requirement in requirements.functional_requirements:
+                mentioned = self._mentioned_identifiers(requirement, identifiers)
+                mentioned = [name for name in mentioned if name in by_name]
+                for i, a in enumerate(mentioned):
+                    for b in mentioned[i + 1:]:
+                        pair = (a, b) if a < b else (b, a)
+                        pair_counts[pair] = pair_counts.get(pair, 0) + 1
+            # Add relationships by co-occurrence (highest count first).
+            for (a, b), _count in sorted(pair_counts.items(), key=lambda x: -x[1]):
+                if len(relationships) >= min_desired:
+                    break
+                if (a, b) in seen or (b, a) in seen:
+                    continue
+                _link(
+                    a,
+                    b,
+                    f"{a} references {b} (requirement co-occurrence; confirm relationship).",
+                )
+            # Last resort: sequential chain linking entities to the first one.
+            if len(relationships) < min_desired:
+                root = identifiers[0] if identifiers else None
+                if root and root in by_name:
+                    for other in identifiers[1:]:
+                        if len(relationships) >= min_desired:
+                            break
+                        if other not in by_name:
+                            continue
+                        if (other, root) in seen or (root, other) in seen:
+                            continue
+                        _link(
+                            other,
+                            root,
+                            f"{other} associated with {root} (structural assumption; confirm relationship).",
+                        )
+                        assumed.append(other)
         if assumed:
             return relationships, sorted(set(assumed))
         return relationships, []
@@ -740,19 +910,18 @@ class DatabaseGenerator:
                         f"CREATE INDEX idx_{entity_name}_{field_name} ON {entity_name}({field_name});"
                     )
             if len(fields) == 1:
-                fields.append(
-                    DatabaseField(
-                        name="details",
-                        data_type="JSONB",
-                        nullable=True,
-                        description="Attributes to finalize after domain clarification.",
-                    )
-                )
+                # An opaque `details JSONB` field hides the domain rather
+                # than modelling it.  Use conservative lifecycle/reference
+                # fields derived from the entity role; dynamic metadata is
+                # allowed only when the brief explicitly requires it.
+                fields.extend(self._semantic_default_fields(entity_name, hint.description))
             entities.append(
                 DatabaseEntity(
                     name=entity_name,
                     description=hint.description or f"Domain record for {hint.name}.",
                     fields=fields,
+                    bounded_context=hint.bounded_context,
+                    source_evidence=hint.source_evidence,
                 )
             )
 
@@ -764,20 +933,46 @@ class DatabaseGenerator:
             for field in entity.fields:
                 if not field.name.endswith("_id"):
                     continue
-                target = singular_lookup.get(field.name[:-3])
+                reference_name = field.name[:-3]
+                target = singular_lookup.get(reference_name)
+                if target is None:
+                    reference_name = re.sub(
+                        r"^(?:source|destination|payer|recipient|owner|parent)_",
+                        "",
+                        reference_name,
+                    )
+                    target = singular_lookup.get(reference_name)
                 if target and target != entity.name:
                     relationships.append(
                         DatabaseRelationship(
                             source=entity.name,
                             target=target,
                             relationship="many-to-one",
-                            description=f"{entity.name} references {target}.",
+                            description=f"{entity.name}.{field.name} references {target}.id.",
+                            cardinality="many-to-one",
+                            foreign_key=f"{entity.name}.{field.name}",
+                            ownership_implication=(
+                                f"The {entity.bounded_context or to_display_name(entity.name)} boundary owns "
+                                f"the reference; {target} remains owned by its bounded context."
+                            ),
+                            source_evidence=list(entity.source_evidence),
                         )
                     )
 
+        inferred_relationships, assumed_relationships = self._relationships_for_entities(
+            requirements, entities
+        )
+        existing_pairs = {(relation.source, relation.target) for relation in relationships}
+        relationships.extend(
+            relation
+            for relation in inferred_relationships
+            if (relation.source, relation.target) not in existing_pairs
+            and (relation.target, relation.source) not in existing_pairs
+        )
+
         contexts = cluster_entities([entity.name for entity in entities])
         for entity in entities:
-            entity.bounded_context = contexts.get(entity.name, to_display_name(entity.name))
+            entity.bounded_context = entity.bounded_context or contexts.get(entity.name, to_display_name(entity.name))
 
         # Platform tables only with evidence, same rule as the blueprint path.
         platform_entities: list[DatabaseEntity] = []
@@ -839,6 +1034,34 @@ class DatabaseGenerator:
                 )
             )
             indexes.append("CREATE INDEX idx_audit_logs_event_type ON audit_logs(event_type);")
+        # Banking/ledger semantics: the API contract promises balanced,
+        # idempotent postings, so the relational model must back it with
+        # accounts + immutable double-entry ledger_entries.
+        if self._needs_ledger_model(requirements):
+            existing_by_name = {
+                self._singular(entity.name): entity for entity in [*platform_entities, *entities]
+            }
+            for ledger_entity in self._ledger_entities():
+                ledger_key = self._singular(ledger_entity.name)
+                existing_entity = existing_by_name.get(ledger_key)
+                if existing_entity is None:
+                    entities.append(ledger_entity)
+                    existing_by_name[ledger_key] = ledger_entity
+                else:
+                    known_fields = {field.name for field in existing_entity.fields}
+                    existing_entity.fields.extend(
+                        field for field in ledger_entity.fields
+                        if field.name not in known_fields
+                    )
+            existing_pairs = {(relation.source, relation.target) for relation in relationships}
+            for relation in self._ledger_relationships():
+                if (relation.source, relation.target) not in existing_pairs:
+                    relationships.append(relation)
+                    existing_pairs.add((relation.source, relation.target))
+            indexes.extend([
+                "CREATE UNIQUE INDEX uq_ledger_entries_idempotency ON ledger_entries(idempotency_key);",
+                "CREATE INDEX idx_ledger_entries_transaction ON ledger_entries(transaction_id);",
+            ])
         entities = [*platform_entities, *entities]
 
         return DatabaseDesign(
@@ -850,10 +1073,56 @@ class DatabaseGenerator:
                 "Entity names and candidate attributes come from the validated requirement extraction.",
                 "Attribute types and relationships are provisional until the open data-model questions are answered.",
                 "Use object storage alongside the relational model if binary or high-volume data requires it.",
+                *(
+                    ["Some relationship cardinalities are inferred from workflow structure and should be confirmed."]
+                    if assumed_relationships else []
+                ),
             ],
             sql_schema=self._render_sql(entities, relationships),
             sample_inserts="-- Sample records are intentionally omitted until domain values are confirmed.",
         )
+
+    def _semantic_default_fields(self, entity_name: str, description: str) -> list[DatabaseField]:
+        """Minimal useful attributes for an extracted domain concept.
+
+        These are type/lifecycle semantics, not a hidden template for a named
+        industry.  They ensure every canonical entity has a stable business
+        reference and auditable state while leaving unsupported detail open.
+        """
+        kind = self._entity_kind(entity_name)
+        tokens = set(entity_name.split("_")) | set(tokenize(description))
+        fields = [
+            DatabaseField(name="external_reference", data_type="VARCHAR(120)", nullable=True, indexed=True, description="Business or source-system reference when one exists."),
+            DatabaseField(name="status", data_type="VARCHAR(40)", nullable=True, indexed=True, description="Lifecycle state where the domain defines one."),
+            DatabaseField(name="created_at", data_type="TIMESTAMPTZ", description="Record creation time."),
+            DatabaseField(name="updated_at", data_type="TIMESTAMPTZ", nullable=True, description="Most recent state change time."),
+        ]
+        if kind in {"party", "catalog", "general"}:
+            fields.insert(0, DatabaseField(name="name", data_type="VARCHAR(255)", nullable=True, description="Human-readable business name."))
+        if "event" in tokens:
+            fields.extend([
+                DatabaseField(name="event_type", data_type="VARCHAR(80)", indexed=True, description="Domain event classification."),
+                DatabaseField(name="occurred_at", data_type="TIMESTAMPTZ", indexed=True, description="Time at which the event occurred."),
+                DatabaseField(name="correlation_id", data_type="UUID", nullable=True, indexed=True, description="Workflow correlation reference."),
+            ])
+        if kind == "transactional":
+            fields.append(DatabaseField(name="version", data_type="INTEGER", nullable=True, description="Optimistic-concurrency version when the workflow changes state."))
+            # Retry-safe commands need idempotency even when the brief does
+            # not name the column: without it the API idempotency contract
+            # has no backing uniqueness constraint.
+            if any(token in tokens for token in ("payment", "transfer", "order", "booking", "transaction", "settlement")):
+                fields.append(DatabaseField(name="idempotency_key", data_type="VARCHAR(120)", nullable=True, indexed=True, description="Client-supplied idempotency key for safe retries."))
+        if kind == "ledger":
+            fields.extend([
+                DatabaseField(name="account_id", data_type="UUID", indexed=True, description="Owning ledger account reference."),
+                DatabaseField(name="debit_amount", data_type="NUMERIC(18,2)", nullable=True, description="Debit leg amount; exactly one leg is non-zero per entry."),
+                DatabaseField(name="credit_amount", data_type="NUMERIC(18,2)", nullable=True, description="Credit leg amount; exactly one leg is non-zero per entry."),
+                DatabaseField(name="currency", data_type="VARCHAR(8)", description="ISO currency code for the posting."),
+                DatabaseField(name="booking_order", data_type="INTEGER", indexed=True, description="Authoritative booking sequence within the account."),
+                DatabaseField(name="idempotency_key", data_type="VARCHAR(120)", indexed=True, description="Duplicate-posting guard for retry-safe ledger writes."),
+                DatabaseField(name="occurred_at", data_type="TIMESTAMPTZ", indexed=True, description="Authoritative posting time."),
+            ])
+        return fields
 
     def _identifier(self, value: str) -> str:
         identifier = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
@@ -944,9 +1213,16 @@ class DatabaseGenerator:
                 if fk_key in relationship_map:
                     column += f" REFERENCES {relationship_map[fk_key]}"
                 column_lines.append(column)
+            if entity.name == "ledger_entries":
+                column_lines.append("  CHECK ((debit_amount IS NULL) <> (credit_amount IS NULL))")
+                column_lines.append("  CHECK (COALESCE(debit_amount, 0) >= 0 AND COALESCE(credit_amount, 0) >= 0)")
             lines.append(",\n".join(column_lines))
             lines.append(");")
             lines.append("")
+            if entity.name == "ledger_entries":
+                lines.append("CREATE UNIQUE INDEX uq_ledger_entries_idempotency ON ledger_entries(idempotency_key);")
+                lines.append("CREATE INDEX idx_ledger_entries_transaction ON ledger_entries(transaction_id);")
+                lines.append("")
         return "\n".join(lines)
 
     def _sample_inserts(self, entities: list[DatabaseEntity]) -> str:

@@ -6,6 +6,7 @@ import { ADRTimeline } from '../components/workspace/ADRTimeline'
 import { WorkspaceEditDialog, type EditField } from '../components/workspace/WorkspaceEditDialog'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage, formatMetricName } from '../lib/utils'
+import { isLowerBetter, metricDirectionLabel, metricUtility } from '../lib/architectureMetrics'
 import type { ArchitectureDecisionRecord, Workspace } from '../types/api'
 import type { ArchitectureComponent, WorkspaceEditRequest } from '../types/api'
 
@@ -97,6 +98,7 @@ export function ArchitectureStudioPage() {
           <thead>
             <tr className="border-b" style={{ borderColor: 'var(--card-border)' }}>
               <th className="py-2 pr-4 text-left font-medium" style={{ color: 'var(--text-muted)' }}>Metric</th>
+              <th className="py-2 pr-4 text-left font-medium" style={{ color: 'var(--text-muted)' }}>Direction</th>
               {scorecards.map(sc => (
                 <th key={sc.architecture_id} className={`py-2 px-3 text-left font-medium ${sc.architecture_id === recommendedId ? 'text-amber-700 dark:text-amber-400' : ''}`}>
                   {sc.architecture_name}
@@ -109,17 +111,22 @@ export function ArchitectureStudioPage() {
             {metrics.map(metric => (
               <tr key={metric.metric} className="border-b" style={{ borderColor: 'var(--card-border)' }}>
                 <td className="py-2 pr-4 font-medium whitespace-nowrap">{formatMetricName(metric.metric)}</td>
+                <td className="py-2 pr-4 text-xs whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>{metricDirectionLabel(metric)}</td>
                 {scorecards.map(sc => {
                   const ms = sc.metric_scores.find(m => m.metric === metric.metric)
                   const score = ms?.score ?? 0
-                  const maxScore = Math.max(...scorecards.map(s => (s.metric_scores.find(m => m.metric === metric.metric)?.score ?? 0)))
-                  const isBest = score === maxScore && score > 0
+                  const utilities = scorecards.map(s => {
+                    const candidate = s.metric_scores.find(m => m.metric === metric.metric)
+                    return candidate ? metricUtility(candidate) : 0
+                  })
+                  const isBest = ms != null && metricUtility(ms) === Math.max(...utilities)
                   return (
                     <td key={sc.architecture_id} className="py-2 px-3">
                       <span className={isBest ? 'font-bold' : ''}>
                         {score}
                       </span>
                       {isBest && <span className="ml-1 text-xs" style={{ color: 'var(--success)' }}>best</span>}
+                      {ms && isLowerBetter(ms) && <span className="ml-1 text-xs" style={{ color: 'var(--text-muted)' }}>burden</span>}
                     </td>
                   )
                 })}
@@ -127,6 +134,7 @@ export function ArchitectureStudioPage() {
             ))}
             <tr className="font-semibold">
               <td className="py-2 pr-4">Overall</td>
+              <td className="py-2 pr-4 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>Higher is better</td>
               {scorecards.map(sc => (
                 <td key={sc.architecture_id} className="py-2 px-3">
                   {sc.overall_score}

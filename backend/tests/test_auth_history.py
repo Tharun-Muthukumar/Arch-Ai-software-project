@@ -42,7 +42,6 @@ def workspace_payload(title: str) -> dict:
             "live charger availability, bookings, payments, and operator controls."
         ),
         "business_context": "Create an auditable architecture plan.",
-        "budget": "medium",
         "preferred_cloud": "No preference",
         "constraints": [],
     }

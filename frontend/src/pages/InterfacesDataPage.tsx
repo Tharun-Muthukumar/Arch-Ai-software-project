@@ -203,10 +203,12 @@ export function InterfacesDataPage() {
           <section className="panel">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><span className="eyebrow">Runtime plan</span><h3 className="panel-title mt-1">{workspace.deployment_plan.deployment_model}</h3><p className="panel-description">{workspace.deployment_plan.cloud_recommendation}</p></div><button type="button" className="button-brand gap-2" onClick={deploymentEdit}><Edit3 className="h-4 w-4" />Edit deployment</button></div>
             <div className="deployment-facts mt-5">
-              <Fact label="Replicas" value={workspace.deployment_plan.replicas?.toString() || 'Unknown'} />
+              <Fact label="Availability" value={workspace.deployment_plan.availability_target_percent ? `${workspace.deployment_plan.availability_target_percent}%` : 'Not specified'} />
               <Fact label="Regions" value={workspace.deployment_plan.regions.length > 0 ? workspace.deployment_plan.regions.join(', ') : 'Unknown'} />
+              <Fact label="Replicas / region" value={workspace.deployment_plan.replicas_per_region?.toString() || workspace.deployment_plan.replicas?.toString() || 'Unknown'} />
+              <Fact label="Baseline replicas" value={workspace.deployment_plan.total_baseline_replicas?.toString() || 'Unknown'} />
+              <Fact label="Failover" value={workspace.deployment_plan.failover_mode || 'Not specified'} />
               <Fact label="Strategy" value={workspace.deployment_plan.deployment_strategy || 'Not decided'} />
-              <Fact label="Availability" value={workspace.deployment_plan.availability_configuration || 'Not specified'} />
             </div>
           </section>
           <div className="editor-grid">

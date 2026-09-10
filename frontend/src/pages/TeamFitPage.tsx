@@ -65,6 +65,7 @@ export function TeamFitPage() {
     checkConwayFit({
       architecture: recommended,
       entities: detectedEntities(workspace, recommended.components.map((component) => component.name)),
+      bounded_contexts: workspace.requirements.bounded_contexts ?? [],
       constraints,
     }).then((response) => {
       if (active) setResult(response)
@@ -85,7 +86,7 @@ export function TeamFitPage() {
   return <div className="space-y-5">
     <div className="panel">
       <div className="flex items-center gap-2"><Users className="h-5 w-5" style={{ color: 'var(--brand)' }} /><h2 className="text-lg font-semibold">Conway&apos;s Law Team Fit</h2></div>
-      <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>A deterministic staffing plan for <strong>{recommended.name}</strong>, mapped to ownership boundaries using Conway&apos;s Law.</p>
+      <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>A deterministic staffing plan for <strong>{recommended.name}</strong>, driven by domain and bounded-context ownership using Conway&apos;s Law.</p>
       <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Team size is your input; the role split is an architecture-fit recommendation that always totals that input — not an estimate of any real company&apos;s headcount.</p>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-end">
         <label className="block max-w-56 space-y-1">
@@ -119,7 +120,7 @@ export function TeamFitPage() {
       <section><div className="mb-3 flex items-baseline justify-between"><h3 className="text-sm font-semibold">Recommended roles</h3><span className="text-xs" style={{ color: 'var(--text-muted)' }}>{result.team_fit_plan.total_team_size} total people</span></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{result.team_fit_plan.roles.map((role) => <article key={role.role_name} className="panel flex min-h-52 flex-col"><div className="flex items-start justify-between gap-3"><h4 className="font-semibold">{role.role_name}</h4><span className="grid h-12 min-w-12 place-items-center rounded-full bg-amber-500/15 px-2 text-xl font-bold text-amber-300">{role.recommended_headcount}</span></div><p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>{role.description}</p><p className="mt-auto pt-4 text-xs text-slate-300">{role.rationale}</p></article>)}</div></section>
       <section className="panel">
         <h3 className="text-sm font-semibold">Ownership mapping (Conway&apos;s Law)</h3>
-        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Each ownership unit is assigned to the staffed role with the lowest current load per person.</p>
+        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Each bounded context is assigned to a domain delivery team. Platform, interface, quality, and security roles remain enabling teams.</p>
         <ul className="mt-3 space-y-2 text-sm">
           {result.ownership_mapping.map((item) => (
             <li key={`${item.component}-${item.suggested_team}`} className="flex flex-col gap-1 rounded-md border p-2.5 sm:flex-row sm:items-center sm:justify-between" style={{ borderColor: 'var(--card-border)' }}>
@@ -129,7 +130,7 @@ export function TeamFitPage() {
           ))}
         </ul>
       </section>
-      <section className="space-y-3"><h3 className="text-sm font-semibold">Friction points</h3>{result.friction_points.map((point, index) => <div key={`${point.description}-${index}`} className={`rounded-lg border p-4 ${severityClass[point.severity]}`}><div className="flex items-center justify-between gap-3"><span className="font-medium">{point.description}</span><span className="rounded-full border border-current px-2 py-0.5 text-xs font-semibold capitalize">{point.severity}</span></div><p className="mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>Components: {point.affected_components.join(', ') || 'None'} | Roles: {point.affected_teams.join(', ') || 'None'}</p></div>)}</section>
+      <section className="space-y-3"><h3 className="text-sm font-semibold">Friction points</h3>{result.friction_points.length === 0 && <div className="rounded-lg border border-green-700 bg-green-950/35 p-4 text-sm">No material ownership or communication friction detected.</div>}{result.friction_points.map((point, index) => <div key={`${point.description}-${index}`} className={`rounded-lg border p-4 ${severityClass[point.severity]}`}><div className="flex items-center justify-between gap-3"><span className="font-medium">{point.description}</span><span className="rounded-full border border-current px-2 py-0.5 text-xs font-semibold capitalize">{point.severity}</span></div><p className="mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>Components: {point.affected_components.join(', ') || 'None'} | Roles: {point.affected_teams.join(', ') || 'None'}</p></div>)}</section>
     </>}
   </div>
 }

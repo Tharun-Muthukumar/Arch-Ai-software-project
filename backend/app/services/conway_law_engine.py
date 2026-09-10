@@ -12,6 +12,7 @@ from collections import Counter
 
 from app.schemas.domain import (
     ArchitectureOption,
+    BoundedContext,
     ConwayFitResult,
     FrictionPoint,
     OwnershipSuggestion,
@@ -255,6 +256,89 @@ def _catalog_for(architecture_id: str) -> list[RoleDefinition]:
     return ROLE_CATALOG.get(resolved, ROLE_CATALOG["service-based"])
 
 
+def _domain_contexts(contexts: list[BoundedContext]) -> list[BoundedContext]:
+    """Return product ownership boundaries, excluding adapter-only edges."""
+    return [
+        context for context in contexts
+        if context.name.casefold() != "external integration"
+        and not (
+            context.integrations
+            and not context.owned_entities
+            and all("external" in responsibility.casefold() or "adapter" in responsibility.casefold()
+                    or "contract" in responsibility.casefold()
+                    for responsibility in context.responsibilities)
+        )
+    ]
+
+
+def _domain_catalog(
+    architecture: ArchitectureOption,
+    bounded_contexts: list[BoundedContext],
+    team_size: int,
+) -> list[RoleDefinition]:
+    """Create domain-aligned delivery teams from actual ownership boundaries."""
+    context_names = [context.name for context in _domain_contexts(bounded_contexts)]
+    if not context_names:
+        return _catalog_for(architecture.id)
+
+    # A team needs enough people to own and operate a boundary. More contexts
+    # can share a domain team; they do not justify one deployable/team each.
+    domain_team_count = min(
+        len(context_names),
+        max(1, min(4, team_size // 4 or 1)),
+    )
+    # Keep adjacent domain boundaries together. Round-robin grouping named a
+    # team after non-adjacent contexts, then ownership allocation sometimes
+    # assigned it a different context entirely.
+    base_size, remainder = divmod(len(context_names), domain_team_count)
+    groups: list[list[str]] = []
+    cursor = 0
+    for index in range(domain_team_count):
+        size = base_size + (1 if index < remainder else 0)
+        groups.append(context_names[cursor:cursor + size])
+        cursor += size
+
+    domain_share = 0.62
+    roles = [
+        RoleDefinition(
+            role_name=f"Domain Team — {' / '.join(group)}",
+            description=(
+                "Own business behavior, data, APIs, and operational outcomes for "
+                + ", ".join(group)
+                + "."
+            ),
+            suggested_percentage=domain_share / domain_team_count,
+            min_headcount=1,
+            essential=True,
+        )
+        for group in groups
+    ]
+    roles.extend([
+        RoleDefinition(
+            role_name="Experience & Interface Engineering",
+            description="Own user journeys and cross-context interface integration without taking domain data ownership.",
+            suggested_percentage=0.14,
+            min_headcount=0,
+            essential=False,
+        ),
+        RoleDefinition(
+            role_name="Platform & Reliability",
+            description="Provide delivery pipelines, runtime guardrails, observability, and shared reliability capabilities to domain teams.",
+            suggested_percentage=0.14,
+            min_headcount=0,
+            essential=False,
+        ),
+        RoleDefinition(
+            role_name="Quality & Security Enablement",
+            description="Provide test strategy, contract assurance, threat modelling, and governance across bounded contexts.",
+            suggested_percentage=0.10,
+            min_headcount=0,
+            essential=False,
+        ),
+    ])
+    return roles
+
+
 def _allocate_headcounts(roles: list[RoleDefinition], team_size: int) -> list[int]:
     """Allocate seats with minimums, then largest-remainder reconciliation."""
     minimum_total = sum(role.min_headcount for role in roles)
@@ -290,9 +374,13 @@ def _allocate_headcounts(roles: list[RoleDefinition], team_size: int) -> list[in
     return allocation
 
 
-def suggest_roles(architecture: ArchitectureOption, constraints: ProjectConstraints) -> TeamFitPlan:
-    """Produce a deterministic architecture-specific staffing recommendation."""
-    catalog = _catalog_for(architecture.id)
+def suggest_roles(
+    architecture: ArchitectureOption,
+    constraints: ProjectConstraints,
+    bounded_contexts: list[BoundedContext] | None = None,
+) -> TeamFitPlan:
+    """Produce a deterministic domain-first staffing recommendation."""
+    catalog = _domain_catalog(architecture, bounded_contexts or [], constraints.team_size)
     headcounts = _allocate_headcounts(catalog, constraints.team_size)
     minimum_total = sum(role.min_headcount for role in catalog)
     roles = [
@@ -322,8 +410,17 @@ def suggest_roles(architecture: ArchitectureOption, constraints: ProjectConstrai
     )
 
 
-def _ownership_units(architecture: ArchitectureOption, entities: list[str]) -> list[str]:
+def _ownership_units(
+    architecture: ArchitectureOption,
+    entities: list[str],
+    bounded_contexts: list[BoundedContext] | None = None,
+) -> list[str]:
     """Return the units that can receive independent role ownership."""
+    context_names = list(dict.fromkeys(
+        context.name for context in _domain_contexts(bounded_contexts or []) if context.name.strip()
+    ))
+    if context_names:
+        return context_names
     if architecture.id in _SHARED_UNIT_ARCHITECTURES:
         return ["Application tier"]
     if architecture.id in _HYBRID_MODULAR_ARCHITECTURES:
@@ -346,22 +443,36 @@ def suggest_ownership(
     architecture: ArchitectureOption,
     entities: list[str],
     team_fit_plan: TeamFitPlan,
+    bounded_contexts: list[BoundedContext] | None = None,
 ) -> list[OwnershipSuggestion]:
-    """Allocate ownership greedily across staffed recommended roles."""
-    units = _ownership_units(architecture, entities)
+    """Allocate bounded-context ownership only to domain delivery teams."""
+    units = _ownership_units(architecture, entities, bounded_contexts)
     teams = _active_role_teams(team_fit_plan)
-    assigned_counts = {team.name: 0 for team in teams}
+    domain_teams = [team for team in teams if team.name.startswith("Domain Team —")]
+    if not domain_teams:
+        domain_teams = [
+            team for team in teams
+            if any(marker in team.name.casefold() for marker in ("backend", "service owner", "application", "core engineer"))
+        ] or teams
+    assigned_counts = {team.name: 0 for team in domain_teams}
     suggestions: list[OwnershipSuggestion] = []
     for unit in units:
-        team = min(
-            teams,
+        named_owners = [
+            team for team in domain_teams
+            if unit.casefold() in team.name.casefold()
+        ]
+        team = named_owners[0] if named_owners else min(
+            domain_teams,
             key=lambda candidate: (assigned_counts[candidate.name] / candidate.member_count, candidate.name),
         )
         assigned_counts[team.name] += 1
         suggestions.append(OwnershipSuggestion(
             component=unit,
             suggested_team=team.name,
-            reason=f"Assigned by capacity: {team.name} has the lowest current ownership load per person.",
+            reason=(
+                f"{unit} is assigned to {team.name} because that proposed team is named for this "
+                "bounded context; confirm the proposal against real communication paths and skills."
+            ),
         ))
     return suggestions
 
@@ -371,6 +482,7 @@ def detect_friction(
     entities: list[str],
     team_fit_plan: TeamFitPlan,
     ownership: list[OwnershipSuggestion],
+    bounded_contexts: list[BoundedContext] | None = None,
 ) -> list[FrictionPoint]:
     """Apply fixed Conway's Law mismatch rules to staffed recommended roles.
 
@@ -378,7 +490,7 @@ def detect_friction(
     deployable fits a small collocated team, while independently operated
     services need enough staffed ownership capacity per boundary.
     """
-    units = _ownership_units(architecture, entities)
+    units = _ownership_units(architecture, entities, bounded_contexts)
     teams = _active_role_teams(team_fit_plan)
     team_names = [team.name for team in teams]
     team_size = team_fit_plan.total_team_size
@@ -406,14 +518,14 @@ def detect_friction(
     if architecture.id in _HYBRID_MODULAR_ARCHITECTURES:
         if team_size <= 2:
             points.append(FrictionPoint(
-                description=f"Only {team_size} people must cover both the application core and serverless edge handlers; edge work will compete with core delivery.",
+                description=f"Only {team_size} people must cover {len(units)} bounded contexts plus shared platform work; domain delivery and operations will compete for capacity.",
                 severity="medium",
                 affected_components=units,
                 affected_teams=team_names,
             ))
         if team_size >= 13:
             points.append(FrictionPoint(
-                description=f"{team_size} people on a hybrid core-plus-edge shape may outgrow the single core; plan which bounded context splits next.",
+                description=f"{team_size} people share a cohesive runtime across {len(units)} bounded contexts; preserve context ownership even when deployment remains shared.",
                 severity="low",
                 affected_components=units,
                 affected_teams=team_names,
@@ -421,29 +533,30 @@ def detect_friction(
     if architecture.id in distributed_ids:
         if team_size <= 6 and architecture.id in {"event-driven-microservices", "microservices", "event-driven", "event_driven", "hybrid-event-serverless"}:
             points.append(FrictionPoint(
-                description=f"Only {team_size} people must operate {len(units)} distributed boundaries plus platform/eventing work; ownership capacity is insufficient for independently deployed services.",
+                description=f"Only {team_size} people must own {len(units)} bounded contexts plus shared platform/eventing work; ownership capacity is insufficient for independent operation.",
                 severity="high",
                 affected_components=units,
                 affected_teams=team_names,
             ))
         elif team_size <= 6:
             points.append(FrictionPoint(
-                description=f"A {team_size}-person team will stretch to cover {len(units)} service boundaries plus delivery and QA; keep service count small.",
+                description=f"A {team_size}-person team will stretch to cover {len(units)} bounded contexts plus delivery and quality work; keep deployable boundaries coarser than the domain model.",
                 severity="medium",
                 affected_components=units,
                 affected_teams=team_names,
             ))
-        if len(units) < len(teams):
+        domain_teams = [team for team in teams if team.name.startswith("Domain Team —")]
+        if len(units) < len(domain_teams):
             owners = {item.suggested_team for item in ownership}
-            shared_roles = [team.name for team in teams if team.name not in owners]
+            shared_roles = [team.name for team in domain_teams if team.name not in owners]
             points.append(FrictionPoint(
                 description=(
-                    f"Only {len(units)} service boundary/boundaries exist for {len(teams)} staffed roles; "
-                    f"{', '.join(shared_roles or team_names)} will be idle or forced to co-own services."
+                    f"Only {len(units)} bounded-context ownership unit(s) exist for {len(domain_teams)} domain teams; "
+                    f"merge {', '.join(shared_roles or [team.name for team in domain_teams])} or clarify the domain split."
                 ),
                 severity="medium",
                 affected_components=units,
-                affected_teams=shared_roles or team_names,
+                affected_teams=shared_roles or [team.name for team in domain_teams],
             ))
     ownership_counts = Counter(item.suggested_team for item in ownership)
     for team in teams:
@@ -455,19 +568,13 @@ def detect_friction(
                 affected_components=owned,
                 affected_teams=[team.name],
             ))
-    if len(units) > len(teams) * 3:
+    owner_team_count = max(1, len({item.suggested_team for item in ownership}))
+    if len(units) > owner_team_count * 3:
         points.append(FrictionPoint(
-            description=f"{len(units)} service boundaries for {len(teams)} staffed roles are over-decomposed relative to maintenance capacity; merge boundaries or grow ownership.",
+            description=f"{len(units)} bounded contexts for {owner_team_count} domain-owner team(s) are over-decomposed relative to maintenance capacity; group related contexts under stable domain teams.",
             severity="medium",
             affected_components=units,
-            affected_teams=team_names,
-        ))
-    if not points:
-        points.append(FrictionPoint(
-            description="Ownership boundaries look well-matched to the recommended role structure.",
-            severity="low",
-            affected_components=units,
-            affected_teams=team_names,
+            affected_teams=sorted({item.suggested_team for item in ownership}),
         ))
     return points
 
@@ -477,24 +584,56 @@ def compute_fit_score(
     entities: list[str],
     team_fit_plan: TeamFitPlan,
     friction_points: list[FrictionPoint],
+    bounded_contexts: list[BoundedContext] | None = None,
 ) -> float:
-    """Score fit from 10 down using fixed penalties for each friction point."""
+    """Score detected fit without claiming unobserved communication is perfect."""
     del architecture, entities, team_fit_plan
-    return round(max(0.0, 10.0 - sum(_PENALTIES[point.severity] for point in friction_points)), 1)
+    base = 9.5 - sum(_PENALTIES[point.severity] for point in friction_points)
+    # Evidence guard: without explicit bounded contexts the ownership mapping
+    # is structural inference, not observed team topology — cap the score so
+    # thin evidence can never present as a perfect 10/10 fit.
+    if not bounded_contexts:
+        base = min(base, 8.0)
+    elif len(bounded_contexts) < 2:
+        base = min(base, 8.5)
+    if not friction_points and not bounded_contexts:
+        # No detected friction but also no ownership evidence: stay honest.
+        base = min(base, 7.5)
+    return round(max(0.0, base), 1)
 
 
 def check_fit(
     architecture: ArchitectureOption,
     analysis: RequirementAnalysis,
     constraints: ProjectConstraints,
+    bounded_contexts: list[BoundedContext] | None = None,
 ) -> ConwayFitResult:
     """Build a role plan, map ownership, identify friction, and summarize fit."""
-    team_fit_plan = suggest_roles(architecture, constraints)
-    ownership = suggest_ownership(architecture, analysis.detected_entities, team_fit_plan)
-    friction_points = detect_friction(architecture, analysis.detected_entities, team_fit_plan, ownership)
-    fit_score = compute_fit_score(architecture, analysis.detected_entities, team_fit_plan, friction_points)
+    bounded_contexts = _domain_contexts(bounded_contexts or [])
+    team_fit_plan = suggest_roles(architecture, constraints, bounded_contexts)
+    ownership = suggest_ownership(
+        architecture, analysis.detected_entities, team_fit_plan, bounded_contexts
+    )
+    friction_points = detect_friction(
+        architecture,
+        analysis.detected_entities,
+        team_fit_plan,
+        ownership,
+        bounded_contexts,
+    )
+    fit_score = compute_fit_score(architecture, analysis.detected_entities, team_fit_plan, friction_points, bounded_contexts)
     staffed_roles = len([role for role in team_fit_plan.roles if role.recommended_headcount > 0])
-    unit_count = len(_ownership_units(architecture, analysis.detected_entities))
+    unit_count = len(_ownership_units(architecture, analysis.detected_entities, bounded_contexts))
+    fit_summary = (
+        friction_points[0].description
+        if friction_points
+        else (
+            "No material ownership friction was detected in the supplied structure, but ownership is inferred from "
+            "bounded contexts and staffing — not observed communication — so the score is capped pending team confirmation."
+            if not bounded_contexts else
+            "No material ownership or communication friction was detected in the supplied structure; real communication patterns remain unobserved."
+        )
+    )
     return ConwayFitResult(
         fit_score=fit_score,
         team_fit_plan=team_fit_plan,
@@ -502,6 +641,6 @@ def check_fit(
         friction_points=friction_points,
         summary=(
             f"Conway fit is {fit_score}/10 for a {constraints.team_size}-person team on {architecture.name}: "
-            f"{staffed_roles} staffed roles map to {unit_count} ownership units. {friction_points[0].description}"
+            f"{staffed_roles} proposed staffing groups cover {unit_count} bounded-context ownership units. {fit_summary}"
         ),
     )

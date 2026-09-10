@@ -1,13 +1,15 @@
+import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { FileText, Image, Layers3, Network } from 'lucide-react'
+import { CheckCircle2, FileText, Image, Layers3, LoaderCircle, Network } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ClarificationPanel } from '../components/workspace/ClarificationPanel'
 import { StatePanel } from '../components/workspace/StatePanel'
 import { WorkspaceForm } from '../components/workspace/WorkspaceForm'
 import {
   answerClarifications,
-  createWorkspace,
+  createWorkspaceStreaming,
 } from '../lib/api'
+import type { GenerationProgress } from '../lib/api'
 import { WORKSPACE_WRITE_KEY, syncWorkspaceResult } from '../lib/workspaceSync'
 import { formatUpdatedAt, getActiveWorkspace, getErrorMessage } from '../lib/utils'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
@@ -25,13 +27,22 @@ export function DashboardPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const workspaceQuery = useWorkspacesQuery()
+  const [generationProgress, setGenerationProgress] = useState<GenerationProgress[]>([])
   const workspace = getActiveWorkspace(
     workspaceQuery.data,
     searchParams.get('workspace'),
   )
   const createMutation = useMutation({
     mutationKey: [...WORKSPACE_WRITE_KEY, 'create'],
-    mutationFn: (payload: WorkspaceCreatePayload) => createWorkspace(payload),
+    mutationFn: (payload: WorkspaceCreatePayload) => createWorkspaceStreaming(
+      payload,
+      (progress) => setGenerationProgress((current) => (
+        current.some((item) => item.section === progress.section)
+          ? current.map((item) => item.section === progress.section ? progress : item)
+          : [...current, progress]
+      )),
+    ),
+    onMutate: () => setGenerationProgress([]),
     onSuccess: (nextWorkspace) => {
       syncWorkspaceResult(queryClient, nextWorkspace)
       // Stay on the overview: Phase 2 (follow-up questions) lives here, so
@@ -98,8 +109,48 @@ export function DashboardPage() {
           onSubmit={(payload) => createMutation.mutate(payload)}
         />
 
-        <div className="panel">
-          {workspace ? (
+        <div className="panel" aria-live="polite">
+          {createMutation.isPending ? (
+            <div className="space-y-4">
+              <div>
+                <span className="pill">Generating</span>
+                <h2 className="mt-2 text-xl font-semibold">Building your architecture</h2>
+                <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+                  Completed sections appear here as soon as they are ready.
+                </p>
+              </div>
+              <div className="space-y-2">
+                {generationProgress.length === 0 ? (
+                  <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
+                    <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    Preparing the project context…
+                  </div>
+                ) : null}
+                {generationProgress.map((item) => (
+                  <div
+                    key={item.section}
+                    className="rounded-md border px-3 py-2 text-sm"
+                    style={{ borderColor: 'var(--card-border)', background: 'var(--bg)' }}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="flex items-center gap-2 capitalize">
+                        <CheckCircle2 className="h-4 w-4" style={{ color: 'var(--success)' }} aria-hidden="true" />
+                        {item.section.replaceAll('-', ' ')}
+                      </span>
+                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        {item.item_count} {item.item_count === 1 ? 'item' : 'items'}
+                      </span>
+                    </div>
+                    {item.preview?.length ? (
+                      <p className="mt-1 truncate pl-6 text-xs" style={{ color: 'var(--text-muted)' }}>
+                        {item.preview.join(' · ')}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : workspace ? (
             <div className="space-y-4">
               <div>
                 <span className="pill">{workspace.requirements.domain}</span>
@@ -137,10 +188,13 @@ export function DashboardPage() {
               </div>
             </div>
           ) : (
-            <div>
-              <h2 className="text-xl font-semibold">Your workspace will appear here</h2>
-              <p className="mt-2 text-sm" style={{ color: 'var(--text-muted)' }}>
-                Enter the brief on the left to get started.
+            <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 p-6 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-lg border" style={{ borderColor: 'var(--card-border)', background: 'var(--surface-strong)' }}>
+                <Network className="h-6 w-6" style={{ color: 'var(--brand)' }} />
+              </div>
+              <h2 className="text-base font-semibold">Your workspace will appear here</h2>
+              <p className="max-w-xs text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                Provide your requirements on the left and start generation to synthesize architectures, data models, APIs, and diagrams.
               </p>
             </div>
           )}
@@ -175,7 +229,7 @@ export function DashboardPage() {
               </ul>
             </div>
 
-            <div className="panel">
+            <div className="panel self-start">
               <span className="pill">Quick stats</span>
               <div className="mt-3 grid grid-cols-3 gap-3 text-center text-sm">
                 <div>

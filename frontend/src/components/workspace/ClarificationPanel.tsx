@@ -21,12 +21,13 @@ export function ClarificationPanel({
 
   if (!workspace.clarification_plan.questions.length) {
     return (
-      <div className="panel">
-        <span className="pill">Phase 2</span>
-        <h3 className="mt-2 text-lg font-semibold">Clarifications complete</h3>
-        <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
-          The workspace is ready for detailed results.
-        </p>
+      <div className="flex items-center justify-between gap-3 rounded-lg border px-4 py-2.5 text-xs" style={{ borderColor: 'var(--card-border)', background: 'var(--surface)' }}>
+        <div className="flex items-center gap-2.5">
+          <span className="pill">Phase 2</span>
+          <span className="font-medium" style={{ color: 'var(--text)' }}>Clarifications complete</span>
+          <span className="hidden sm:inline" style={{ color: 'var(--text-muted)' }}>— all architectural questions resolved.</span>
+        </div>
+        <span className="font-mono text-[11px]" style={{ color: 'var(--success)' }}>100% complete</span>
       </div>
     )
   }
@@ -53,6 +54,9 @@ export function ClarificationPanel({
         <div>
           <span className="pill">Phase 2</span>
           <h3 className="mt-2 text-lg font-semibold">Follow-up questions</h3>
+          <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+            Just the essentials — answer what you know, skip the rest. Anything unanswered gets a safe default.
+          </p>
         </div>
         <span className="text-sm font-medium">
           {workspace.clarification_plan.completeness_score}% complete

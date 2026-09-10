@@ -8,6 +8,7 @@ import {
 } from 'recharts'
 import { formatMetricName } from '../../lib/utils'
 import { chartTheme } from '../../lib/chartTheme'
+import { metricUtility } from '../../lib/architectureMetrics'
 import type { ComparisonResult } from '../../types/api'
 
 interface RadarComparisonChartProps {
@@ -29,7 +30,7 @@ export function RadarComparisonChart({
       const metricScore = scorecard.metric_scores.find(
         (item) => item.metric === metric.metric,
       )
-      row[scorecard.architecture_name] = metricScore?.score ?? 0
+      row[scorecard.architecture_name] = metricScore ? metricUtility(metricScore) : 0
     }
 
     return row
@@ -38,7 +39,8 @@ export function RadarComparisonChart({
   return (
     <div className="panel">
       <span className="pill">Score visualization</span>
-      <h3 className="mt-2 font-semibold">Radar chart</h3>
+      <h3 className="mt-2 font-semibold">Normalized suitability radar</h3>
+      <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>Larger is better here; lower-is-better burdens are inverted only for this visualization.</p>
       <div className="mt-4 h-[320px]">
         <ResponsiveContainer>
           <RadarChart data={data}>

@@ -1,7 +1,10 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+CURRENT_REQUIREMENT_MODEL_VERSION = "evidence-owned-domain-model-v3"
 
 
 CausalNodeType = Literal[
@@ -97,16 +100,103 @@ class CausalGraphTrace(BaseModel):
     affected_artifacts: list[str] = Field(default_factory=list)
 
 
+EvidenceStatus = Literal["confirmed", "inferred", "assumed", "user-edited"]
+
+
+class SourceEvidence(BaseModel):
+    """Traceable origin for a generated or user-confirmed fact."""
+
+    source_id: str
+    source: str
+    status: EvidenceStatus = "inferred"
+    excerpt: str | None = None
+
+
+class StructuredClarification(BaseModel):
+    question_id: str
+    category: str
+    answer: str
+    status: EvidenceStatus = "confirmed"
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
+    downstream_consumers: list[str] = Field(default_factory=list)
+
+
+class IntegrationDetail(BaseModel):
+    id: str
+    name: str
+    integration_type: str = "external-system"
+    purpose: str
+    external_owner: str | None = "external"
+    protocol: list[str] = Field(default_factory=list)
+    data_formats: list[str] = Field(default_factory=list)
+    interaction_mode: Literal["synchronous", "asynchronous", "batch", "unknown"] = "unknown"
+    security_mechanisms: list[str] = Field(default_factory=list)
+    reliability_requirements: list[str] = Field(default_factory=list)
+    bounded_context: str | None = None
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
+
+
+class TechnicalCharacteristic(BaseModel):
+    id: str
+    category: str
+    value: str
+    status: EvidenceStatus = "inferred"
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
+
+
+class SecurityModel(BaseModel):
+    human_authentication: list[str] = Field(default_factory=list)
+    service_authentication: list[str] = Field(default_factory=list)
+    partner_authentication: list[str] = Field(default_factory=list)
+    authorization: list[str] = Field(default_factory=list)
+    data_protection: list[str] = Field(default_factory=list)
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
+
+
+class ProjectProfile(BaseModel):
+    classification: str = "unknown"
+    team_size: int | None = Field(default=None, ge=1)
+    concurrent_users: int | None = Field(default=None, ge=1)
+    event_volume_per_day: int | None = Field(default=None, ge=1)
+    geographic_scope: str = "unknown"
+    criticality: str = "unknown"
+    integration_complexity: str = "unknown"
+    availability_target_percent: float | None = Field(default=None, ge=90, le=100)
+    workload_variability: str = "unknown"
+    data_complexity: str = "unknown"
+    regulatory_sensitivity: str = "unknown"
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
+
+
+class ConfidenceReport(BaseModel):
+    input_completeness: int = Field(default=0, ge=0, le=100)
+    inference_confidence: int = Field(default=0, ge=0, le=100)
+    architecture_confidence: int = Field(default=0, ge=0, le=100)
+    rationale: list[str] = Field(default_factory=list)
+
+
 class Actor(BaseModel):
+    id: str | None = None
     name: str
     description: str
+    actor_type: Literal[
+        "human", "organizational", "external-partner", "external-system",
+        "device", "event-source", "machine", "unknown",
+    ] = "unknown"
+    responsibilities: list[str] = Field(default_factory=list)
+    owning_boundary: str | None = None
+    permissions: list[str] = Field(default_factory=list)
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
 
 
 class DomainEntityHint(BaseModel):
+    id: str | None = None
     name: str
     description: str
     attributes: list[str] = Field(default_factory=list)
     bounded_context: str | None = None
+    lifecycle_fields: list[str] = Field(default_factory=list)
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
 
 
 class DomainWorkflowHint(BaseModel):
@@ -116,7 +206,17 @@ class DomainWorkflowHint(BaseModel):
     related_entities: list[str] = Field(default_factory=list)
 
 
+class BoundedContext(BaseModel):
+    id: str
+    name: str
+    responsibilities: list[str] = Field(default_factory=list)
+    owned_entities: list[str] = Field(default_factory=list)
+    integrations: list[str] = Field(default_factory=list)
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
+
+
 class RequirementModel(BaseModel):
+    requirement_model_version: str = CURRENT_REQUIREMENT_MODEL_VERSION
     summary: str
     domain: str
     scale_profile: str
@@ -127,8 +227,15 @@ class RequirementModel(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     domain_entities: list[DomainEntityHint] = Field(default_factory=list)
     domain_workflows: list[DomainWorkflowHint] = Field(default_factory=list)
+    bounded_contexts: list[BoundedContext] = Field(default_factory=list)
     integrations: list[str] = Field(default_factory=list)
     data_characteristics: list[str] = Field(default_factory=list)
+    clarification_answers: list[StructuredClarification] = Field(default_factory=list)
+    integration_details: list[IntegrationDetail] = Field(default_factory=list)
+    technical_characteristics: list[TechnicalCharacteristic] = Field(default_factory=list)
+    security_model: SecurityModel = Field(default_factory=SecurityModel)
+    project_profile: ProjectProfile = Field(default_factory=ProjectProfile)
+    confidence: ConfidenceReport = Field(default_factory=ConfidenceReport)
     open_questions: list[str] = Field(default_factory=list)
     analysis_source: Literal[
         "predefined-blueprint", "ollama-pretrained", "deterministic-extraction",
@@ -157,6 +264,9 @@ class ArchitectureComponent(BaseModel):
     responsibility: str
     technologies: list[str] = Field(default_factory=list)
     interactions: list[str] = Field(default_factory=list)
+    # Exact component names this component needs at runtime. Blast-radius
+    # analysis follows these edges instead of generic architecture-role maps.
+    dependencies: list[str] = Field(default_factory=list)
 
 
 class ArchitectureOption(BaseModel):
@@ -181,7 +291,12 @@ class ArchitectureOption(BaseModel):
 class MetricScore(BaseModel):
     metric: str
     score: int
+    direction: Literal["maximize", "minimize"] = "maximize"
+    normalized_score: float | None = Field(default=None, ge=0, le=10)
     explanation: str
+    weight: float | None = None
+    contribution: float | None = None
+    requirement_signals: list[str] = Field(default_factory=list)
 
 
 class ArchitectureScorecard(BaseModel):
@@ -189,9 +304,11 @@ class ArchitectureScorecard(BaseModel):
     architecture_name: str
     overall_score: float
     weighted_score: float
+    ranking_score: float | None = None
     metric_scores: list[MetricScore] = Field(default_factory=list)
     strengths: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
+    decision_model: str = "deterministic score produced by the decision model"
 
 
 class ComparisonResult(BaseModel):
@@ -223,13 +340,16 @@ class DatabaseField(BaseModel):
     nullable: bool = False
     indexed: bool = False
     description: str
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
 
 
 class DatabaseEntity(BaseModel):
+    id: str | None = None
     name: str
     description: str
     fields: list[DatabaseField] = Field(default_factory=list)
     bounded_context: str | None = None
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
 
 
 class DatabaseRelationship(BaseModel):
@@ -237,6 +357,10 @@ class DatabaseRelationship(BaseModel):
     target: str
     relationship: str
     description: str
+    cardinality: str | None = None
+    foreign_key: str | None = None
+    ownership_implication: str | None = None
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
 
 
 class DatabaseDesign(BaseModel):
@@ -260,6 +384,17 @@ class ApiEndpoint(BaseModel):
     requirement_ids: list[str] = Field(default_factory=list)
     request_example: dict = Field(default_factory=dict)
     response_example: dict = Field(default_factory=dict)
+    group: str | None = None
+    resource: str | None = None
+    operation_type: Literal["command", "query", "event", "unknown"] = "unknown"
+    owner: str | None = None
+    security_mechanisms: list[str] = Field(default_factory=list)
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
+    # Event-contract semantics (populated only for operation_type == "event").
+    producer: str | None = None
+    consumers: list[str] = Field(default_factory=list)
+    delivery_semantics: str | None = None
+    ordering_key: str | None = None
 
 
 class ApiGroup(BaseModel):
@@ -291,6 +426,13 @@ class DeploymentPlan(BaseModel):
     security_controls: list[str] = Field(default_factory=list)
     cloud_recommendation: str
     stack_rationale: list[str] = Field(default_factory=list)
+    replicas_per_region: int | None = Field(default=None, ge=1, le=1000)
+    total_baseline_replicas: int | None = Field(default=None, ge=1, le=100000)
+    availability_target_percent: float | None = Field(default=None, ge=90, le=100)
+    failover_mode: str | None = None
+    rto: str | None = None
+    rpo: str | None = None
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
 
 
 class ImpactAssessment(BaseModel):
@@ -402,10 +544,9 @@ class RequirementAnalysis(BaseModel):
 
 
 class ProjectConstraints(BaseModel):
-    """Project inputs used by the deterministic budget estimator."""
+    """Project inputs used by deterministic team and architecture-fit checks."""
 
     team_size: int = Field(ge=1)
-    budget_level: Literal["low", "medium", "high"] = "medium"
     expected_scale: str = "medium"
     timeline_weeks: int = Field(default=12, ge=1)
 
@@ -461,6 +602,7 @@ class ConwayFitResult(BaseModel):
 class ConwayFitRequest(BaseModel):
     architecture: ArchitectureOption
     entities: list[str] = Field(default_factory=list)
+    bounded_contexts: list[BoundedContext] = Field(default_factory=list)
     constraints: ProjectConstraints
 
 
@@ -473,6 +615,15 @@ class TwinCaseStudy(BaseModel):
     summary: str
     lesson: str
     source_note: str
+    evidence_type: str = "public engineering summary"
+    evidence_confidence: Literal["low", "medium", "high"] = "medium"
+    domain_tags: list[str] = Field(default_factory=list)
+    capability_tags: list[str] = Field(default_factory=list)
+    workload_tags: list[str] = Field(default_factory=list)
+    scale_tags: list[str] = Field(default_factory=list)
+    data_tags: list[str] = Field(default_factory=list)
+    reliability_tags: list[str] = Field(default_factory=list)
+    integration_tags: list[str] = Field(default_factory=list)
 
 
 class TwinSimilarMetric(BaseModel):
@@ -488,6 +639,22 @@ class TwinMatch(BaseModel):
     overlap_services: list[str] = Field(default_factory=list)
     rationale: str
     similar_metrics: list[TwinSimilarMetric] = Field(default_factory=list)
+    domain_similarity: float | None = Field(default=None, ge=0, le=100)
+    capability_similarity: float | None = Field(default=None, ge=0, le=100)
+    architecture_similarity: float | None = Field(default=None, ge=0, le=100)
+    workload_similarity: float | None = Field(default=None, ge=0, le=100)
+    scale_similarity: float | None = Field(default=None, ge=0, le=100)
+    technology_similarity: float | None = Field(default=None, ge=0, le=100)
+    data_similarity: float | None = Field(default=None, ge=0, le=100)
+    reliability_similarity: float | None = Field(default=None, ge=0, le=100)
+    integration_similarity: float | None = Field(default=None, ge=0, le=100)
+    industry_similarity: float | None = Field(default=None, ge=0, le=100)
+    architecture_precedent_similarity: float | None = Field(default=None, ge=0, le=100)
+    technology_precedent_similarity: float | None = Field(default=None, ge=0, le=100)
+    domain_compatible: bool = False
+    match_strength: str = "architecture-only"
+    dimension_evidence: dict[str, bool] = Field(default_factory=dict)
+    evidence_notice: str = "Algorithmic similarity based on available public precedent data and selected metrics."
 
 
 class TwinMatchRequest(BaseModel):
@@ -495,36 +662,15 @@ class TwinMatchRequest(BaseModel):
     recommended_architecture_id: str
     deployment_stack: list[str] = Field(default_factory=list)
     weights: dict[str, float] | None = None
-
-
-class BudgetLineItem(BaseModel):
-    label: str
-    monthly_cost_usd: float = Field(ge=0)
-    category: Literal["infrastructure", "team", "tooling"]
-
-
-class ScaleBudget(BaseModel):
-    scale_tier: str
-    total_monthly_usd: float = Field(ge=0)
-    line_items: list[BudgetLineItem] = Field(default_factory=list)
-
-
-class BudgetEstimate(BaseModel):
-    architecture_id: str
-    budgets_by_scale: list[ScaleBudget] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
-
-
-class BudgetEstimateRequest(BaseModel):
-    architecture: ArchitectureOption
-    deployment_stack: list[str] = Field(default_factory=list)
-    constraints: ProjectConstraints
-
-
-class BudgetCompareRequest(BaseModel):
-    architectures: list[ArchitectureOption] = Field(min_length=1)
-    deployment_stacks: dict[str, list[str]] = Field(default_factory=dict)
-    constraints: ProjectConstraints
+    domain: str = ""
+    domain_signals: list[str] = Field(default_factory=list)
+    capability_signals: list[str] = Field(default_factory=list)
+    workload_signals: list[str] = Field(default_factory=list)
+    data_signals: list[str] = Field(default_factory=list)
+    reliability_signals: list[str] = Field(default_factory=list)
+    integration_signals: list[str] = Field(default_factory=list)
+    project_profile: ProjectProfile | None = None
+    similarity_weights: dict[str, float] | None = None
 
 
 class ArchitectureDecisionRecord(BaseModel):
@@ -641,10 +787,11 @@ class ApplyMitigationsRequest(BaseModel):
 
 
 class WorkspaceCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str
     description: str
     business_context: str | None = None
-    budget: str | None = None
     preferred_cloud: str | None = None
     constraints: list[str] = Field(default_factory=list)
     team_size: int | None = Field(default=None, ge=1, le=1000)
@@ -663,8 +810,6 @@ CounterfactualVariable = Literal[
     "peak_traffic_multiplier",
     "availability_percent",
     "latency_ms",
-    "budget_level",
-    "monthly_budget_change_percent",
     "team_size",
     "geographic_regions",
     "realtime_required",
@@ -700,7 +845,6 @@ class CounterfactualSnapshot(BaseModel):
     architecture_name: str
     suitability_score: float = Field(ge=0, le=100)
     rank: int = Field(ge=1)
-    monthly_cost_estimate_usd: float | None = Field(default=None, ge=0)
     resilience_score: float = Field(ge=0, le=10)
     risk_score: float = Field(ge=0, le=10)
     risk_level: Literal["Low", "Medium", "High"]

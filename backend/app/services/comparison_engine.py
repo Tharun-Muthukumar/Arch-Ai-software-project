@@ -8,6 +8,13 @@ from app.schemas.domain import (
     MetricScore,
     RequirementModel,
 )
+from app.services.decision_config import (
+    ARCHITECTURE_DECISION_MODEL_VERSION,
+    ARCHITECTURE_METRIC_WEIGHTS,
+    metric_direction,
+    metric_raw_score,
+    metric_utility,
+)
 
 METRICS = [
     "scalability",
@@ -27,7 +34,7 @@ METRICS = [
 # Calibrated starting points: simple topologies lead on cost/simplicity,
 # distributed topologies lead on elasticity/isolation. Adjustments below
 # (not these bases) decide the winner from confirmed requirement signals.
-BASE_PROFILES = {
+BASE_UTILITY_PROFILES = {
     "modular-monolith": {
         "scalability": 6,
         "performance": 8,
@@ -114,6 +121,17 @@ BASE_PROFILES = {
     },
 }
 
+# Public/exported profiles use the direction displayed to the user. This keeps
+# e.g. deployment_complexity=2 truthful (low burden), while the internal base
+# profiles above remain convenient higher-is-better utilities for adjustments.
+BASE_PROFILES = {
+    architecture_id: {
+        metric: metric_raw_score(metric, utility)
+        for metric, utility in profile.items()
+    }
+    for architecture_id, profile in BASE_UTILITY_PROFILES.items()
+}
+
 
 class ComparisonEngine:
     def compare(
@@ -127,31 +145,53 @@ class ComparisonEngine:
         scorecards: list[ArchitectureScorecard] = []
 
         for architecture in architectures:
-            profile = dict(BASE_PROFILES.get(architecture.id, BASE_PROFILES["service-based"]))
-            profile = self._apply_adjustments(profile, architecture.id, requirements, answers)
+            utility_profile = dict(
+                BASE_UTILITY_PROFILES.get(
+                    architecture.id, BASE_UTILITY_PROFILES["service-based"]
+                )
+            )
+            utility_profile = self._apply_adjustments(
+                utility_profile, architecture.id, requirements, answers
+            )
+            profile = {
+                metric: metric_raw_score(metric, utility_profile[metric])
+                for metric in METRICS
+            }
             metric_scores = [
                 MetricScore(
                     metric=metric,
                     score=profile[metric],
-                    explanation=self._explain(metric, profile[metric], architecture.name, requirements, answers),
+                    direction=metric_direction(metric),  # type: ignore[arg-type]
+                    normalized_score=utility_profile[metric],
+                    explanation=self._explain(
+                        metric,
+                        profile[metric],
+                        architecture.name,
+                        requirements,
+                        answers,
+                    ),
+                    weight=weights[metric],
+                    contribution=round(utility_profile[metric] * weights[metric], 3),
+                    requirement_signals=self._metric_signals(metric, requirements, answers),
                 )
                 for metric in METRICS
             ]
-            overall_score = round(
-                sum(item.score for item in metric_scores) / max(len(metric_scores), 1), 1
+            exact_overall_score = sum(
+                utility_profile[metric] * weights[metric] for metric in METRICS
             )
-            weighted_score = round(
-                sum(profile[metric] * weights[metric] for metric in METRICS) * 10, 1
-            )
+            overall_score = round(exact_overall_score, 1)
+            weighted_score = overall_score * 10
             scorecards.append(
                 ArchitectureScorecard(
                     architecture_id=architecture.id,
                     architecture_name=architecture.name,
                     overall_score=overall_score,
                     weighted_score=weighted_score,
+                    ranking_score=exact_overall_score * 10,
                     metric_scores=metric_scores,
                     strengths=self._strengths(architecture.id),
                     risks=self._risks(architecture.id),
+                    decision_model=ARCHITECTURE_DECISION_MODEL_VERSION,
                 )
             )
 
@@ -170,10 +210,14 @@ class ComparisonEngine:
             "Scores are rule-based from confirmed requirements, constraints, data characteristics, and operational answers.",
             scale_reasoning,
             team_reasoning,
-            "Cost and complexity reward simpler topologies only when the brief does not justify distribution; scale, realtime, availability, region, and complexity signals reward isolation symmetrically.",
-            "Overall score is the mean of the 12 metric scores; weighted score is the weight-weighted sum (x10). "
+            "Cost, deployment complexity, learning curve, development time, and operational complexity are burdens where lower raw values are better; all other metrics are capabilities where higher is better.",
+            "Overall score is the normalized weight-weighted utility on a 0-10 scale; weighted score is the same result on a 0-100 scale. "
             "Scores are outputs of this deterministic decision model, not objective measurements of real systems.",
         ]
+
+        scorecards.sort(
+            key=lambda item: (-(item.ranking_score if item.ranking_score is not None else item.weighted_score), item.architecture_id)
+        )
 
         return ComparisonResult(weights=weights, scorecards=scorecards, reasoning=reasoning)
 
@@ -181,20 +225,7 @@ class ComparisonEngine:
         self, requirements: RequirementModel, answers: dict[str, str] | None = None
     ) -> dict[str, float]:
         answers = answers or {}
-        weights = {
-            "scalability": 0.12,
-            "performance": 0.09,
-            "maintainability": 0.1,
-            "security": 0.1,
-            "cost": 0.08,
-            "reliability": 0.09,
-            "availability": 0.08,
-            "deployment_complexity": 0.08,
-            "learning_curve": 0.06,
-            "development_time": 0.08,
-            "fault_isolation": 0.06,
-            "operational_complexity": 0.06,
-        }
+        weights = dict(ARCHITECTURE_METRIC_WEIGHTS)
 
         if requirements.scale_profile == "high-scale":
             weights["scalability"] += 0.05
@@ -208,7 +239,7 @@ class ComparisonEngine:
             weights["fault_isolation"] += 0.01
             weights["cost"] -= 0.01
             weights["development_time"] -= 0.01
-        elif requirements.scale_profile == "startup-scale":
+        elif requirements.scale_profile == "small-scale":
             weights["cost"] += 0.03
             weights["development_time"] += 0.03
             weights["deployment_complexity"] += 0.02
@@ -229,16 +260,6 @@ class ComparisonEngine:
             weights["availability"] += 0.01
             weights["cost"] -= 0.02
             weights["development_time"] -= 0.01
-
-        budget = (answers.get("budget") or "").lower()
-        if budget == "low":
-            weights["cost"] += 0.03
-            weights["operational_complexity"] += 0.01
-            weights["scalability"] -= 0.01
-        elif budget == "high":
-            weights["scalability"] += 0.02
-            weights["availability"] += 0.01
-            weights["cost"] -= 0.02
 
         text = " ".join(
             requirements.functional_requirements
@@ -280,16 +301,17 @@ class ComparisonEngine:
         realtime = any(marker in lower_requirements for marker in ("realtime", "real-time", "event processing", "stream", "telemetry", "sensor"))
         variable_demand = any(marker in lower_requirements for marker in ("bursty", "spiky", "variable demand", "seasonal", "batch"))
         compliance = any(marker in lower_requirements for marker in ("audit", "compliance", "pci", "hipaa", "gdpr", "soc2", "regulated"))
-        strict_avail = any(marker in lower_requirements for marker in ("99.99", "four nines", "strict availability"))
+        strict_avail = bool(
+            (requirements.project_profile.availability_target_percent or 0) >= 99.99
+        ) or any(marker in lower_requirements for marker in ("99.99", "four nines", "strict availability"))
         latency_match = re.search(r"(?:latency|response time)[^\d]{0,20}(\d+)\s*ms", lower_requirements)
         low_latency = bool(latency_match and int(latency_match.group(1)) <= 100)
         team_size = self._parse_team_size(answers)
-        budget = (answers.get("budget") or "").lower()
         cloud = (answers.get("preferred_cloud") or "").lower()
         regions = self._parse_int(answers.get("geographic_regions", "0") or "0")
         high_scale = requirements.scale_profile == "high-scale"
         growth_scale = requirements.scale_profile == "growth-scale"
-        startup_scale = requirements.scale_profile == "startup-scale"
+        small_scale = requirements.scale_profile == "small-scale"
 
         is_monolith = architecture_id == "modular-monolith"
         is_service = architecture_id == "service-based"
@@ -324,7 +346,7 @@ class ComparisonEngine:
                 profile["maintainability"] += 1
             if is_monolith:
                 profile["scalability"] -= 1
-        elif startup_scale:
+        elif small_scale:
             if is_micro:
                 profile["cost"] -= 1
                 profile["development_time"] -= 1
@@ -412,22 +434,6 @@ class ComparisonEngine:
             if is_monolith or is_service:
                 profile["deployment_complexity"] += 1
 
-        # Budget posture.
-        if budget in {"low", "constrained", "startup"}:
-            if is_micro:
-                profile["cost"] -= 2
-                profile["development_time"] -= 1
-            if is_hybrid_event:
-                profile["cost"] -= 1
-            if is_monolith or is_hybrid_modular:
-                profile["cost"] += 1
-            if high_scale and is_serverless:
-                # Usage-based spend stops being cheap under sustained high throughput.
-                profile["cost"] -= 1
-        elif budget == "high":
-            if is_micro or is_hybrid_event:
-                profile["development_time"] += 1
-
         # Multi-region operation.
         if regions > 1:
             if is_monolith:
@@ -497,6 +503,40 @@ class ComparisonEngine:
 
         return {metric: max(1, min(10, score)) for metric, score in profile.items()}
 
+    def _metric_signals(
+        self, metric: str, requirements: RequirementModel, answers: dict[str, str]
+    ) -> list[str]:
+        """Expose the exact project signals that contributed to a metric."""
+        profile = requirements.project_profile
+        signals: list[str] = []
+        if metric in {"scalability", "performance", "availability", "reliability", "fault_isolation"}:
+            if profile.concurrent_users:
+                signals.append(f"confirmed concurrency: {profile.concurrent_users:,}")
+            if profile.event_volume_per_day:
+                signals.append(f"confirmed event volume: {profile.event_volume_per_day:,}/day")
+            if profile.availability_target_percent:
+                signals.append(f"confirmed availability: {profile.availability_target_percent}%")
+            if profile.geographic_scope == "global/multi-region":
+                signals.append("global or multi-region operation")
+        if metric == "security" and requirements.security_model.authorization:
+            signals.append("authorization: " + ", ".join(requirements.security_model.authorization))
+        if metric in {"maintainability", "fault_isolation", "operational_complexity"}:
+            count = len(requirements.integration_details) or len(requirements.integrations)
+            if count:
+                signals.append(f"integration boundaries: {count}")
+            if profile.team_size:
+                signals.append(f"team size: {profile.team_size}")
+        if metric == "cost":
+            if requirements.project_profile.event_volume_per_day:
+                signals.append(
+                    f"sustained workload: {requirements.project_profile.event_volume_per_day:,} events/day"
+                )
+            if requirements.project_profile.geographic_scope == "global/multi-region":
+                signals.append("multi-region infrastructure footprint")
+            if requirements.integration_details:
+                signals.append(f"integration operations: {len(requirements.integration_details)} boundaries")
+        return signals or ["no metric-specific confirmed signal; neutral baseline retained"]
+
     @staticmethod
     def _parse_team_size(answers: dict[str, str]) -> int:
         match = re.search(r"\d+", str((answers or {}).get("team_size", "") or ""))
@@ -520,8 +560,8 @@ class ComparisonEngine:
         scale = requirements.scale_profile
         if scale == "high-scale" and metric in {"scalability", "availability", "fault_isolation", "reliability"}:
             drivers.append("the confirmed high-scale brief rewards horizontal elasticity and isolation")
-        elif scale == "startup-scale" and metric in {"cost", "development_time", "deployment_complexity", "learning_curve"}:
-            drivers.append("the startup-scale brief rewards low cost and fast delivery")
+        elif scale == "small-scale" and metric in {"cost", "development_time", "deployment_complexity", "learning_curve"}:
+            drivers.append("the small-scale brief rewards low operational overhead and fast delivery")
         elif scale == "unknown" and metric in {"scalability", "availability"}:
             drivers.append("unknown workload scale keeps elasticity expectations neutral")
         team_size = self._parse_team_size(answers)
@@ -554,7 +594,8 @@ class ComparisonEngine:
             else:
                 drivers.append("the confirmed scale profile rewards controlled complexity")
         return (
-            f"{architecture_name} scores {score}/10 for {metric.replace('_', ' ')} because "
+            f"{architecture_name} scores {score}/10 for {metric.replace('_', ' ')} "
+            f"({'lower is better' if metric_direction(metric) == 'minimize' else 'higher is better'}) because "
             f"{' and '.join(drivers)}."
         )
 
@@ -642,15 +683,22 @@ def recompute_with_weights(
     scorecards: list[ArchitectureScorecard] = []
     for arch_name, scores in matrix.items():
         weighted_total = sum(
-            scores.get(metric, 0) * active_weights.get(metric, 1.0)
+            metric_utility(metric, scores.get(metric, 5))
+            * active_weights.get(metric, 1.0)
             for metric in METRICS
         )
-        total_score = round(weighted_total / weight_sum, 1)
+        exact_total_score = weighted_total / weight_sum
+        total_score = round(exact_total_score, 1)
         metric_scores = [
             MetricScore(
                 metric=metric,
                 score=scores.get(metric, 0),
-                explanation=f"Score {scores.get(metric, 0)}/10 for {metric.replace('_', ' ')}.",
+                direction=metric_direction(metric),  # type: ignore[arg-type]
+                normalized_score=metric_utility(metric, scores.get(metric, 5)),
+                explanation=(
+                    f"Score {scores.get(metric, 0)}/10 for {metric.replace('_', ' ')}; "
+                    f"{metric_direction(metric)} this metric."
+                ),
             )
             for metric in METRICS
         ]
@@ -659,12 +707,19 @@ def recompute_with_weights(
                 architecture_id=arch_name,
                 architecture_name=arch_name.replace("-", " ").title(),
                 overall_score=total_score,
-                weighted_score=round(weighted_total, 1),
+                weighted_score=round(total_score * 10, 1),
+                ranking_score=exact_total_score * 10,
                 metric_scores=metric_scores,
                 strengths=[],
                 risks=[],
+                decision_model=ARCHITECTURE_DECISION_MODEL_VERSION,
             )
         )
 
-    scorecards.sort(key=lambda s: s.overall_score, reverse=True)
+    scorecards.sort(
+        key=lambda item: (
+            -(item.ranking_score if item.ranking_score is not None else item.weighted_score),
+            item.architecture_id,
+        )
+    )
     return scorecards

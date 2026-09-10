@@ -1,9 +1,20 @@
-import re
+"""Deterministic API contracts derived from domain resources and boundaries."""
 
-from app.schemas.domain import ApiDesign, ApiEndpoint, ApiGroup, DatabaseDesign, RequirementModel
+from __future__ import annotations
+
+from app.schemas.domain import (
+    ApiDesign,
+    ApiEndpoint,
+    ApiGroup,
+    DatabaseDesign,
+    DatabaseEntity,
+    IntegrationDetail,
+    RequirementModel,
+    SourceEvidence,
+)
 from app.services.domain_inference import (
     auth_evidence,
-    cluster_entities,
+    singularize,
     to_display_name,
     to_identifier,
     tokenize,
@@ -11,10 +22,25 @@ from app.services.domain_inference import (
 
 
 class ApiGenerator:
+    """Build contracts from entities, lifecycle operations, and integrations.
+
+    Requirement prose is used only for traceability and lifecycle intent; it is
+    never converted directly into a URL or API group name.
+    """
+
+    _TRANSITION_VERBS = frozenset({
+        "approve", "review", "cancel", "submit", "plan", "forecast",
+        "schedule", "dispatch", "fulfill", "inspect", "register",
+        "coordinate", "synchronize", "settle", "reconcile", "close",
+        "activate", "deactivate", "assign", "release", "initiate",
+        "authorize", "freeze", "unfreeze", "block", "assess", "score",
+        "post", "verify", "submit", "export", "check", "board", "notify",
+    })
+
     def generate(self, requirements: RequirementModel, database_design: DatabaseDesign) -> ApiDesign:
         if requirements.analysis_source == "conservative-fallback":
             return ApiDesign(
-                style="Unknown; select after workflows and integration protocols are clarified",
+                style="Unknown; clarify domain resources and external protocols first",
                 authentication_strategy="Unknown; clarify actors and trust boundaries first.",
                 groups=[],
                 validation_rules=[
@@ -22,327 +48,402 @@ class ApiGenerator:
                 ],
                 openapi_summary=["API design is intentionally deferred pending clarification."],
             )
-        if requirements.analysis_source == "ollama-pretrained" and requirements.domain_workflows:
-            return self._generate_from_workflows(requirements)
 
-        lower_domain = requirements.domain.lower()
-        groups = [
-            ApiGroup(
-                name="Authentication",
-                description="Identity, session, and role bootstrap flows.",
-                endpoints=[
-                    ApiEndpoint(
-                        method="POST",
-                        path="/api/v1/auth/login",
-                        purpose="Authenticate a user and return access plus refresh tokens.",
-                        auth_required=False,
-                        request_example={"email": "user@example.com", "password": "strong-password"},
-                        response_example={"access_token": "jwt-token", "refresh_token": "refresh-token"},
-                    ),
-                    ApiEndpoint(
-                        method="POST",
-                        path="/api/v1/auth/refresh",
-                        purpose="Rotate access tokens using a refresh token.",
-                        auth_required=False,
-                        request_example={"refresh_token": "refresh-token"},
-                        response_example={"access_token": "new-jwt-token"},
-                    ),
-                ],
-            ),
-            ApiGroup(
-                name="Users",
-                description="Profile, role, and preference management.",
-                endpoints=[
-                    ApiEndpoint(
-                        method="GET",
-                        path="/api/v1/users/me",
-                        purpose="Return the authenticated user's profile and feature entitlements.",
-                        auth_required=True,
-                        request_example={},
-                        response_example={"id": "uuid", "email": "user@example.com", "role": "customer"},
-                    ),
-                    ApiEndpoint(
-                        method="PATCH",
-                        path="/api/v1/users/me/preferences",
-                        purpose="Update profile settings and notification preferences.",
-                        auth_required=True,
-                        request_example={"theme": "dark", "notifications": ["email"]},
-                        response_example={"status": "updated"},
-                    ),
-                ],
-            ),
-        ]
-
-        if "charging" in lower_domain or any(entity.name == "stations" for entity in database_design.entities):
-            groups.extend(
-                [
-                    ApiGroup(
-                        name="Stations",
-                        description="Station discovery, details, and charger availability.",
-                        endpoints=[
-                            ApiEndpoint(
-                                method="GET",
-                                path="/api/v1/stations",
-                                purpose="Search nearby stations with connector, power, and availability filters.",
-                                auth_required=False,
-                                request_example={"city": "Bengaluru", "connector": "CCS2"},
-                                response_example={"items": [{"id": "uuid", "name": "Central Business District Hub"}]},
-                            ),
-                            ApiEndpoint(
-                                method="GET",
-                                path="/api/v1/stations/{stationId}",
-                                purpose="Return station details, charger inventory, and live slot availability.",
-                                auth_required=False,
-                                request_example={},
-                                response_example={"id": "uuid", "status": "active"},
-                            ),
-                        ],
-                    ),
-                    ApiGroup(
-                        name="Bookings",
-                        description="Reservation, cancellation, and history workflows for drivers.",
-                        endpoints=[
-                            ApiEndpoint(
-                                method="POST",
-                                path="/api/v1/bookings",
-                                purpose="Reserve a charging slot and initiate payment authorization.",
-                                auth_required=True,
-                                request_example={"stationId": "uuid", "chargerId": "uuid", "slotStart": "2026-08-05T18:30:00Z"},
-                                response_example={"id": "uuid", "status": "pending_payment"},
-                            ),
-                            ApiEndpoint(
-                                method="POST",
-                                path="/api/v1/bookings/{bookingId}/cancel",
-                                purpose="Cancel a reservation and trigger refund evaluation when applicable.",
-                                auth_required=True,
-                                request_example={"reason": "Plans changed"},
-                                response_example={"id": "uuid", "status": "cancelled"},
-                            ),
-                        ],
-                    ),
-                    ApiGroup(
-                        name="Charging Sessions",
-                        description="Operational control over live or completed charging sessions.",
-                        endpoints=[
-                            ApiEndpoint(
-                                method="POST",
-                                path="/api/v1/sessions/{bookingId}/start",
-                                purpose="Start a charging session for an eligible booking.",
-                                auth_required=True,
-                                request_example={"bookingId": "uuid"},
-                                response_example={"sessionId": "uuid", "status": "active"},
-                            ),
-                            ApiEndpoint(
-                                method="POST",
-                                path="/api/v1/sessions/{sessionId}/stop",
-                                purpose="Stop a charging session and finalize billing data.",
-                                auth_required=True,
-                                request_example={"meterKwh": 24.6},
-                                response_example={"sessionId": "uuid", "status": "completed"},
-                            ),
-                        ],
-                    ),
-                ]
-            )
-        elif "pharmacy" in lower_domain or any(
-            entity.name == "prescriptions" for entity in database_design.entities
-        ):
-            groups.extend(
-                [
-                    ApiGroup(
-                        name="Catalog",
-                        description="Product browsing and inventory-aware item lookup.",
-                        endpoints=[
-                            ApiEndpoint(
-                                method="GET",
-                                path="/api/v1/products",
-                                purpose="Search and filter products with pagination.",
-                                auth_required=False,
-                                request_example={"query": "pain relief", "page": 1},
-                                response_example={"items": [{"id": "uuid", "name": "Sample Medication"}]},
-                            ),
-                            ApiEndpoint(
-                                method="GET",
-                                path="/api/v1/products/{productId}",
-                                purpose="Return medicine details, prescription rules, and stock summary.",
-                                auth_required=False,
-                                request_example={},
-                                response_example={"id": "uuid", "requiresPrescription": True, "status": "active"},
-                            ),
-                        ],
-                    ),
-                    ApiGroup(
-                        name="Prescriptions",
-                        description="Prescription upload and pharmacist review workflows.",
-                        endpoints=[
-                            ApiEndpoint(
-                                method="POST",
-                                path="/api/v1/prescriptions",
-                                purpose="Upload a prescription and start pharmacist review.",
-                                auth_required=True,
-                                request_example={"fileUrl": "https://storage/prescription.pdf"},
-                                response_example={"id": "uuid", "status": "pending_review"},
-                            ),
-                            ApiEndpoint(
-                                method="POST",
-                                path="/api/v1/prescriptions/{prescriptionId}/review",
-                                purpose="Approve, reject, or request clarification on a prescription.",
-                                auth_required=True,
-                                request_example={"decision": "approved", "notes": "Verified by licensed pharmacist"},
-                                response_example={"id": "uuid", "status": "approved"},
-                            ),
-                        ],
-                    ),
-                    ApiGroup(
-                        name="Orders",
-                        description="Checkout, payment, and order status workflows.",
-                        endpoints=[
-                            ApiEndpoint(
-                                method="POST",
-                                path="/api/v1/orders",
-                                purpose="Create an order from a validated cart and linked prescription when needed.",
-                                auth_required=True,
-                                request_example={"items": [{"productId": "uuid", "quantity": 1}], "prescriptionId": "uuid"},
-                                response_example={"id": "uuid", "status": "pending_payment"},
-                            ),
-                            ApiEndpoint(
-                                method="GET",
-                                path="/api/v1/orders/{orderId}",
-                                purpose="Return detailed order state including payment, fulfillment, and substitution status.",
-                                auth_required=True,
-                                request_example={},
-                                response_example={"id": "uuid", "status": "packed"},
-                            ),
-                        ],
-                    ),
-                    ApiGroup(
-                        name="Fulfillment",
-                        description="Inventory reservation, shipment tracking, and delivery updates.",
-                        endpoints=[
-                            ApiEndpoint(
-                                method="GET",
-                                path="/api/v1/orders/{orderId}/tracking",
-                                purpose="Return shipment milestones and courier-visible tracking details.",
-                                auth_required=True,
-                                request_example={},
-                                response_example={"orderId": "uuid", "shipmentStatus": "out_for_delivery"},
-                            ),
-                            ApiEndpoint(
-                                method="PATCH",
-                                path="/api/v1/shipments/{shipmentId}/status",
-                                purpose="Update courier delivery status for a dispatched order.",
-                                auth_required=True,
-                                request_example={"status": "delivered"},
-                                response_example={"id": "uuid", "status": "delivered"},
-                            ),
-                        ],
-                    ),
-                ]
-            )
-        else:
-            # Domain-driven groups replace the generic template: the Auth
-            # group appears only with identity evidence, and the Users group
-            # only when the data model actually contains a users table.
-            kept = [groups[0]] if self._auth_evidence(requirements) else []
-            if any(entity.name == "users" for entity in database_design.entities):
-                kept.append(groups[1])
-            kept.extend(
-                self._generate_domain_groups(requirements, database_design)
-            )
-            groups = kept
-
-        validation_rules = [
-            "Use request-level Pydantic validation with strict enum and UUID parsing.",
-            "Enforce optimistic locking or version fields for operator-facing write flows.",
-            "Return structured error objects with machine-readable codes and remediation hints.",
-        ]
-
-        openapi_summary = [
-            "Document all endpoints with example requests and responses.",
-            "Use bearer token security schemes plus refresh token flows.",
-            "Tag endpoints by bounded context so generated SDKs remain modular.",
-        ]
-
-        return ApiDesign(
-            style="REST",
-            authentication_strategy=(
-                "JWT access tokens, refresh token rotation, role-based authorization"
-                if self._auth_evidence(requirements)
-                or requirements.domain in ("EV Charging Booking Platform", "Online Pharmacy")
-                else "Unknown; clarify actor identity, trust boundaries, and machine credentials."
-            ),
-            groups=groups,
-            validation_rules=validation_rules,
-            openapi_summary=openapi_summary,
-        )
-
-    def _generate_from_workflows(self, requirements: RequirementModel) -> ApiDesign:
-        requirement_text = " ".join(
-            requirements.functional_requirements
-            + requirements.non_functional_requirements
-            + requirements.constraints
-        ).lower()
-        identity_is_explicit = any(
-            token in requirement_text
-            for token in ("authenticate", "authorization", "permission", "access control", "identity")
-        )
+        security = self._security_mechanisms(requirements)
         groups: list[ApiGroup] = []
-        for workflow in requirements.domain_workflows:
-            method = self._workflow_method(workflow.name)
-            path = f"/api/v1/{self._slug(workflow.name)}"
-            groups.append(
-                ApiGroup(
-                    name=workflow.name,
-                    description=workflow.description,
-                    endpoints=[
-                        ApiEndpoint(
-                            method=method,
-                            path=path,
-                            purpose=workflow.description,
-                            auth_required=True if identity_is_explicit else None,
-                            request_example={},
-                            response_example={},
-                        )
-                    ],
-                )
-            )
+        if self._auth_evidence(requirements) or security:
+            groups.append(self._identity_group(requirements, security))
+        groups.extend(self._domain_groups(requirements, database_design, security))
+        groups.extend(self._integration_groups(requirements, security))
 
+        has_events = any(
+            endpoint.operation_type == "event"
+            for group in groups
+            for endpoint in group.endpoints
+        )
         return ApiDesign(
-            style="REST candidate; confirm command, query, streaming, and device protocols per workflow",
+            style="REST and asynchronous event contracts" if has_events else "REST",
             authentication_strategy=(
-                "Authorization is required by the brief; exact identity mechanism remains open."
-                if identity_is_explicit
-                else "Unknown; clarify actor identity, trust boundaries, and machine credentials."
+                ", ".join(security)
+                if security
+                else "Unknown; clarify human, partner, and service trust boundaries."
             ),
             groups=groups,
             validation_rules=[
-                "Validate identifiers, state transitions, and domain invariants at the boundary.",
-                "Define idempotency and concurrency behavior for every state-changing workflow.",
-                "Treat request and response examples as unknown until payload contracts are clarified.",
+                "Validate identifiers, payload types, lifecycle transitions, and domain invariants at the owning boundary.",
+                "Require idempotency keys for retryable commands and externally delivered events.",
+                "Define duplicate, late, and out-of-order handling for asynchronous contracts.",
+                "Return structured errors with stable machine-readable codes.",
             ],
             openapi_summary=[
-                "Operations are derived from validated domain workflows, not a generic CRUD template.",
-                "Protocol-specific integrations require separate contracts when the brief justifies them.",
+                "Endpoints are grouped by bounded context and domain resource.",
+                "Every contract names its owner, operation type, security, and source requirement.",
+                "External event contracts require correlation IDs, retries, dead-letter handling, and reconciliation.",
             ],
         )
 
-    def _workflow_method(self, name: str) -> str:
-        first_word = name.strip().split(maxsplit=1)[0].lower() if name.strip() else ""
-        if first_word in {"find", "get", "inspect", "list", "monitor", "retrieve", "search", "view"}:
-            return "GET"
-        if first_word in {"amend", "edit", "update"}:
-            return "PATCH"
-        return "POST"
+    def _identity_group(self, requirements: RequirementModel, security: list[str]) -> ApiGroup:
+        return ApiGroup(
+            name="Identity and Access",
+            description="Human authentication, service identity, and authorization contracts.",
+            endpoints=[ApiEndpoint(
+                method="POST",
+                path="/api/v1/identity/sessions",
+                purpose="Establish a human session using the confirmed identity mechanisms.",
+                auth_required=False,
+                request_description="Identity-provider assertion or credential exchange.",
+                response_description="Short-lived access context with subject and authorization claims.",
+                group="Identity and Access",
+                resource="Identity Session",
+                operation_type="command",
+                owner="Identity and Access",
+                service="Identity and Access",
+                security_mechanisms=security,
+                source_evidence=list(requirements.security_model.source_evidence),
+            )],
+        )
 
-    # ------------------------------------------------------------------
-    # Domain-driven groups: one group per bounded context derived from the
-    # actual domain entities and workflows — never a generic template.
-    # ------------------------------------------------------------------
+    def _domain_groups(
+        self,
+        requirements: RequirementModel,
+        database_design: DatabaseDesign,
+        security: list[str],
+    ) -> list[ApiGroup]:
+        entities = [
+            entity for entity in database_design.entities
+            if entity.name not in {"users", "audit_logs", "notifications"}
+        ]
+        by_context: dict[str, list[DatabaseEntity]] = {}
+        for entity in entities:
+            context = entity.bounded_context or f"{to_display_name(entity.name)} Management"
+            by_context.setdefault(context, []).append(entity)
 
-    _TRANSITION_VERBS = frozenset(
-        {"approve", "review", "cancel", "submit", "plan", "forecast", "schedule",
-         "dispatch", "fulfill", "inspect", "register", "coordinate", "synchronize"}
-    )
+        groups: list[ApiGroup] = []
+        for context, members in sorted(by_context.items()):
+            endpoints: list[ApiEndpoint] = []
+            for entity in members:
+                endpoints.extend(self._resource_endpoints(requirements, entity, context, security))
+            endpoints.extend(self._transition_endpoints(requirements, members, context, security))
+            endpoints.extend(self._semantic_endpoints(requirements, members, context, security))
+            endpoints = self._dedupe_endpoints(endpoints)
+            if endpoints:
+                groups.append(ApiGroup(
+                    name=context,
+                    description=(
+                        f"{context} bounded context owns "
+                        + ", ".join(to_display_name(entity.name) for entity in members)
+                        + ". Contracts are emitted only for evidenced business operations."
+                    ),
+                    endpoints=endpoints,
+                ))
+        return groups
+
+    def _resource_endpoints(
+        self,
+        requirements: RequirementModel,
+        entity: DatabaseEntity,
+        context: str,
+        security: list[str],
+    ) -> list[ApiEndpoint]:
+        slug = self._collection_slug(entity.name)
+        singular = self._singular_identifier(entity.name)
+        resource = to_display_name(entity.name)
+        requirement_ids = self._requirement_ids(requirements, entity.name, entity.description)
+        evidence = [
+            *entity.source_evidence,
+            *self._requirement_evidence(requirements, requirement_ids),
+        ]
+        common = dict(
+            auth_required=True if security or self._auth_evidence(requirements) else None,
+            group=context,
+            resource=resource,
+            owner=context,
+            service=context,
+            requirement_ids=requirement_ids,
+            security_mechanisms=security,
+            source_evidence=evidence,
+        )
+        entity_key = singularize(to_identifier(entity.name))
+
+        def targets_entity(workflow) -> bool:
+            workflow_key = to_identifier(workflow.name)
+            candidates = [
+                singularize(to_identifier(related))
+                for related in workflow.related_entities
+                if singularize(to_identifier(related)) in workflow_key
+            ]
+            if not candidates:
+                return False
+            # Workflow labels are verb + object. The last matching entity is
+            # the operated aggregate; earlier names often identify the actor.
+            target = max(candidates, key=lambda item: workflow_key.rfind(item))
+            return target == entity_key
+
+        workflow_text = " ".join(
+            workflow.description
+            for workflow in requirements.domain_workflows
+            if targets_entity(workflow)
+        ).casefold()
+        endpoints: list[ApiEndpoint] = []
+        read_evidence = any(
+            marker in workflow_text
+            for marker in ("search", "browse", "list", "filter", "view", "track", "receive", "history", "report")
+        )
+        detail_evidence = read_evidence or any(
+            marker in workflow_text
+            for marker in ("manage", "update", "change", "approve", "assign", "schedule", "cancel")
+        )
+        create_evidence = any(
+            marker in workflow_text
+            for marker in ("create", "make", "book", "register", "submit", "record", "initiate", "issue")
+        )
+        update_evidence = any(
+            marker in workflow_text
+            for marker in ("manage", "update", "change", "configure", "edit")
+        )
+        if read_evidence:
+            endpoints.append(ApiEndpoint(
+                method="GET", path=f"/api/v1/{slug}",
+                purpose=f"Search or list {resource} for the evidenced {context} workflows.",
+                request_description="Filter, sort, and pagination query parameters.",
+                response_description=f"A paginated collection of {resource} representations.",
+                operation_type="query", **common,
+            ))
+        if detail_evidence:
+            endpoints.append(ApiEndpoint(
+                method="GET", path=f"/api/v1/{slug}/{{{singular}Id}}",
+                purpose=f"Read the current {resource} state needed by an evidenced workflow.",
+                request_description=f"Path identifier for the {resource}.",
+                response_description=f"The current {resource} representation and version.",
+                operation_type="query", **common,
+            ))
+        tokens = set(tokenize(entity.name))
+        immutable_or_derived = bool(tokens & {"ledger", "entry", "transaction", "audit", "history"})
+        if create_evidence and not immutable_or_derived:
+            creation_purpose = (
+                f"Initiate a {resource} using an idempotent domain command."
+                if tokens & {"transfer", "payment", "booking", "order", "shipment"}
+                else f"Execute the evidenced create/initiate workflow for {resource}."
+            )
+            endpoints.append(ApiEndpoint(
+                method="POST", path=f"/api/v1/{slug}",
+                purpose=creation_purpose,
+                request_description=f"Typed domain command for {resource}; excludes server-owned state and accepts an idempotency key when retryable.",
+                response_description=f"Accepted {resource} identifier, lifecycle state, and version.",
+                operation_type="command", **common,
+            ))
+        if update_evidence and not immutable_or_derived:
+            endpoints.append(ApiEndpoint(
+                method="PATCH", path=f"/api/v1/{slug}/{{{singular}Id}}",
+                purpose=f"Apply the evidenced manage/update operation to mutable {resource} fields.",
+                request_description="Typed change command with expected version for concurrency control.",
+                response_description=f"Updated {resource} state and version.",
+                operation_type="command", **common,
+            ))
+        return endpoints
+
+    def _semantic_endpoints(
+        self,
+        requirements: RequirementModel,
+        members: list[DatabaseEntity],
+        context: str,
+        security: list[str],
+    ) -> list[ApiEndpoint]:
+        """Add business operations that cannot be represented by CRUD alone."""
+        endpoints: list[ApiEndpoint] = []
+        member_tokens = {entity.name: set(tokenize(entity.name)) for entity in members}
+        security_required = True if security or self._auth_evidence(requirements) else None
+
+        def add(
+            method: str,
+            path: str,
+            purpose: str,
+            resource: str,
+            *,
+            operation_type: str = "command",
+            focus: str = "",
+        ) -> None:
+            requirement_ids = self._requirement_ids(requirements, resource, focus, purpose)
+            endpoints.append(ApiEndpoint(
+                method=method,
+                path=path,
+                purpose=purpose,
+                auth_required=security_required,
+                request_description="Typed domain input with actor, correlation ID, expected version, and idempotency key when retryable.",
+                response_description="Domain result with stable identifiers, state, version, and trace metadata.",
+                group=context,
+                resource=resource,
+                operation_type=operation_type,  # type: ignore[arg-type]
+                owner=context,
+                service=context,
+                requirement_ids=requirement_ids,
+                security_mechanisms=security,
+                source_evidence=self._requirement_evidence(requirements, requirement_ids),
+            ))
+
+        for entity in members:
+            tokens = member_tokens[entity.name]
+            resource = to_display_name(entity.name)
+            slug = self._collection_slug(entity.name)
+            singular = self._singular_identifier(entity.name)
+            if "transfer" in tokens:
+                add("POST", f"/api/v1/{slug}/{{{singular}Id}}/cancel", "Cancel a transfer only while its lifecycle and settlement invariants permit it.", resource, focus="transfer")
+            if "card" in tokens:
+                add("POST", f"/api/v1/{slug}/{{{singular}Id}}/controls", "Apply an allowed card control such as freeze, unfreeze, or channel restriction.", resource, focus="manage cards")
+            if {"risk", "assessment"} <= tokens or "fraud" in tokens:
+                add("POST", f"/api/v1/{slug}/assess", "Assess a transaction and record a reviewable risk decision.", resource, focus="fraud assess")
+            if {"regulatory", "report"} <= tokens:
+                add("POST", f"/api/v1/{slug}/{{{singular}Id}}/submit", "Submit a prepared regulatory report with an auditable acknowledgement.", resource, focus="compliance reporting")
+            if {"ledger", "entry"} <= tokens:
+                add("POST", "/api/v1/internal/ledger/postings", "Atomically post a balanced set of debit and credit ledger entries; reject unbalanced or duplicate commands.", resource, focus="authoritative ledger")
+                add("GET", "/api/v1/accounts/{accountId}/ledger-entries", "Read an account's ordered ledger entries and authoritative balance trail.", resource, operation_type="query", focus="ledger balances")
+            elif "transaction" in tokens:
+                add("GET", "/api/v1/accounts/{accountId}/transactions", "Read account transaction history with stable pagination and booking order.", resource, operation_type="query", focus="transaction history")
+        return endpoints
+
+    def _transition_endpoints(
+        self,
+        requirements: RequirementModel,
+        members: list[DatabaseEntity],
+        context: str,
+        security: list[str],
+    ) -> list[ApiEndpoint]:
+        member_names = {
+            singularize(to_identifier(entity.name)): entity for entity in members
+        }
+        endpoints: list[ApiEndpoint] = []
+        for workflow in requirements.domain_workflows:
+            words = workflow.name.strip().split()
+            action = next((
+                token.casefold()
+                for token in tokenize(workflow.name)
+                if token.casefold() in self._TRANSITION_VERBS
+            ), "")
+            if action not in self._TRANSITION_VERBS:
+                continue
+            entity = next((
+                member_names[singularize(to_identifier(name))]
+                for name in reversed(workflow.related_entities)
+                if singularize(to_identifier(name)) in member_names
+            ), None)
+            if entity is None:
+                continue
+            if singularize(to_identifier(entity.name)) in {
+                singularize(to_identifier(workflow.primary_actor)),
+            }:
+                continue
+            slug = self._collection_slug(entity.name)
+            singular = self._singular_identifier(entity.name)
+            requirement_ids = self._requirement_ids(requirements, workflow.description)
+            endpoints.append(ApiEndpoint(
+                method="POST",
+                path=f"/api/v1/{slug}/{{{singular}Id}}/{to_identifier(action)}",
+                purpose=f"Apply the {action} lifecycle transition. {workflow.description}",
+                auth_required=True if security or self._auth_evidence(requirements) else None,
+                request_description="Transition command, expected version, actor, and optional reason.",
+                response_description=f"Updated {to_display_name(entity.name)} state and transition metadata.",
+                group=context,
+                resource=to_display_name(entity.name),
+                operation_type="command",
+                owner=context,
+                service=context,
+                requirement_ids=requirement_ids,
+                security_mechanisms=security,
+                source_evidence=self._requirement_evidence(requirements, requirement_ids),
+            ))
+        return endpoints
+
+    def _integration_groups(
+        self,
+        requirements: RequirementModel,
+        default_security: list[str],
+    ) -> list[ApiGroup]:
+        by_context: dict[str, list[IntegrationDetail]] = {}
+        for integration in requirements.integration_details:
+            by_context.setdefault(integration.bounded_context or "External Integration", []).append(integration)
+        groups: list[ApiGroup] = []
+        for context, integrations in sorted(by_context.items()):
+            endpoints: list[ApiEndpoint] = []
+            for integration in integrations:
+                slug = to_identifier(integration.name).replace("_", "-")
+                security = integration.security_mechanisms or default_security
+                asynchronous = integration.interaction_mode == "asynchronous"
+                # Producer/consumer semantics: the owning boundary publishes;
+                # downstream consumers are named from the integration purpose
+                # and bounded context so replay/ordering ownership is explicit.
+                producer = context if asynchronous else None
+                consumers = (
+                    [f"{context} consumers", f"{integration.name} subscribers"]
+                    if asynchronous else []
+                )
+                delivery = (
+                    "at-least-once with idempotent consumers, versioned envelope, retries, and dead-letter routing"
+                    if asynchronous else None
+                )
+                ordering = "correlation ID / partition key derived from the business aggregate" if asynchronous else None
+                endpoints.append(ApiEndpoint(
+                    method="PUBLISH" if asynchronous else "POST",
+                    path=f"/events/{slug}" if asynchronous else f"/api/v1/integrations/{slug}",
+                    purpose=integration.purpose,
+                    auth_required=True if security else None,
+                    request_description=(
+                        "Versioned event envelope with event ID, correlation ID, occurred-at time, and typed payload. "
+                        f"Producer: {producer}. Ordering key: {ordering}."
+                        if asynchronous else
+                        "Versioned partner request using the confirmed protocol and data format."
+                    ),
+                    response_description=(
+                        "Acknowledgement; retries, dead-letter routing, and reconciliation are contractually defined."
+                        if asynchronous else
+                        "Typed response or acknowledgement with stable partner error mapping."
+                    ),
+                    group=context,
+                    resource=integration.name,
+                    operation_type="event" if asynchronous else "command",
+                    owner=context,
+                    service=context,
+                    security_mechanisms=security,
+                    source_evidence=integration.source_evidence,
+                    producer=producer,
+                    consumers=consumers,
+                    delivery_semantics=delivery,
+                    ordering_key=ordering,
+                ))
+            groups.append(ApiGroup(
+                name=f"{context} Contracts",
+                description="External contracts separated from internal domain resource APIs.",
+                endpoints=endpoints,
+            ))
+        return groups
+
+    @staticmethod
+    def _collection_slug(name: str) -> str:
+        identifier = to_identifier(name)
+        slug = identifier.replace("_", "-")
+        final_word = identifier.rsplit("_", 1)[-1]
+        if singularize(final_word) != final_word:
+            return slug
+        if slug.endswith("y") and not slug.endswith(("ay", "ey", "iy", "oy", "uy")):
+            return slug[:-1] + "ies"
+        if slug.endswith(("s", "x", "z", "ch", "sh")):
+            return slug + "es"
+        return slug + "s"
+
+    @staticmethod
+    def _singular_identifier(name: str) -> str:
+        parts = to_identifier(name).split("_")
+        parts[-1] = singularize(parts[-1])
+        return "_".join(parts)
+
+    @staticmethod
+    def _security_mechanisms(requirements: RequirementModel) -> list[str]:
+        return list(dict.fromkeys([
+            *requirements.security_model.human_authentication,
+            *requirements.security_model.service_authentication,
+            *requirements.security_model.partner_authentication,
+            *requirements.security_model.authorization,
+            *requirements.security_model.data_protection,
+        ]))
 
     def _auth_evidence(self, requirements: RequirementModel) -> bool:
         return auth_evidence(
@@ -352,123 +453,35 @@ class ApiGenerator:
             *(actor.description for actor in requirements.actors),
         )
 
-    def _requirement_ids(self, requirements: RequirementModel, *texts: str) -> list[str]:
-        """Map FR indices (FR-001…) sharing content tokens with the endpoint."""
-        focus: set[str] = set()
-        for text in texts:
-            focus |= {token for token in tokenize(text) if len(token) > 3}
-        matched: list[str] = []
+    @staticmethod
+    def _requirement_ids(requirements: RequirementModel, *texts: str) -> list[str]:
+        focus = {token for text in texts for token in tokenize(text) if len(token) > 3}
+        matches: list[str] = []
         for index, requirement in enumerate(requirements.functional_requirements, start=1):
-            req_tokens = {token for token in tokenize(requirement) if len(token) > 3}
-            if len(focus & req_tokens) >= 2:
-                matched.append(f"FR-{index:03d}")
-            if len(matched) >= 3:
-                break
-        return matched
+            requirement_tokens = {token for token in tokenize(requirement) if len(token) > 3}
+            if focus & requirement_tokens:
+                matches.append(f"FR-{index:03d}")
+        return matches[:4]
 
-    def _generate_domain_groups(
-        self, requirements: RequirementModel, database_design: DatabaseDesign
-    ) -> list[ApiGroup]:
-        auth_required: bool | None = True if self._auth_evidence(requirements) else None
-        # Platform tables (identity/governance) are served by the Auth/Users
-        # groups, never by domain CRUD groups.
-        entity_names = [
-            entity.name
-            for entity in database_design.entities
-            if entity.name not in {"users", "audit_logs", "notifications"}
-        ]
-        contexts = cluster_entities(entity_names)
-        context_members: dict[str, list[str]] = {}
-        for name in entity_names:
-            context_members.setdefault(contexts.get(name, to_display_name(name)), []).append(name)
+    @staticmethod
+    def _requirement_evidence(
+        requirements: RequirementModel, requirement_ids: list[str]
+    ) -> list[SourceEvidence]:
+        evidence: list[SourceEvidence] = []
+        for requirement_id in requirement_ids:
+            index = int(requirement_id.split("-")[1]) - 1
+            if 0 <= index < len(requirements.functional_requirements):
+                evidence.append(SourceEvidence(
+                    source_id=requirement_id,
+                    source="functional requirement",
+                    status="confirmed",
+                    excerpt=requirements.functional_requirements[index],
+                ))
+        return evidence
 
-        workflow_verbs: dict[str, str] = {}
-        for workflow in requirements.domain_workflows:
-            first = workflow.name.strip().split(maxsplit=1)
-            verb = first[0].lower() if first else ""
-            workflow_verbs[workflow.name] = verb
-
-        groups: list[ApiGroup] = []
-        for context in sorted(context_members):
-            members = context_members[context]
-            endpoints: list[ApiEndpoint] = []
-            for member in members:
-                slug = to_identifier(member).replace("_", "-")
-                member_id = f"{slug[:-1] if slug.endswith('s') else slug}Id"
-                owning = next(
-                    (
-                        workflow.description
-                        for workflow in requirements.domain_workflows
-                        if any(
-                            token in tokenize(workflow.description)
-                            for token in to_identifier(member).split("_")
-                        )
-                    ),
-                    f"Lifecycle operations for {to_display_name(member)} records.",
-                )
-                endpoints.append(
-                    ApiEndpoint(
-                        method="GET",
-                        path=f"/api/v1/{slug}",
-                        purpose=f"List and filter {to_display_name(member)} records in the {context} context.",
-                        auth_required=auth_required,
-                        request_example={},
-                        response_example={},
-                        requirement_ids=self._requirement_ids(requirements, owning, member),
-                    )
-                )
-                endpoints.append(
-                    ApiEndpoint(
-                        method="POST",
-                        path=f"/api/v1/{slug}",
-                        purpose=f"Create a {to_display_name(member)} record owned by {context}.",
-                        auth_required=auth_required,
-                        request_example={},
-                        response_example={},
-                        requirement_ids=self._requirement_ids(requirements, owning, member),
-                    )
-                )
-                endpoints.append(
-                    ApiEndpoint(
-                        method="PATCH",
-                        path=f"/api/v1/{slug}/{{{member_id}}}",
-                        purpose=f"Update {to_display_name(member)} state or attributes within {context}.",
-                        auth_required=auth_required,
-                        request_example={},
-                        response_example={},
-                        requirement_ids=self._requirement_ids(requirements, owning, member),
-                    )
-                )
-            # Workflow transition endpoints (approvals, scheduling, dispatch…)
-            # live in the context of their primary entity.
-            for workflow in requirements.domain_workflows:
-                verb = workflow_verbs.get(workflow.name, "")
-                if verb not in self._TRANSITION_VERBS:
-                    continue
-                related = workflow.related_entities or members[:1]
-                home = contexts.get(related[0], context) if related else context
-                if home != context:
-                    continue
-                endpoints.append(
-                    ApiEndpoint(
-                        method="POST",
-                        path=f"/api/v1/{self._slug(workflow.name)}",
-                        purpose=f"{workflow.description} (owning context: {context}).",
-                        auth_required=auth_required,
-                        request_example={},
-                        response_example={},
-                        requirement_ids=self._requirement_ids(requirements, workflow.description),
-                    )
-                )
-            groups.append(
-                ApiGroup(
-                    name=context,
-                    description=f"{context} bounded context: {', '.join(to_display_name(m) for m in members)}.",
-                    endpoints=endpoints,
-                )
-            )
-        return groups
-
-    def _slug(self, value: str) -> str:
-        slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-        return slug[:100] or "domain-operation"
+    @staticmethod
+    def _dedupe_endpoints(endpoints: list[ApiEndpoint]) -> list[ApiEndpoint]:
+        result: dict[tuple[str, str], ApiEndpoint] = {}
+        for endpoint in endpoints:
+            result[(endpoint.method.upper(), endpoint.path.casefold())] = endpoint
+        return list(result.values())

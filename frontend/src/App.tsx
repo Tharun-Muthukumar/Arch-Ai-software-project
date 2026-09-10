@@ -11,7 +11,6 @@ import { DocsPage } from './pages/DocsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TeamFitPage } from './pages/TeamFitPage'
 import { IndustryTwinsPage } from './pages/IndustryTwinsPage'
-import { BudgetPage } from './pages/BudgetPage'
 import { CausalGraphPage } from './pages/CausalGraphPage'
 import { AuthPage } from './pages/AuthPage'
 import { HistoryPage } from './pages/HistoryPage'
@@ -35,7 +34,6 @@ function App() {
           <Route path="/blast-radius" element={<BlastRadiusPage />} />
           <Route path="/team-fit" element={<TeamFitPage />} />
           <Route path="/industry-twins" element={<IndustryTwinsPage />} />
-          <Route path="/budget" element={<BudgetPage />} />
           <Route path="/diagrams" element={<DiagramsPage />} />
           <Route path="/docs" element={<DocsPage />} />
           <Route path="/history" element={<HistoryPage />} />

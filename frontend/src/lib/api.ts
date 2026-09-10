@@ -1,7 +1,7 @@
 import type { Workspace, WorkspaceCreatePayload, ReweightRequest, ExportAdrsRequest, BlastRadiusRequest, CausalGraph, CausalGraphTrace, WorkspaceEditPreview, WorkspaceEditRequest, WorkspaceMutationResponse } from '../types/api'
 import type { ArchitectureScorecard, BlastRadiusResult } from '../types/api'
 import type { ResilienceRecommendationsRequest, ApplyMitigationsRequest, ResilienceRecommendation } from '../types/api'
-import type { BudgetCompareRequest, BudgetEstimate, BudgetEstimateRequest, ConwayFitRequest, ConwayFitResult, TwinMatch, TwinMatchRequest } from '../types/api'
+import type { ConwayFitRequest, ConwayFitResult, TwinMatch, TwinMatchRequest } from '../types/api'
 import type { HealthStatus } from '../types/client'
 import type { CounterfactualSimulationRequest, CounterfactualSimulationResult } from '../types/api'
 import type {
@@ -106,8 +106,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export function listWorkspaces() {
-  return request<Workspace[]>('/workspaces')
+export function listWorkspaces(activeWorkspaceId?: string | null) {
+  const query = activeWorkspaceId
+    ? `?active_workspace_id=${encodeURIComponent(activeWorkspaceId)}`
+    : ''
+  return request<Workspace[]>(`/workspaces${query}`)
 }
 
 export function getHealth() {
@@ -119,6 +122,86 @@ export function createWorkspace(payload: WorkspaceCreatePayload) {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export interface GenerationProgress {
+  section: string
+  status: 'complete'
+  item_count: number
+  preview?: string[]
+}
+
+interface WorkspaceStreamComplete {
+  workspace: Workspace
+  metrics?: {
+    generation_time_ms: number
+    llm_calls: number
+    cache_hits: number
+  }
+}
+
+export async function createWorkspaceStreaming(
+  payload: WorkspaceCreatePayload,
+  onProgress: (progress: GenerationProgress) => void,
+) {
+  let response: Response
+  try {
+    response = await fetch(`${getApiBaseUrl()}/workspaces/stream`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch {
+    throw new Error(
+      `Could not reach the ArchAI API at ${getApiBaseUrl()}. Start the backend and make sure this frontend origin is allowed.`,
+    )
+  }
+
+  if (!response.ok) {
+    const responseText = await response.text()
+    throw new ApiError(responseText || `Request failed with status ${response.status}`, response.status)
+  }
+  if (!response.body) {
+    throw new Error('The server did not provide a generation stream.')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completedWorkspace: Workspace | null = null
+
+  const processBlock = (block: string) => {
+    const lines = block.split(/\r?\n/)
+    const eventName = lines.find((line) => line.startsWith('event:'))?.slice(6).trim()
+    const data = lines
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n')
+    if (!eventName || !data) return
+    const parsed = JSON.parse(data) as GenerationProgress | WorkspaceStreamComplete | { message: string }
+    if (eventName === 'progress') {
+      onProgress(parsed as GenerationProgress)
+    } else if (eventName === 'complete') {
+      completedWorkspace = (parsed as WorkspaceStreamComplete).workspace
+    } else if (eventName === 'error') {
+      throw new Error((parsed as { message: string }).message)
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const blocks = buffer.split(/\r?\n\r?\n/)
+    buffer = blocks.pop() ?? ''
+    blocks.forEach(processBlock)
+    if (done) break
+  }
+  if (buffer.trim()) processBlock(buffer)
+  if (!completedWorkspace) {
+    throw new Error('Generation ended before the workspace was completed.')
+  }
+  return completedWorkspace as Workspace
 }
 
 export function answerClarifications(
@@ -348,20 +431,6 @@ export function checkConwayFit(payload: ConwayFitRequest) {
 
 export function fetchTwinMatches(payload: TwinMatchRequest) {
   return request<TwinMatch[]>('/twin-match', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function fetchBudgetEstimate(payload: BudgetEstimateRequest) {
-  return request<BudgetEstimate>('/budget-estimate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function fetchBudgetComparison(payload: BudgetCompareRequest) {
-  return request<Record<string, BudgetEstimate>>('/budget-compare', {
     method: 'POST',
     body: JSON.stringify(payload),
   })

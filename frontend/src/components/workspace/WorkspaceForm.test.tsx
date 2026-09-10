@@ -16,7 +16,7 @@ describe('WorkspaceForm', () => {
       target: { value: 'Build a learning platform for 50,000 users.' },
     })
     fireEvent.change(screen.getByLabelText(/constraints/i), {
-      target: { value: 'SSO, PostgreSQL' },
+      target: { value: 'SSO; PostgreSQL' },
     })
     fireEvent.change(screen.getByLabelText(/team size/i), {
       target: { value: '6' },
@@ -28,7 +28,6 @@ describe('WorkspaceForm', () => {
     expect(handleSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'ArchAI Demo',
-        budget: undefined,
         preferred_cloud: undefined,
         constraints: ['SSO', 'PostgreSQL'],
         team_size: 6,

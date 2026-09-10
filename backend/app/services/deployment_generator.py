@@ -9,6 +9,8 @@ Design rationale:
   of inventing values.
 """
 
+import re
+
 from app.schemas.domain import DeploymentPlan, RecommendationResult, RequirementModel
 from app.services.domain_inference import (
     audit_evidence,
@@ -44,11 +46,13 @@ class DeploymentGenerator:
 
         constraints = requirements.constraints
         non_functional = requirements.non_functional_requirements
-        sla = parse_availability_percent(answers.get("sla"), *non_functional, *constraints)
+        sla = requirements.project_profile.availability_target_percent or parse_availability_percent(
+            answers.get("sla"), *non_functional, *constraints
+        )
         region_count = parse_region_count(
             answers.get("geographic_regions", ""), *non_functional, *constraints
         )
-        multi_region = bool(region_count and region_count > 1) or has_global_markers(
+        multi_region = requirements.project_profile.geographic_scope == "global/multi-region" or bool(region_count and region_count > 1) or has_global_markers(
             *non_functional, *constraints
         )
         high_scale = requirements.scale_profile == "high-scale"
@@ -63,14 +67,18 @@ class DeploymentGenerator:
             + non_functional
             + requirements.data_characteristics
         ).lower()
-        needs_cache = high_scale or any(
+        needs_cache = any(
             marker in data_text
-            for marker in ("cach", "session", "queue", "rate limit", "leaderboard")
+            for marker in ("cach", "read-heavy", "hot key", "rate limit", "leaderboard")
         )
         needs_files = any(
             marker in data_text
             for marker in ("file", "media", "image", "video", "document", "upload", "export")
         )
+        retention_requirements = [
+            item.value for item in requirements.technical_characteristics
+            if item.category == "retention" and item.status == "confirmed"
+        ]
 
         serverless_arch = arch_id in {"serverless-platform", "hybrid-modular-serverless", "hybrid-event-serverless"}
         event_arch = arch_id in {
@@ -80,6 +88,11 @@ class DeploymentGenerator:
             "modular-monolith", "service-based", "event-driven-microservices",
             "hybrid-modular-serverless", "hybrid-event-serverless",
         }
+        orchestrated_containers = container_arch and (
+            high_scale
+            or multi_region
+            or arch_id in {"event-driven-microservices", "hybrid-event-serverless"}
+        )
 
         # Replicas: 3 when the brief demands zone-level redundancy.
         if (sla is not None and sla >= 99.99) or high_scale or multi_region:
@@ -90,17 +103,30 @@ class DeploymentGenerator:
         # Regions as deployment roles (never invented place names).
         if region_count and region_count > 1:
             regions = ["Primary region", "Secondary region (failover)"]
-            if region_count > 6:
-                regions.append(f"Federated footprint across {region_count} markets")
-            else:
-                regions.extend(
-                    f"Additional region {index}"
-                    for index in range(3, min(region_count, 6) + 1)
-                )
+            regions.extend(
+                f"Additional region {index}"
+                for index in range(3, region_count + 1)
+            )
+            effective_region_count = region_count
         elif multi_region:
             regions = ["Primary region", "Secondary region (failover)"]
+            effective_region_count = 2
         else:
             regions = ["Single primary region"]
+            effective_region_count = 1
+
+        failover_answer = " ".join([
+            answers.get("failover", ""),
+            *requirements.non_functional_requirements,
+            *requirements.constraints,
+        ])
+        lower_failover = failover_answer.casefold()
+        if "active-active" in lower_failover:
+            failover_mode = "active-active multi-region"
+        elif multi_region:
+            failover_mode = "active-passive regional failover"
+        else:
+            failover_mode = "zonal redundancy"
 
         if sla is not None and sla >= 99.99:
             deployment_strategy = (
@@ -115,11 +141,20 @@ class DeploymentGenerator:
         else:
             deployment_strategy = "Rolling deployments with health checks and smoke tests."
 
+        rto = self._extract_recovery_target(failover_answer, "rto")
+        rpo = self._extract_recovery_target(failover_answer, "rpo")
+        qualitative_availability = " ".join((answers.get("sla") or "").split()).strip()
         if sla is not None:
             availability_configuration = (
                 f"{sla}% availability target ({_downtime_budget(sla)}): "
-                "multi-AZ placement, automated failover, and tested disaster "
-                "recovery with defined RTO/RPO."
+                f"{failover_mode}, automated failover, and tested disaster "
+                f"recovery{f' (RTO {rto}, RPO {rpo})' if rto or rpo else ''}."
+            )
+        elif qualitative_availability and qualitative_availability.casefold() not in {"unknown", "not specified", "no preference"}:
+            availability_configuration = (
+                f'User-stated availability expectation: "{qualitative_availability}". '
+                "Use zonal redundancy and tested recovery, but confirm a measurable SLA/RTO/RPO "
+                "before adding regions or claiming an uptime percentage."
             )
         else:
             availability_configuration = (
@@ -138,8 +173,9 @@ class DeploymentGenerator:
         _add_stack("PostgreSQL", "relational system of record for transactional domain state")
         if container_arch:
             _add_stack("Docker", "reproducible packaging for the containerized services")
+        if orchestrated_containers:
             _add_stack("Kubernetes-ready manifests", "orchestration, self-healing, and horizontal scaling")
-            _add_stack("NGINX", "edge routing and TLS termination for containerized services")
+            _add_stack("Managed load balancer or ingress", "health-checked routing and TLS termination across replicas")
         if event_arch or realtime:
             _add_stack(
                 "Kafka or managed event bus",
@@ -149,13 +185,23 @@ class DeploymentGenerator:
             _add_stack("Redis", "caching and queue backing for hot paths and background work")
         if needs_files:
             _add_stack("Object storage", "durable storage for files, media, and exports")
+        if retention_requirements:
+            _add_stack(
+                "Archive storage tier",
+                "confirmed retention policy requires lifecycle-managed immutable archives",
+            )
         if serverless_arch:
             _add_stack("Managed functions", "elastic compute for the serverless handlers in the recommended hybrid")
             _add_stack("Managed API gateway", "metered HTTPS front door for function endpoints")
 
-        docker_services = ["frontend", "postgres"]
+        docker_services = ["postgres"]
         if container_arch:
             docker_services.append("backend")
+        # Only include a client/frontend container when the brief evidences a
+        # user-facing web or mobile surface; never assume one by default.
+        client_markers = ("web ", "web app", "frontend", " ui", "user interface", "mobile", "portal", "dashboard")
+        if any(marker in data_text for marker in client_markers):
+            docker_services.insert(0, "frontend")
         if event_arch or realtime:
             docker_services.append("kafka")
         if needs_cache:
@@ -165,11 +211,13 @@ class DeploymentGenerator:
         if needs_files:
             docker_services.append("object storage binding")
 
-        if arch_id == "event-driven-microservices":
+        if not orchestrated_containers and not serverless_arch:
+            kubernetes_modules = []
+        elif arch_id == "event-driven-microservices":
             kubernetes_modules = [
                 "Ingress controller",
                 "Backend deployment with HPA",
-                "Worker deployment for long-running exports",
+                "Background worker deployment for async domain jobs",
                 "PostgreSQL or managed database binding",
                 "Secrets and config maps",
                 "Kafka or managed event bus",
@@ -178,7 +226,7 @@ class DeploymentGenerator:
             kubernetes_modules = [
                 "Ingress controller",
                 "Backend deployment with HPA",
-                "Worker deployment for long-running exports",
+                "Background worker deployment for async domain jobs",
                 "PostgreSQL or managed database binding",
                 "Secrets and config maps",
                 "Service deployments with per-service scaling policies",
@@ -208,14 +256,14 @@ class DeploymentGenerator:
             kubernetes_modules = [
                 "Ingress controller",
                 "Backend deployment with HPA",
-                "Worker deployment for long-running exports",
+                "Background worker deployment for async domain jobs",
                 "PostgreSQL or managed database binding",
                 "Secrets and config maps",
             ]
 
         scaling_strategy = [
             "Scale read-heavy APIs horizontally based on CPU and request concurrency.",
-            "Offload long-running generation tasks to background workers or managed workflows.",
+            "Offload asynchronous domain work to background workers or managed workflows.",
         ]
         if high_scale:
             scaling_strategy.append(
@@ -236,18 +284,42 @@ class DeploymentGenerator:
             "Enforce TLS termination, CORS policy, and content security controls.",
             "Apply database backups, retention, and audit-log protection policies.",
         ]
-        if auth_evidence(
+        if retention_requirements:
+            security_controls.append(
+                "Apply the confirmed retention policy to backups, audit records, and lifecycle-managed archives: "
+                + "; ".join(retention_requirements) + "."
+            )
+        if requirements.security_model.human_authentication or requirements.security_model.authorization or auth_evidence(
             *requirements.functional_requirements, *non_functional, *constraints
         ):
             security_controls.append(
-                "Enforce the stated enterprise identity controls (SSO/MFA/RBAC) at every service boundary."
+                "Enforce human identity and authorization controls at every service boundary: "
+                + ", ".join(dict.fromkeys([
+                    *requirements.security_model.human_authentication,
+                    *requirements.security_model.authorization,
+                ])) + "."
+            )
+        if requirements.security_model.service_authentication:
+            security_controls.append(
+                "Require service-to-service controls: "
+                + ", ".join(requirements.security_model.service_authentication) + "."
+            )
+        if requirements.security_model.partner_authentication:
+            security_controls.append(
+                "Require partner integration controls: "
+                + ", ".join(requirements.security_model.partner_authentication) + "."
+            )
+        if requirements.security_model.data_protection:
+            security_controls.append(
+                "Enforce data-protection controls: "
+                + ", ".join(requirements.security_model.data_protection) + "."
             )
 
         observability = [
             "Structured logs with correlation IDs",
             "Prometheus-compatible metrics",
-            "Tracing for long-running artifact generation flows",
-            "Error alerting for failed exports and regeneration tasks",
+            "Distributed tracing for request and event flows",
+            "Error alerting for failed jobs and degraded dependencies",
         ]
         if audit_evidence(*non_functional, *constraints):
             observability.append(
@@ -264,8 +336,8 @@ class DeploymentGenerator:
             docker_services=docker_services,
             kubernetes_modules=kubernetes_modules,
             cicd_pipeline=[
-                "Run backend tests and frontend tests on pull requests.",
-                "Build versioned Docker images and execute production frontend build.",
+                "Run automated tests and static checks on pull requests.",
+                "Build versioned container images with pinned dependencies.",
                 "Promote artifacts through staging to production with health checks and smoke tests.",
             ],
             observability=observability,
@@ -277,4 +349,16 @@ class DeploymentGenerator:
                 else "Hosting model is unknown; select it after residency, connectivity, availability, and operations constraints are clarified."
             ),
             stack_rationale=stack_rationale,
+            replicas_per_region=replicas,
+            total_baseline_replicas=replicas * effective_region_count,
+            availability_target_percent=sla,
+            failover_mode=failover_mode,
+            rto=rto,
+            rpo=rpo,
+            source_evidence=requirements.project_profile.source_evidence,
         )
+
+    @staticmethod
+    def _extract_recovery_target(value: str, key: str) -> str | None:
+        match = re.search(rf"\b{key}\s*[:=]?\s*([^,;.!]+)", value or "", re.I)
+        return match.group(1).strip() if match else None

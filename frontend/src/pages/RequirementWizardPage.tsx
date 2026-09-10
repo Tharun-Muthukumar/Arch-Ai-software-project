@@ -157,7 +157,7 @@ export function RequirementWizardPage() {
           {requirements.actors.map((actor, index) => (
             <div key={`${actor.name}-${index}`} className="editor-row items-start">
               <div className="id-badge">ACT-{String(index + 1).padStart(3, '0')}</div>
-              <div className="min-w-0 flex-1"><strong>{actor.name}</strong><p>{actor.description}</p></div>
+              <div className="min-w-0 flex-1"><strong>{actor.name}</strong><p>{actor.description}</p><div className="tag-list"><span>{actor.actor_type ?? 'unknown'}</span>{actor.owning_boundary ? <span>{actor.owning_boundary}</span> : null}{actor.permissions?.map((permission) => <span key={permission}>{permission}</span>)}</div></div>
               <RowActions
                 onEdit={() => setActiveEdit(actorEdit('update', actor, index))}
                 onDelete={() => setActiveEdit(actorEdit('delete', actor, index))}
@@ -177,13 +177,36 @@ export function RequirementWizardPage() {
         <CompactStringEditor title="Technical & data characteristics" target="data_characteristic" prefix="TECH" values={requirements.data_characteristics} onOpen={openStringEdit} />
       </div>
 
+      {(requirements.integration_details?.length ?? 0) > 0 || (requirements.technical_characteristics?.length ?? 0) > 0 ? (
+        <section className="panel">
+          <div className="flex flex-wrap items-center gap-2"><h3 className="panel-title">Confirmed project signals</h3><span className="pill">Confirmed</span></div>
+          <p className="panel-description mt-1">Clarification answers are stored as structured facts and consumed by downstream contracts, deployment, and scoring.</p>
+          {(requirements.integration_details?.length ?? 0) > 0 ? <div className="mt-4"><h4 className="text-sm font-medium">Integrations</h4><div className="mt-2 flex flex-wrap gap-2">{requirements.integration_details?.map((integration) => <span key={integration.id} className="relationship-chip">{integration.name} · {integration.interaction_mode}{integration.protocol.length ? ` · ${integration.protocol.join('/')}` : ''}</span>)}</div></div> : null}
+          {(requirements.technical_characteristics?.length ?? 0) > 0 ? <div className="mt-4"><h4 className="text-sm font-medium">Technical and data facts</h4><div className="mt-2 flex flex-wrap gap-2">{requirements.technical_characteristics?.map((item) => <span key={item.id} className="relationship-chip">{item.category}: {item.value} · {item.status}</span>)}</div></div> : null}
+        </section>
+      ) : null}
+
+      {(requirements.bounded_contexts?.length ?? 0) > 0 ? (
+        <section className="panel">
+          <SectionHeader title="Bounded contexts" description="Capability boundaries that own business state, integrations, and API contracts." />
+          <div className="editor-list mt-4">
+            {requirements.bounded_contexts?.map((context) => (
+              <div key={context.id} className="editor-row items-start">
+                <div className="id-badge">{context.id}</div>
+                <div className="min-w-0 flex-1"><strong>{context.name}</strong><p>{context.responsibilities[0]}</p><div className="tag-list">{context.owned_entities.map((entity) => <span key={entity}>{entity}</span>)}{context.integrations.map((integration) => <span key={integration}>{integration}</span>)}</div></div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="panel">
         <SectionHeader title="Domain entities" description="Core concepts that anchor API, database, and diagram generation." onAdd={() => setActiveEdit(entityEdit('add'))} />
         <div className="editor-list mt-4">
           {requirements.domain_entities.map((entity, index) => (
             <div key={`${entity.name}-${index}`} className="editor-row items-start">
               <div className="id-badge">ENT-{String(index + 1).padStart(3, '0')}</div>
-              <div className="min-w-0 flex-1"><strong>{entity.name}</strong><p>{entity.description}</p>{entity.attributes.length > 0 ? <div className="tag-list">{entity.attributes.map((attribute) => <span key={attribute}>{attribute}</span>)}</div> : null}</div>
+              <div className="min-w-0 flex-1"><strong>{entity.name}</strong><p>{entity.description}</p><div className="tag-list">{entity.bounded_context ? <span>Owner: {entity.bounded_context}</span> : null}{entity.attributes.map((attribute) => <span key={attribute}>{attribute}</span>)}{entity.lifecycle_fields?.map((field) => <span key={field}>{field}</span>)}</div></div>
               <RowActions onEdit={() => setActiveEdit(entityEdit('update', entity, index))} onDelete={() => setActiveEdit(entityEdit('delete', entity, index))} />
             </div>
           ))}
@@ -268,11 +291,11 @@ function CompactStringEditor({ title, target, prefix, values, onOpen }: {
   )
 }
 
-function SectionHeader({ title, description, onAdd }: { title: string; description: string; onAdd: () => void }) {
+function SectionHeader({ title, description, onAdd }: { title: string; description: string; onAdd?: () => void }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h3 className="panel-title">{title}</h3><p className="panel-description">{description}</p></div>
-      <button type="button" className="button-secondary gap-2 px-3 py-2" onClick={onAdd}><Plus className="h-4 w-4" />Add</button>
+      {onAdd ? <button type="button" className="button-secondary gap-2 px-3 py-2" onClick={onAdd}><Plus className="h-4 w-4" />Add</button> : null}
     </div>
   )
 }
@@ -331,5 +354,5 @@ function entityEdit(operation: 'add' | 'update' | 'delete', entity = { name: '',
 }
 
 function WorkspaceSkeleton() {
-  return <div className="workspace-page"><div className="skeleton h-24" /><div className="metric-strip"><div className="skeleton h-14" /><div className="skeleton h-14" /><div className="skeleton h-14" /></div><div className="editor-grid"><div className="skeleton h-96" /><div className="skeleton h-96" /></div></div>
+  return <div className="workspace-page"><div className="skeleton h-24" /><div className="metric-strip"><div className="skeleton h-14" /><div className="skeleton h-14" /><div className="skeleton h-14" /><div className="skeleton h-14" /><div className="skeleton h-14" /></div><div className="editor-grid"><div className="skeleton h-96" /><div className="skeleton h-96" /></div></div>
 }

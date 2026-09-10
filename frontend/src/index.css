@@ -163,7 +163,7 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
   .mobile-nav { @apply flex h-full w-[min(300px,88vw)] flex-col border-r; background: #101419; border-color: var(--card-border); }
   .error-strip { @apply border-b px-5 py-2 text-xs; border-color: #6b292d; background: var(--danger-soft); color: #ffb0b0; }
   .app-frame > div { min-width: 0; max-width: 100%; }
-  .app-main { @apply mx-auto w-full max-w-[1680px] p-4 sm:p-5 xl:p-6; min-width: 0; }
+  .app-main { @apply mx-auto w-full max-w-[1680px] p-4 sm:p-5 xl:p-6; min-width: 0; min-height: calc(100vh - 72px); }
 
   .workspace-page { @apply max-w-full space-y-4; min-width: 0; }
   .page-heading { @apply flex flex-col gap-4 py-2 md:flex-row md:items-end md:justify-between; }
@@ -228,7 +228,8 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
   .danger-hover:hover { background: var(--danger-soft); border-color: #743438; color: #ff9d9d; }
 
   .metric-strip {
-    @apply grid overflow-hidden rounded-lg border sm:grid-cols-2 lg:grid-cols-5;
+    @apply grid overflow-hidden rounded-lg border;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     border-color: var(--card-border);
     background: var(--surface);
   }
@@ -258,7 +259,7 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
   .row-actions { @apply flex shrink-0 items-center gap-0.5; }
   .row-actions .icon-button { @apply h-8 w-8; }
   .empty-row { @apply rounded-md border border-dashed px-3 py-5 text-center text-xs text-muted; border-color: var(--card-border); }
-  .empty-feature-state { @apply flex min-h-56 flex-col items-center justify-center gap-3 rounded-lg border border-dashed p-6 text-center; border-color: var(--card-border); background: var(--surface); }
+  .empty-feature-state { @apply flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-dashed p-6 text-center; border-color: var(--card-border); background: var(--surface); }
   .empty-feature-state > svg { color: var(--accent); }
   .empty-feature-state h3 { @apply text-sm font-semibold; }
   .empty-feature-state p { @apply mt-1 max-w-lg text-xs leading-5 text-muted; }
@@ -332,7 +333,7 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
   .deployment-facts strong { @apply mt-1 truncate text-sm; }
   .diagram-note { @apply flex items-center gap-2 rounded-md border px-3 py-2 text-xs; background: var(--brand-soft); border-color: #654415; color: #f4cf8d; }
   .diagram-viewport {
-    @apply flex min-h-[420px] items-center justify-center overflow-hidden rounded-lg border;
+    @apply flex min-h-[300px] items-center justify-center overflow-hidden rounded-lg border;
     border-color: var(--card-border);
     background-color: var(--surface-strong);
     background-image: radial-gradient(circle, rgba(133, 148, 161, 0.18) 1px, transparent 1px);

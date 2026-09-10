@@ -25,8 +25,17 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <form className="panel" onSubmit={saveSettings}>
+    <div className="mx-auto max-w-4xl space-y-4">
+      <header className="page-heading">
+        <div>
+          <span className="eyebrow">System Configuration</span>
+          <h2>Settings & Health</h2>
+          <p>Configure backend API endpoints and monitor Ollama runtime status.</p>
+        </div>
+      </header>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <form className="panel" onSubmit={saveSettings}>
         <h2 className="text-lg font-semibold">API Settings</h2>
         <label className="mt-4 block space-y-1">
           <span className="text-sm font-medium">Backend API base URL</span>
@@ -74,5 +83,6 @@ export function SettingsPage() {
         )}
       </div>
     </div>
+  </div>
   )
 }

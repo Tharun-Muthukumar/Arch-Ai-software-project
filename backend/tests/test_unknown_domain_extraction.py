@@ -69,6 +69,52 @@ def test_unknown_domain_sends_raw_requirement_before_fallback(monkeypatch):
     assert result.analysis_warnings
 
 
+def test_unknown_model_cannot_promote_business_narrative_to_scope(monkeypatch):
+    analyzer = RequirementAnalyzer()
+    monkeypatch.setattr(
+        analyzer.ai_client,
+        "generate",
+        lambda *args, **kwargs: {
+            "domain": "Laboratory Chain of Custody",
+            "summary": "Technicians register samples for reviewer approval.",
+            "functional_requirements": [
+                "Technicians register samples.",
+                "Reviewers approve test results.",
+                "Leadership coordinates regional teams using spreadsheets.",
+            ],
+            "non_functional_requirements": [
+                "The system must remain available 99.95% of the time."
+            ],
+            "actors": ["Technicians", "Reviewers", "Leadership"],
+            "domain_entities": ["Samples", "Test Results", "Spreadsheets"],
+            "domain_workflows": ["Register Samples", "Approve Test Results"],
+            "integrations": [],
+            "data_characteristics": [],
+            "explicit_constraints": [],
+            "assumptions": [],
+            "open_questions": [],
+        },
+    )
+
+    requirements = analyzer.analyze(
+        "Laboratory Chain of Custody",
+        (
+            "Technicians register samples and reviewers approve test results. "
+            "The system must remain available 99.95% of the time."
+        ),
+        (
+            "Leadership coordinates regional teams using spreadsheets and wants "
+            "lower costs and rapid growth."
+        ),
+    )
+
+    assert not any("leadership" in item.casefold() for item in requirements.functional_requirements)
+    assert not any(actor.name.casefold() == "leadership" for actor in requirements.actors)
+    assert not any(entity.name.casefold() == "spreadsheets" for entity in requirements.domain_entities)
+    assert any("99.95%" in item for item in requirements.non_functional_requirements)
+    assert not any("99.95%" in item for item in requirements.constraints)
+
+
 def test_unknown_domain_uses_honest_fallback_when_ollama_fails(monkeypatch):
     analyzer = RequirementAnalyzer()
     monkeypatch.setattr(analyzer.ai_client, "generate", lambda *args, **kwargs: None)
@@ -144,7 +190,7 @@ def test_clarification_answers_update_existing_requirements_without_reanalysis()
     )
 
     assert "Use SSO/SAML for user authentication." in updated.functional_requirements
-    assert updated.scale_profile == "startup-scale"
+    assert updated.scale_profile == "small-scale"
     assert any(
         "Reviewers may approve or reject a record" in item
         for item in updated.constraints
@@ -189,7 +235,7 @@ def test_unknown_extraction_preserves_details_without_keyword_filler(monkeypatch
             "Do not assume a cloud provider, users, latency, availability, or retention."
         ),
         business_context="Support careful review without hiding unresolved decisions.",
-        answers={"budget": "unknown", "preferred_cloud": "No preference"},
+        answers={"preferred_cloud": "No preference"},
     )
 
     assert result.analysis_source == "ollama-pretrained"
@@ -210,7 +256,6 @@ def test_unknown_extraction_preserves_details_without_keyword_filler(monkeypatch
         for item in result.non_functional_requirements
     )
     assert not any("unresolved decisions" in item.lower() for item in result.constraints)
-    assert not any("budget posture" in item.lower() for item in result.constraints)
 
 
 def test_explicit_quality_clauses_replace_redundant_model_paraphrases():

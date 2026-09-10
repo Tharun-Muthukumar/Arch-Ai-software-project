@@ -7,7 +7,6 @@ import {
   CircleUserRound,
   ClipboardList,
   CloudCog,
-  DollarSign,
   GitBranch,
   History,
   LayoutDashboard,
@@ -53,7 +52,6 @@ const navGroups = [
       { to: '/blast-radius', label: 'Blast radius', icon: Zap },
       { to: '/team-fit', label: 'Team fit', icon: Users },
       { to: '/industry-twins', label: 'Industry precedents', icon: CloudCog },
-      { to: '/budget', label: 'Budget', icon: DollarSign },
     ],
   },
   {

@@ -8,7 +8,6 @@ def test_workspace_pipeline_and_change_request(client, monkeypatch):
             "title": "PharmaScale",
             "description": "Build an online pharmacy for 500,000 users with prescription verification and secure checkout.",
             "business_context": "The platform needs rapid go-live and clear compliance controls.",
-            "budget": "medium",
             "preferred_cloud": "AWS",
         },
     )

@@ -26,15 +26,27 @@ export function ComparisonPage() {
   const [timelineEntries, setTimelineEntries] = useState<TimelineEntry[]>([])
   const [activeTimelineIndex, setActiveTimelineIndex] = useState(0)
   const lastAdrIdRef = useRef<string | null>(null)
+  const workspaceIdRef = useRef<string | null>(null)
 
   // Accumulate ADR entries as the workspace updates
   useEffect(() => {
-    if (!workspace?.adr) return
+    if (!workspace) return
+    if (workspace.id !== workspaceIdRef.current) {
+      workspaceIdRef.current = workspace.id
+      lastAdrIdRef.current = workspace.adr?.id ?? null
+      setTimelineEntries(workspace.adr ? [{ adr: workspace.adr, snapshot: workspace }] : [])
+      setActiveTimelineIndex(0)
+      return
+    }
+    if (!workspace.adr) return
     if (workspace.adr.id === lastAdrIdRef.current) return
     lastAdrIdRef.current = workspace.adr.id
-    setTimelineEntries((prev) => [...prev, { adr: workspace.adr!, snapshot: workspace }])
-    setActiveTimelineIndex(timelineEntries.length)
-  }, [workspace, timelineEntries.length])
+    setTimelineEntries((previous) => {
+      const next = [...previous, { adr: workspace.adr!, snapshot: workspace }]
+      setActiveTimelineIndex(next.length - 1)
+      return next
+    })
+  }, [workspace])
 
   const activeSnapshot = useMemo(() => {
     if (timelineEntries.length === 0) return workspace
@@ -97,6 +109,7 @@ export function ComparisonPage() {
       <ComparisonTable comparison={comparison} />
 
       <WhatIfPlayground
+        workspaceId={workspace.id}
         comparison={comparison}
         onRankingChange={handleRankingChange}
       />
