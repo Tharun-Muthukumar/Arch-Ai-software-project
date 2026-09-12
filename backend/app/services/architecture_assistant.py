@@ -409,8 +409,9 @@ class ArchitectureAssistantService:
                 "architecture-risk-analysis",
                 input_data,
                 response_schema=_ArchitectureRiskAIResult.model_json_schema(),
-                num_predict=360,
+                num_predict=900,
                 num_ctx=3072,
+                minimum_timeout_seconds=90,
             )
         ai_overview = (
             "Fast structured checks completed. Run the deeper AI review for broader analysis."

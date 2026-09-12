@@ -750,9 +750,9 @@ class RequirementAnalyzer:
                 "actor-semantic-generation",
                 compact_context,
                 response_schema=SemanticActorExtraction.model_json_schema(),
-                num_predict=450,
-                num_ctx=2048,
-                minimum_timeout_seconds=30,
+                num_predict=900,
+                num_ctx=3072,
+                minimum_timeout_seconds=90,
             )
             if raw and isinstance(raw, dict):
                 raw_actors = raw.get("actors", [])
