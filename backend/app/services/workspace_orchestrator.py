@@ -8,8 +8,12 @@ from app.models.workspace import Workspace
 from app.repositories.workspace_repository import WorkspaceRepository
 from app.schemas.domain import (
     ApiDesign,
+    ArchitectureChangeProposal,
+    ArchitectureChatRequest,
+    ArchitectureChatResponse,
     ArchitectureDecisionRecord,
     ArchitectureOption,
+    ArchitectureRiskAnalysis,
     CausalGraph,
     CausalGraphTrace,
     ClarificationPlan,
@@ -43,6 +47,7 @@ from app.services.impact_analyzer import ImpactAnalyzer
 from app.services.recommendation_engine import RecommendationEngine
 from app.services.requirement_analyzer import RequirementAnalyzer
 from app.services.workspace_editor import WorkspaceEditService
+from app.services.architecture_assistant import ArchitectureAssistantService
 from app.services.project_signals import clarification_category, hydrate_project_signals
 from app.services.generation_runtime import (
     GENERATION_TELEMETRY,
@@ -69,6 +74,7 @@ class WorkspaceOrchestrator:
         self.documentation_generator = DocumentationGenerator()
         self.impact_analyzer = ImpactAnalyzer()
         self.workspace_editor = WorkspaceEditService()
+        self.architecture_assistant = ArchitectureAssistantService()
 
     def list_workspaces(
         self, active_workspace_id: str | None = None
@@ -97,6 +103,148 @@ class WorkspaceOrchestrator:
             return None
         workspace = self._upgrade_legacy_workspace(workspace)
         return self._to_response(workspace)
+
+    def architecture_chat(
+        self, workspace_id: str, request: ArchitectureChatRequest
+    ) -> ArchitectureChatResponse | None:
+        workspace = self.get_workspace(workspace_id)
+        if workspace is None:
+            return None
+        return self.architecture_assistant.chat(workspace, request)
+
+    def analyze_architecture_risks(
+        self,
+        workspace_id: str,
+        architecture_id: str | None = None,
+        *,
+        include_ai: bool = False,
+    ) -> ArchitectureRiskAnalysis | None:
+        workspace = self.get_workspace(workspace_id)
+        if workspace is None:
+            return None
+        return self.architecture_assistant.analyze_risks(
+            workspace,
+            architecture_id,
+            include_ai=include_ai,
+        )
+
+    def apply_architecture_proposal(
+        self, workspace_id: str, proposal: ArchitectureChangeProposal
+    ) -> WorkspaceMutationResponse | None:
+        workspace = self.repository.get(workspace_id)
+        if workspace is None:
+            return None
+        self._check_expected_updated_at(workspace, proposal.base_updated_at)
+        current = self._to_response(workspace)
+        if not any(item.id == proposal.architecture_id for item in current.architectures):
+            raise ValueError("The proposal references an architecture that no longer exists.")
+
+        requirement_sections: list[str] = []
+        impact_items: list[WorkspaceImpactItem] = []
+        changed = False
+        for addition in proposal.requirement_additions:
+            collections = {
+                "functional_requirement": current.requirements.functional_requirements,
+                "non_functional_requirement": current.requirements.non_functional_requirements,
+                "constraint": current.requirements.constraints,
+                "assumption": current.requirements.assumptions,
+            }
+            collection = collections[addition.target_type]
+            if any(value.casefold() == addition.text.casefold() for value in collection):
+                continue
+            edit = WorkspaceEditRequest(
+                target_type=addition.target_type,
+                operation="add",
+                value=addition.text,
+            )
+            applied = self.workspace_editor.apply(current, edit)
+            current = applied.workspace
+            requirement_sections.extend(applied.regenerated_sections)
+            impact_items.extend(applied.impact.items)
+            changed = True
+
+        if not changed and not proposal.architecture_changes:
+            raise ValueError("This proposal no longer contains an applicable change.")
+
+        self._record_revision(workspace, proposal.summary)
+        regenerated_sections: list[str] = []
+        if changed:
+            self._copy_response_state(workspace, current)
+            workspace.requirements_json = hydrate_project_signals(
+                RequirementModel.model_validate(workspace.requirements_json),
+                workspace.answers_json or {},
+            ).model_dump()
+            requirement_regeneration = self._expand_regeneration_sections(
+                requirement_sections
+            )
+            self._regenerate_sections(workspace, requirement_regeneration)
+            regenerated_sections.extend(requirement_regeneration)
+            current = self._to_response(workspace)
+
+        if proposal.architecture_changes:
+            current = self.architecture_assistant.apply_patch(current, proposal)
+            self._copy_response_state(workspace, current)
+            architecture_regeneration = self._expand_regeneration_sections(
+                ["comparison", "recommendation", "deployment", "diagrams"]
+            )
+            self._regenerate_sections(workspace, architecture_regeneration)
+            regenerated_sections.extend(architecture_regeneration)
+            impact_items.extend(
+                [
+                    WorkspaceImpactItem(
+                        area="Architecture",
+                        level="major",
+                        summary="The selected architecture option is updated by the approved proposal.",
+                    ),
+                    WorkspaceImpactItem(
+                        area="Downstream artifacts",
+                        level="major",
+                        summary="Scoring, deployment, diagrams, causal links, and documentation are synchronized.",
+                    ),
+                ]
+            )
+        regenerated_sections = list(dict.fromkeys(regenerated_sections))
+
+        impact = WorkspaceEditImpact(
+            items=self._dedupe_impact_items(impact_items),
+            affected_artifacts=[
+                "architectures",
+                *regenerated_sections,
+                "causal_graph",
+                "documentation",
+            ],
+            requires_confirmation=False,
+        )
+        assessment = ImpactAssessment(
+            change_request=proposal.request,
+            impacted_modules=regenerated_sections,
+            reasoning=[item.summary for item in impact.items],
+            regenerated_sections=regenerated_sections,
+            affected_artifacts=impact.affected_artifacts,
+        )
+        workspace.impact_history_json = [
+            *(workspace.impact_history_json or []),
+            assessment.model_dump(),
+        ]
+        recommendation = RecommendationResult.model_validate(workspace.recommendation_json)
+        adrs = self._load_adrs(workspace)
+        adrs.append(
+            self._build_adr(
+                title=proposal.summary[:80],
+                context=proposal.request,
+                recommendation=recommendation,
+                changed_modules=regenerated_sections,
+            )
+        )
+        workspace.adrs_json = [item.model_dump() for item in adrs]
+        self._rebuild_graph_and_documentation(workspace)
+        response = self._to_response(self.repository.save(workspace))
+        return WorkspaceMutationResponse(
+            workspace=response,
+            impact=impact,
+            consistency_issues=response.consistency_issues,
+            message="Architecture proposal applied and dependent artifacts synchronized.",
+        )
 
     def create_workspace(
         self,
@@ -1000,14 +1148,33 @@ class WorkspaceOrchestrator:
     def _check_edit_version(
         self, workspace: Workspace, edit: WorkspaceEditRequest
     ) -> None:
-        if edit.expected_updated_at is None or workspace.updated_at is None:
+        self._check_expected_updated_at(workspace, edit.expected_updated_at)
+
+    @staticmethod
+    def _check_expected_updated_at(
+        workspace: Workspace, expected_updated_at: datetime | None
+    ) -> None:
+        if expected_updated_at is None or workspace.updated_at is None:
             return
-        requested = edit.expected_updated_at.replace(tzinfo=None)
+        requested = expected_updated_at.replace(tzinfo=None)
         stored = workspace.updated_at.replace(tzinfo=None)
         if abs((requested - stored).total_seconds()) > 0.001:
             raise ValueError(
                 "This workspace changed after you opened it. Refresh before applying the edit."
             )
+
+    @staticmethod
+    def _dedupe_impact_items(
+        items: list[WorkspaceImpactItem],
+    ) -> list[WorkspaceImpactItem]:
+        output: list[WorkspaceImpactItem] = []
+        seen: set[tuple[str, str]] = set()
+        for item in items:
+            key = (item.area.casefold(), item.summary.casefold())
+            if key not in seen:
+                output.append(item)
+                seen.add(key)
+        return output
 
     def _record_revision(self, workspace: Workspace, description: str) -> None:
         history = copy.deepcopy(workspace.edit_history_json or {})

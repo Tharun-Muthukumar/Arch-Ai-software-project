@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Redo2,
+  ShieldAlert,
   Settings,
   Sparkles,
   Undo2,
@@ -23,10 +24,11 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { useState, type FocusEvent, type MouseEvent } from 'react'
+import { useEffect, useState, type FocusEvent, type MouseEvent } from 'react'
 import { useIsMutating } from '@tanstack/react-query'
 import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../../context/auth'
+import { ArchitectureChatPanel } from '../workspace/ArchitectureChatPanel'
 import { useWorkspaceEditing } from '../../hooks/useWorkspaceEditing'
 import { useWorkspacesQuery } from '../../hooks/useWorkspaces'
 import { WORKSPACE_WRITE_KEY } from '../../lib/workspaceSync'
@@ -49,6 +51,7 @@ const navGroups = [
     label: 'Evaluate',
     items: [
       { to: '/comparison', label: 'Comparison', icon: BarChart3 },
+      { to: '/risk-detector', label: 'Risk Detector', icon: ShieldAlert },
       { to: '/blast-radius', label: 'Blast radius', icon: Zap },
       { to: '/team-fit', label: 'Team fit', icon: Users },
       { to: '/industry-twins', label: 'Industry precedents', icon: CloudCog },
@@ -128,14 +131,29 @@ export function AppShell() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const workspaces = useWorkspacesQuery()
   const workspace = getActiveWorkspace(workspaces.data, searchParams.get('workspace'))
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState<string | null>(null)
+  const [assistantOpen, setAssistantOpen] = useState(
+    searchParams.get('chat') === 'open' || Boolean(searchParams.get('message')),
+  )
   const pageTitle = allNavItems.find((item) => item.to === location.pathname)?.label ?? 'Overview'
+  const requestedArchitecture = searchParams.get('architecture')
+  const assistantArchitecture = workspace?.architectures.find(
+    (item) => item.id === requestedArchitecture,
+  ) ?? workspace?.architectures.find(
+    (item) => item.id === workspace.recommendation.recommended_architecture_id,
+  ) ?? workspace?.architectures[0]
+
+  useEffect(() => {
+    if (searchParams.get('chat') === 'open' || searchParams.get('message')) {
+      setAssistantOpen(true)
+    }
+  }, [searchParams])
 
   async function handleLogout() {
     if (isLoggingOut) return
@@ -155,6 +173,14 @@ export function AppShell() {
     const next = new URLSearchParams(searchParams)
     next.set('workspace', workspaceId)
     navigate(`${location.pathname}?${next.toString()}`)
+  }
+
+  function closeAssistant() {
+    setAssistantOpen(false)
+    const next = new URLSearchParams(searchParams)
+    next.delete('chat')
+    next.delete('message')
+    setSearchParams(next, { replace: true })
   }
 
   return (
@@ -223,6 +249,30 @@ export function AppShell() {
         {logoutError ? <div className="error-strip" role="alert">{logoutError}</div> : null}
         <main className="app-main"><Outlet /></main>
       </div>
+
+      {workspace && assistantArchitecture ? (
+        <>
+          {!assistantOpen ? (
+            <button
+              type="button"
+              className="ai-assistant-fab"
+              aria-label="Open AI Assistant"
+              title="AI Assistant"
+              onClick={() => setAssistantOpen(true)}
+            >
+              <Sparkles className="h-5 w-5" />
+            </button>
+          ) : null}
+          <ArchitectureChatPanel
+            key={workspace.id}
+            workspace={workspace}
+            architectureId={assistantArchitecture.id}
+            open={assistantOpen}
+            initialMessage={searchParams.get('message')}
+            onClose={closeAssistant}
+          />
+        </>
+      ) : null}
     </div>
   )
 }

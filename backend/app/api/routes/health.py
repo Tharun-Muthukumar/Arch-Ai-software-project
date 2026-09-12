@@ -11,6 +11,8 @@ def health_check() -> dict[str, str | bool]:
     settings = get_settings()
     ollama_reachable = False
     ollama_model_available = False
+    ollama_assistant_model_available = False
+    ollama_vision_model_available = False
 
     if settings.ollama_enabled:
         try:
@@ -26,6 +28,10 @@ def health_check() -> dict[str, str | bool]:
             }
             ollama_reachable = True
             ollama_model_available = settings.ollama_model in model_names
+            ollama_assistant_model_available = (
+                settings.ollama_assistant_model in model_names
+            )
+            ollama_vision_model_available = settings.ollama_vision_model in model_names
         except (httpx.HTTPError, ValueError, TypeError):
             pass
 
@@ -37,5 +43,9 @@ def health_check() -> dict[str, str | bool]:
         "ollama_reachable": ollama_reachable,
         "ollama_model": settings.ollama_model,
         "ollama_model_available": ollama_model_available,
+        "ollama_assistant_model": settings.ollama_assistant_model,
+        "ollama_assistant_model_available": ollama_assistant_model_available,
+        "ollama_vision_model": settings.ollama_vision_model,
+        "ollama_vision_model_available": ollama_vision_model_available,
     }
 

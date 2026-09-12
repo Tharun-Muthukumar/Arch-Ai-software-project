@@ -3,7 +3,7 @@
 Use PowerShell in the repository root:
 
 ```powershell
-Set-Location 'D:\sw project\Smart-Software-Architect'
+Set-Location 'D:\sf project\Smart-Software-Architect'
 ```
 
 ## First-Time Setup
@@ -25,6 +25,8 @@ Install the configured Ollama model once:
 
 ```powershell
 ollama pull qwen3:8b
+ollama pull qwen3:1.7b
+ollama pull qwen3-vl:4b-instruct
 ```
 
 If the terminal was open while Ollama was installed and `ollama` is not found, close it and open a new PowerShell window. Ollama's Windows app normally starts its local server automatically.
@@ -98,9 +100,11 @@ psql "$env:DATABASE_URL" -f backend/migrations/002_accounts_history.sql
 
 Open `http://127.0.0.1:5173/settings`. The Backend Health panel distinguishes these states:
 
-- `qwen3:8b ready`: Ollama is running and the model is installed.
+- `qwen3:8b ready`: architecture generation is ready.
+- `qwen3:1.7b ready`: the interactive AI Assistant is ready.
+- `qwen3-vl:4b-instruct ready`: image attachments are ready for visual analysis.
 - `unreachable`: start the Ollama Windows app.
-- `qwen3:8b not installed`: run `ollama pull qwen3:8b`.
+- `not installed`: run the matching `ollama pull <model>` command from the setup section.
 - `disabled`: set `ARCHAI_OLLAMA_ENABLED=true` in `backend\.env`.
 
 The local backend configuration is read from `backend\.env`. A fresh copy can be created with:

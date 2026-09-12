@@ -359,6 +359,50 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
   .diagram-canvas svg .label,
   .diagram-canvas svg .nodeLabel { fill: #f4f6f8 !important; color: #f4f6f8 !important; }
 
+  .architecture-chat-layer { @apply pointer-events-none fixed inset-0 z-[70]; }
+  .architecture-chat-backdrop { @apply absolute inset-0 h-full w-full bg-black/55; }
+  .architecture-chat-panel {
+    @apply pointer-events-auto absolute inset-y-0 right-0 flex w-full flex-col border-l sm:w-[440px];
+    background: #101419;
+    border-color: var(--card-border);
+    box-shadow: -20px 0 50px rgba(0, 0, 0, 0.38);
+  }
+  .architecture-chat-header { @apply flex min-h-[72px] items-center gap-3 border-b px-4; border-color: var(--card-border); }
+  .architecture-chat-messages { @apply min-h-0 flex-1 space-y-4 overflow-y-auto p-4; }
+  .architecture-chat-composer { @apply border-t p-4; border-color: var(--card-border); background: #0d1116; }
+  .ai-assistant-fab { @apply fixed bottom-5 right-5 z-[65] flex h-12 w-12 items-center justify-center rounded-full border transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2; color: #fff2cf; border-color: #8a5b14; background: #9a6208; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42); }
+  .assistant-attachment { @apply mb-2 flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-xs; border-color: var(--card-border); background: var(--surface-raised); }
+  .assistant-attachment span { @apply min-w-0 flex-1 truncate; }
+  .assistant-attachment button { @apply flex h-6 w-6 shrink-0 items-center justify-center rounded; color: var(--text-muted); }
+  .assistant-attachment button:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+  .chat-row-user { @apply ml-10 flex flex-col items-end gap-2; }
+  .chat-row-assistant { @apply mr-5 flex flex-col items-start gap-2; }
+  .chat-bubble { @apply max-w-full rounded-lg border px-3 py-2.5; border-color: var(--card-border); background: var(--surface-raised); overflow-wrap: anywhere; }
+  .chat-row-user .chat-bubble { border-color: #6b4719; background: var(--brand-soft); }
+  .chat-prompt { @apply min-h-[54px] rounded-md border p-2.5 text-left text-xs leading-4 transition-colors; border-color: var(--card-border); background: var(--surface); }
+  .chat-prompt:hover { border-color: #6b4719; background: var(--brand-soft); color: var(--brand-strong); }
+  .change-proposal { @apply w-full rounded-lg border p-3; border-color: #4a5a65; background: #151b21; }
+  .proposal-line { @apply flex items-start gap-2 rounded-md border px-2.5 py-2 text-xs leading-5; border-color: var(--border-subtle); background: #101419; }
+  .proposal-line svg { color: var(--success); }
+  .proposal-status { @apply inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs; border-color: #6d3034; color: #ff9d9d; background: var(--danger-soft); }
+  .proposal-status.is-applied { border-color: #245c42; color: #7ee2ac; background: var(--success-soft); }
+  .tag-chip { @apply rounded border px-2 py-1 text-[10px] text-muted; border-color: var(--card-border); background: #101419; }
+  .risk-badge { @apply inline-flex rounded-md border px-2 py-1 text-[10px] font-semibold uppercase; }
+  .risk-critical { background: #3a1115; border-color: #8d2831; color: #ff969e; }
+  .risk-high { background: var(--danger-soft); border-color: #743438; color: #ffaaaa; }
+  .risk-medium { background: var(--brand-soft); border-color: #684716; color: var(--brand-strong); }
+  .risk-low { background: var(--success-soft); border-color: #245c42; color: #7ee2ac; }
+  .risk-informational { background: var(--accent-soft); border-color: #24606a; color: #83dce7; }
+  .risk-summary-grid { @apply grid gap-px overflow-hidden rounded-lg border sm:grid-cols-5; background: var(--card-border); border-color: var(--card-border); }
+  .risk-summary-grid > div { @apply flex min-w-0 items-center justify-between gap-2 p-3 sm:block; background: #101419; }
+  .risk-summary-grid span { @apply text-[10px] font-semibold uppercase text-muted; }
+  .risk-summary-grid strong { @apply text-lg font-semibold sm:mt-1 sm:block; }
+  .risk-card { @apply rounded-lg border p-4; border-color: var(--card-border); background: var(--surface); }
+  .risk-detail-grid { @apply mt-4 grid gap-3 lg:grid-cols-3; }
+  .risk-detail-grid > div { @apply min-w-0 rounded-md border p-3; border-color: var(--border-subtle); background: #101419; }
+  .risk-detail-grid h4 { @apply text-[10px] font-semibold uppercase text-muted; }
+  .risk-detail-grid p { @apply mt-1 text-xs leading-5; overflow-wrap: anywhere; }
+
   @keyframes blast-ripple {
     0% { box-shadow: 0 0 0 0 rgba(244, 107, 107, 0.4); }
     70% { box-shadow: 0 0 0 12px rgba(244, 107, 107, 0); }

@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     ollama_enabled: bool = True
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:8b"
+    ollama_assistant_model: str = "qwen3:1.7b"
+    ollama_vision_model: str = "qwen3-vl:4b-instruct"
     request_timeout_seconds: int = 180
     auth_session_hours: int = 8
     log_level: str = "INFO"

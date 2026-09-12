@@ -24,7 +24,6 @@ export function ArchitectureStudioPage() {
   )
   const recommendedId = workspace?.recommendation.recommended_architecture_id ?? ''
   const [selectedId, setSelectedId] = useState(recommendedId)
-
   const [activeTimelineIndex, setActiveTimelineIndex] = useState(0)
   const [componentEdit, setComponentEdit] = useState<{
     title: string
@@ -89,7 +88,9 @@ export function ArchitectureStudioPage() {
     <div className="workspace-page">
       <header className="page-heading">
         <div><span className="eyebrow">Decision workspace</span><h2>Architecture studio</h2><p>Explore trade-offs, inspect component responsibilities, and safely evolve the design.</p></div>
-        <span className="status-chip status-success">{workspace.recommendation.confidence} confidence</span>
+        <div className="page-actions">
+          <span className="status-chip status-success">{workspace.recommendation.confidence} confidence</span>
+        </div>
       </header>
       {/* Comparison table - always visible */}
       <div className="panel overflow-x-auto">

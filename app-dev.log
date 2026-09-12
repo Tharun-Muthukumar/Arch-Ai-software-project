@@ -1,243 +1,0 @@
-
-> archai-workspace@1.0.0 dev
-> concurrently -n backend,frontend -c green,cyan "npm run dev:backend" "npm run dev:frontend"
-
-[backend] 
-[backend] > archai-workspace@1.0.0 dev:backend
-[backend] > cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-[backend] 
-[frontend] 
-[frontend] > archai-workspace@1.0.0 dev:frontend
-[frontend] > npm run dev --prefix frontend -- --host 127.0.0.1 --port 5173
-[frontend] 
-[frontend] 
-[frontend] > frontend@1.0.0 dev
-[frontend] > vite --host 127.0.0.1 --port 5173
-[frontend] 
-[backend] INFO:     Will watch for changes in these directories: ['D:\\software project\\backend']
-[backend] INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-[backend] INFO:     Started reloader process [52984] using WatchFiles
-[frontend] Port 5173 is in use, trying another one...
-[frontend] 
-[frontend]   [32m[1mVITE[22m v8.2.0[39m  [2mready in [0m[1m751[22m[2m[0m ms[22m
-[frontend] 
-[frontend]   [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5174[22m/[39m
-[backend] INFO:     Started server process [11488]
-[backend] INFO:     Waiting for application startup.
-[backend] INFO:     Application startup complete.
-[backend] INFO:     127.0.0.1:55113 - "GET /health HTTP/1.1" 404 Not Found
-[backend] INFO:     127.0.0.1:55112 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:51695 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:57217 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:57217 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] 2026-08-03 23:16:05,569 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:57223 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] 2026-08-03 23:16:10,182 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:57217 - "POST /api/v1/workspaces HTTP/1.1" 201 Created
-[backend] INFO:     127.0.0.1:57217 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:62465 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:56978 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64115 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:52553 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:49905 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:49906 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:63163 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] 2026-08-03 23:19:26,386 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] 2026-08-03 23:19:31,225 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:63164 - "POST /api/v1/workspaces HTTP/1.1" 201 Created
-[backend] 2026-08-03 23:19:36,222 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] 2026-08-03 23:19:41,357 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:63175 - "POST /api/v1/workspaces/6e32f792-9af1-47a4-845f-d8fcf8508bbf/clarifications HTTP/1.1" 200 OK
-[backend] 2026-08-03 23:19:46,412 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:63181 - "POST /api/v1/workspaces/6e32f792-9af1-47a4-845f-d8fcf8508bbf/changes HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:63186 - "GET /api/v1/workspaces/6e32f792-9af1-47a4-845f-d8fcf8508bbf HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:63181 - "GET /api/v1/workspaces/6e32f792-9af1-47a4-845f-d8fcf8508bbf/documentation/markdown HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:63186 - "GET /api/v1/workspaces/6e32f792-9af1-47a4-845f-d8fcf8508bbf/documentation/pdf HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59803 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59803 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59803 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59803 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59803 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59803 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59803 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59412 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59412 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59412 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59412 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59412 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59412 - "OPTIONS /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59412 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59412 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:61647 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:55939 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:55939 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:55939 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:50072 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64022 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:57883 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:57883 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:62917 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:63718 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:55070 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:58730 - "OPTIONS /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:58730 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59452 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59452 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:50271 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:50271 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:50271 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:50856 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64437 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:56989 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:56989 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:52870 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:63204 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:53062 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:50699 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:50699 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:52057 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:52057 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59578 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:61460 - "OPTIONS /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:61460 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:61460 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:55873 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:55873 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:49680 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:57379 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:57379 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:54527 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:54527 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:56917 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] WARNING:  WatchFiles detected changes in 'app\services\requirement_analyzer.py'. Reloading...
-[backend]  INFO:     127.0.0.1:59104 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:59104 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:58294 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:58294 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:58294 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:54560 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:54560 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] 2026-08-05 10:11:26,136 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] 2026-08-05 10:11:30,949 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:57852 - "POST /api/v1/workspaces HTTP/1.1" 201 Created
-[backend] INFO:     127.0.0.1:57852 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64987 - "OPTIONS /api/v1/workspaces/a61f57a5-9cec-4dc8-be14-6b7b3318743b/clarifications HTTP/1.1" 200 OK
-[backend] 2026-08-05 10:12:28,696 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] 2026-08-05 10:12:34,347 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:64987 - "POST /api/v1/workspaces/a61f57a5-9cec-4dc8-be14-6b7b3318743b/clarifications HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64987 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:65169 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:54918 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:51669 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:51819 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] 2026-08-05 10:15:34,176 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] 2026-08-05 10:15:39,629 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:51820 - "POST /api/v1/workspaces HTTP/1.1" 201 Created
-[backend] 2026-08-05 10:15:45,236 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] 2026-08-05 10:15:50,631 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:57079 - "POST /api/v1/workspaces/b0927085-03e2-46a8-982a-cf7be6acd72b/clarifications HTTP/1.1" 200 OK
-[backend] 2026-08-05 10:15:56,163 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:57085 - "POST /api/v1/workspaces/b0927085-03e2-46a8-982a-cf7be6acd72b/changes HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:57088 - "GET /api/v1/workspaces/b0927085-03e2-46a8-982a-cf7be6acd72b HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:57085 - "GET /api/v1/workspaces/b0927085-03e2-46a8-982a-cf7be6acd72b/documentation/markdown HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:57088 - "GET /api/v1/workspaces/b0927085-03e2-46a8-982a-cf7be6acd72b/documentation/pdf HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:54854 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:61704 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:61704 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] 2026-08-05 10:18:21,596 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] 2026-08-05 10:18:27,305 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:51797 - "POST /api/v1/workspaces HTTP/1.1" 201 Created
-[backend] INFO:     127.0.0.1:51797 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] 2026-08-05 10:18:47,508 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] 2026-08-05 10:18:53,282 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:51309 - "POST /api/v1/workspaces HTTP/1.1" 201 Created
-[backend] INFO:     127.0.0.1:51309 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:64110 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:54276 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:60217 - "OPTIONS /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:60217 - "GET /api/v1/health HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:60631 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:54100 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:56438 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:52778 - "OPTIONS /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:52778 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:58956 - "GET /api/v1/workspaces HTTP/1.1" 200 OK
-[backend] INFO:     127.0.0.1:51109 - "GET /api/v1/workspaces/4c96033b-3bba-43d8-93ab-37ac93e01c1c HTTP/1.1" 200 OK
-[backend] 2026-08-05 10:23:01,450 | INFO | app.services.ai.client | Skipping Ollama refinement for requirement-analysis: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] 2026-08-05 10:23:07,243 | INFO | app.services.ai.client | Skipping Ollama refinement for architecture-generation: [WinError 10061] No connection could be made because the target machine actively refused it
-[backend] INFO:     127.0.0.1:49676 - "POST /api/v1/workspaces HTTP/1.1" 201 Created
-p y t h o n   :   I N F O :           W i l l   w a t c h   f o r   c h a n g e s   i n   t h e s e   d i r e c t o r i e s :   [ ' D : \ \ s o f t w a r e   p r o j e c t \ \ b a c k e n d ' ]  
- A t   l i n e : 1   c h a r : 4 5  
- +   . . .   t \ b a c k e n d ' ;   p y t h o n   - m   u v i c o r n   a p p . m a i n : a p p   - - h o s t   1 2 7 . 0 . 0 . 1   - - p o r t   8 0   . . .  
- +                                   ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~  
-         +   C a t e g o r y I n f o                     :   N o t S p e c i f i e d :   ( I N F O :           W i l l   . . . j e c t \ \ b a c k e n d ' ] : S t r i n g )   [ ] ,   R e m o t e E x c e p t i o n  
-         +   F u l l y Q u a l i f i e d E r r o r I d   :   N a t i v e C o m m a n d E r r o r  
-    
- I N F O :           U v i c o r n   r u n n i n g   o n   h t t p : / / 1 2 7 . 0 . 0 . 1 : 8 0 0 0   ( P r e s s   C T R L + C   t o   q u i t )  
- I N F O :           S t a r t e d   r e l o a d e r   p r o c e s s   [ 5 9 8 2 8 ]   u s i n g   W a t c h F i l e s  
- I N F O :           S t a r t e d   s e r v e r   p r o c e s s   [ 5 5 8 7 6 ]  
- I N F O :           W a i t i n g   f o r   a p p l i c a t i o n   s t a r t u p .  
- I N F O :           A p p l i c a t i o n   s t a r t u p   c o m p l e t e .  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 4 5 9 6   -   " G E T   / a p i / v 1 / h e a l t h   H T T P / 1 . 1 "   2 0 0   O K  
- 2 0 2 6 - 0 8 - 0 5   1 0 : 2 5 : 2 3 , 9 0 8   |   I N F O   |   a p p . s e r v i c e s . a i . c l i e n t   |   S k i p p i n g   O l l a m a   r e f i n e m e n t   f o r   r e q u i r e m e n t - a n a l y s i s :    
- [ W i n E r r o r   1 0 0 6 1 ]   N o   c o n n e c t i o n   c o u l d   b e   m a d e   b e c a u s e   t h e   t a r g e t   m a c h i n e   a c t i v e l y   r e f u s e d   i t  
- 2 0 2 6 - 0 8 - 0 5   1 0 : 2 5 : 2 8 , 4 5 5   |   I N F O   |   a p p . s e r v i c e s . a i . c l i e n t   |   S k i p p i n g   O l l a m a   r e f i n e m e n t   f o r   a r c h i t e c t u r e - g e n e r a t i o n :    
- [ W i n E r r o r   1 0 0 6 1 ]   N o   c o n n e c t i o n   c o u l d   b e   m a d e   b e c a u s e   t h e   t a r g e t   m a c h i n e   a c t i v e l y   r e f u s e d   i t  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 4 5 9 8   -   " P O S T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 1   C r e a t e d  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 7 2 0 6   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 7 9 8 7   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 1 8 4 4   -   " O P T I O N S   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 1 8 4 4   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 1 0 2 0   -   " G E T   / a p i / v 1 / h e a l t h   H T T P / 1 . 1 "   2 0 0   O K  
- 2 0 2 6 - 0 8 - 0 5   1 0 : 2 8 : 3 1 , 7 5 0   |   I N F O   |   a p p . s e r v i c e s . a i . c l i e n t   |   S k i p p i n g   O l l a m a   r e f i n e m e n t   f o r   r e q u i r e m e n t - a n a l y s i s :    
- [ W i n E r r o r   1 0 0 6 1 ]   N o   c o n n e c t i o n   c o u l d   b e   m a d e   b e c a u s e   t h e   t a r g e t   m a c h i n e   a c t i v e l y   r e f u s e d   i t  
- 2 0 2 6 - 0 8 - 0 5   1 0 : 2 8 : 3 6 , 5 8 8   |   I N F O   |   a p p . s e r v i c e s . a i . c l i e n t   |   S k i p p i n g   O l l a m a   r e f i n e m e n t   f o r   a r c h i t e c t u r e - g e n e r a t i o n :    
- [ W i n E r r o r   1 0 0 6 1 ]   N o   c o n n e c t i o n   c o u l d   b e   m a d e   b e c a u s e   t h e   t a r g e t   m a c h i n e   a c t i v e l y   r e f u s e d   i t  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 1 0 2 1   -   " P O S T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 1   C r e a t e d  
- 2 0 2 6 - 0 8 - 0 5   1 0 : 2 8 : 4 1 , 4 2 1   |   I N F O   |   a p p . s e r v i c e s . a i . c l i e n t   |   S k i p p i n g   O l l a m a   r e f i n e m e n t   f o r   r e q u i r e m e n t - a n a l y s i s :    
- [ W i n E r r o r   1 0 0 6 1 ]   N o   c o n n e c t i o n   c o u l d   b e   m a d e   b e c a u s e   t h e   t a r g e t   m a c h i n e   a c t i v e l y   r e f u s e d   i t  
- 2 0 2 6 - 0 8 - 0 5   1 0 : 2 8 : 4 6 , 2 2 6   |   I N F O   |   a p p . s e r v i c e s . a i . c l i e n t   |   S k i p p i n g   O l l a m a   r e f i n e m e n t   f o r   a r c h i t e c t u r e - g e n e r a t i o n :    
- [ W i n E r r o r   1 0 0 6 1 ]   N o   c o n n e c t i o n   c o u l d   b e   m a d e   b e c a u s e   t h e   t a r g e t   m a c h i n e   a c t i v e l y   r e f u s e d   i t  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 8 6 4 8   -   " P O S T   / a p i / v 1 / w o r k s p a c e s / f 0 b b 9 e 0 f - 4 b 5 a - 4 2 f 6 - 8 a 6 1 - 8 f a f 8 8 d 6 e 5 5 2 / c l a r i f i c a t i o n s   H T T P / 1 . 1 "   2 0 0   O K  
- 2 0 2 6 - 0 8 - 0 5   1 0 : 2 8 : 5 1 , 4 3 9   |   I N F O   |   a p p . s e r v i c e s . a i . c l i e n t   |   S k i p p i n g   O l l a m a   r e f i n e m e n t   f o r   a r c h i t e c t u r e - g e n e r a t i o n :    
- [ W i n E r r o r   1 0 0 6 1 ]   N o   c o n n e c t i o n   c o u l d   b e   m a d e   b e c a u s e   t h e   t a r g e t   m a c h i n e   a c t i v e l y   r e f u s e d   i t  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 8 6 5 4   -   " P O S T   / a p i / v 1 / w o r k s p a c e s / f 0 b b 9 e 0 f - 4 b 5 a - 4 2 f 6 - 8 a 6 1 - 8 f a f 8 8 d 6 e 5 5 2 / c h a n g e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 8 6 5 7   -   " G E T   / a p i / v 1 / w o r k s p a c e s / f 0 b b 9 e 0 f - 4 b 5 a - 4 2 f 6 - 8 a 6 1 - 8 f a f 8 8 d 6 e 5 5 2   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 8 6 5 4   -   " G E T   / a p i / v 1 / w o r k s p a c e s / f 0 b b 9 e 0 f - 4 b 5 a - 4 2 f 6 - 8 a 6 1 - 8 f a f 8 8 d 6 e 5 5 2 / d o c u m e n t a t i o n / m a r k d o w n   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 8 6 5 7   -   " G E T   / a p i / v 1 / w o r k s p a c e s / f 0 b b 9 e 0 f - 4 b 5 a - 4 2 f 6 - 8 a 6 1 - 8 f a f 8 8 d 6 e 5 5 2 / d o c u m e n t a t i o n / p d f   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 4 1 0 2   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 4 1 0 2   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 4 1 0 2   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 4 1 0 2   -   " O P T I O N S   / a p i / v 1 / h e a l t h   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 4 1 0 2   -   " G E T   / a p i / v 1 / h e a l t h   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 7 8 1 5   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 6 1 1 9 5   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 6 1 5 0   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 6 1 5 0   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 6 1 5 0   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 6 1 5 0   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 6 1 5 0   -   " G E T   / a p i / v 1 / h e a l t h   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 5 2 8 5   -   " G E T   / a p i / v 1 / h e a l t h   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 6 2 8 3 2   -   " O P T I O N S   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 6 2 8 3 2   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 6 2 8 3 2   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 4 9 6 7 1   -   " O P T I O N S   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 4 9 6 7 1   -   " G E T   / a p i / v 1 / w o r k s p a c e s   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 6 0 4 2 0   -   " G E T   / a p i / v 1 / h e a l t h   H T T P / 1 . 1 "   2 0 0   O K  
- W A R N I N G :     W a t c h F i l e s   d e t e c t e d   c h a n g e s   i n   ' a p p \ s e r v i c e s \ d i a g r a m _ g e n e r a t o r . p y ' .   R e l o a d i n g . . .  
-   I N F O :           1 2 7 . 0 . 0 . 1 : 5 2 9 3 5   -   " G E T   / a p i / v 1 / h e a l t h   H T T P / 1 . 1 "   2 0 0   O K  
- I N F O :           1 2 7 . 0 . 0 . 1 : 5 0 2 8 6   -   " G E T   / a p i / v 1 / h e a l t h   H T T P / 1 . 1 "   2 0 0   O K  
- 

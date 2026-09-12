@@ -20,3 +20,4 @@ backend/test_archai.db
 backend/.coverage
 frontend/.vite
 frontend/coverage
+*.log

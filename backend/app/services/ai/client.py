@@ -30,15 +30,20 @@ class OllamaStructuredClient:
         num_predict: int = 256,
         num_ctx: int = 2048,
         minimum_timeout_seconds: int = 0,
+        timeout_seconds: int | None = None,
+        model: str | None = None,
+        images: list[str] | None = None,
     ) -> dict[str, Any] | None:
         if not self.settings.ollama_enabled:
             return None
 
         project_id = str(input_data.get("project_id") or "")
+        selected_model = model or self.settings.ollama_model
         cache_payload = {
             "stage": stage,
-            "model": self.settings.ollama_model,
+            "model": selected_model,
             "input": input_data,
+            "images": [sha256(image.encode("ascii")).hexdigest() for image in images or []],
             "schema": response_schema,
             "num_predict": num_predict,
             "num_ctx": num_ctx,
@@ -62,8 +67,22 @@ class OllamaStructuredClient:
                 source_fingerprint,
             )
 
+        prompt = build_structured_prompt(stage, input_data)
+        if images:
+            prompt = (
+                "One image is attached to this user message. Inspect its visible content first, "
+                "then answer the raw requirement using only visible image evidence and supplied "
+                f"project facts.\n{prompt}"
+            )
+        user_message: dict[str, Any] = {
+            "role": "user",
+            "content": prompt,
+        }
+        if images:
+            user_message["images"] = images
+
         payload = {
-            "model": self.settings.ollama_model,
+            "model": selected_model,
             "stream": False,
             "format": response_schema or "json",
             "think": False,
@@ -79,10 +98,7 @@ class OllamaStructuredClient:
                     "role": "system",
                     "content": "You return structured JSON only.",
                 },
-                {
-                    "role": "user",
-                    "content": build_structured_prompt(stage, input_data),
-                },
+                user_message,
             ],
         }
 
@@ -92,7 +108,11 @@ class OllamaStructuredClient:
                 GENERATION_TELEMETRY.llm_call(project_id, stage)
             with httpx.Client(
                 base_url=self.settings.ollama_base_url,
-                timeout=max(self.settings.request_timeout_seconds, minimum_timeout_seconds),
+                timeout=(
+                    timeout_seconds
+                    if timeout_seconds is not None
+                    else max(self.settings.request_timeout_seconds, minimum_timeout_seconds)
+                ),
             ) as client:
                 response = client.post("/api/chat", json=payload)
                 response.raise_for_status()

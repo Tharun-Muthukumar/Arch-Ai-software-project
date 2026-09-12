@@ -16,6 +16,7 @@ import { AuthPage } from './pages/AuthPage'
 import { HistoryPage } from './pages/HistoryPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { InterfacesDataPage } from './pages/InterfacesDataPage'
+import { RiskDetectorPage } from './pages/RiskDetectorPage'
 
 function App() {
   return (
@@ -32,6 +33,7 @@ function App() {
           <Route path="/causal-graph" element={<CausalGraphPage />} />
           <Route path="/comparison" element={<ComparisonPage />} />
           <Route path="/blast-radius" element={<BlastRadiusPage />} />
+          <Route path="/risk-detector" element={<RiskDetectorPage />} />
           <Route path="/team-fit" element={<TeamFitPage />} />
           <Route path="/industry-twins" element={<IndustryTwinsPage />} />
           <Route path="/diagrams" element={<DiagramsPage />} />

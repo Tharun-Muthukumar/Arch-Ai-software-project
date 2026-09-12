@@ -13,12 +13,18 @@ from app.models.account import User
 from app.repositories.account_repository import AccountRepository
 from app.repositories.workspace_repository import WorkspaceRepository
 from app.schemas.domain import (
+    ArchitectureChatApplyRequest,
+    ArchitectureChatRequest,
+    ArchitectureChatResponse,
+    ArchitectureRiskAnalysis,
+    ArchitectureRiskRequest,
     CausalGraph,
     CausalGraphTrace,
     ChangeRequest,
     ClarificationAnswerRequest,
     CounterfactualSimulationRequest,
     CounterfactualSimulationResult,
+    ProjectDescriptionAnalyzeRequest,
     WorkspaceEditPreview,
     WorkspaceEditRequest,
     WorkspaceMutationResponse,
@@ -29,6 +35,11 @@ from app.services.workspace_orchestrator import WorkspaceOrchestrator
 from app.services.counterfactual_simulator import CounterfactualSimulator
 from app.services.history_service import HistoryService
 from app.services.generation_runtime import GENERATION_TELEMETRY
+from app.services.project_description_analyzer import (
+    ProjectDescriptionAnalysisError,
+    ProjectDescriptionAnalyzer,
+)
+from app.services.architecture_assistant import ArchitectureAssistantUnavailableError
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 logger = logging.getLogger(__name__)
@@ -74,6 +85,16 @@ def list_workspaces(
         [workspace.id for workspace in workspaces], user
     )
     return [workspace for workspace in workspaces if workspace.id in visible_ids]
+
+
+@router.post("/analyze-description", response_model=WorkspaceCreateRequest)
+def analyze_project_description(
+    payload: ProjectDescriptionAnalyzeRequest,
+) -> WorkspaceCreateRequest:
+    try:
+        return ProjectDescriptionAnalyzer().analyze(payload.prompt)
+    except ProjectDescriptionAnalysisError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("", response_model=WorkspaceResponse, status_code=201)
@@ -177,6 +198,89 @@ def get_workspace(
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace
+
+
+@router.post(
+    "/{workspace_id}/architecture-chat",
+    response_model=ArchitectureChatResponse,
+)
+def architecture_chat(
+    workspace_id: str,
+    payload: ArchitectureChatRequest,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> ArchitectureChatResponse:
+    require_workspace_access(workspace_id, user, history_service)
+    try:
+        result = orchestrator.architecture_chat(workspace_id, payload)
+    except ArchitectureAssistantUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if user is not None:
+        assistant_message = (
+            result.answer
+            if result.type == "question"
+            else f"Proposed, but did not apply: {result.proposal.summary if result.proposal else result.answer}"
+        )
+        history_service.record_exchange(workspace_id, payload.message, assistant_message)
+    return result
+
+
+@router.post(
+    "/{workspace_id}/architecture-chat/apply",
+    response_model=WorkspaceMutationResponse,
+)
+def apply_architecture_chat_proposal(
+    workspace_id: str,
+    payload: ArchitectureChatApplyRequest,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> WorkspaceMutationResponse:
+    require_workspace_access(workspace_id, user, history_service, write=True)
+    try:
+        result = orchestrator.apply_architecture_proposal(workspace_id, payload.proposal)
+    except ValueError as exc:
+        status = 409 if "changed after you opened" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if user is not None:
+        history_service.record_exchange(
+            workspace_id,
+            f"Apply proposal: {payload.proposal.request}",
+            result.message,
+        )
+    return result
+
+
+@router.post(
+    "/{workspace_id}/risk-analysis",
+    response_model=ArchitectureRiskAnalysis,
+)
+def analyze_architecture_risks(
+    workspace_id: str,
+    payload: ArchitectureRiskRequest,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> ArchitectureRiskAnalysis:
+    require_workspace_access(workspace_id, user, history_service)
+    try:
+        result = orchestrator.analyze_architecture_risks(
+            workspace_id,
+            payload.architecture_id,
+            include_ai=payload.include_ai,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return result
 
 
 @router.get("/{workspace_id}/generation-metrics")

@@ -6,6 +6,7 @@ import { ClarificationPanel } from '../components/workspace/ClarificationPanel'
 import { StatePanel } from '../components/workspace/StatePanel'
 import { WorkspaceForm } from '../components/workspace/WorkspaceForm'
 import {
+  analyzeProjectDescription,
   answerClarifications,
   createWorkspaceStreaming,
 } from '../lib/api'
@@ -52,6 +53,11 @@ export function DashboardPage() {
         document.getElementById('clarifications')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }, 150)
     },
+  })
+
+  const descriptionAnalysisMutation = useMutation({
+    mutationKey: ['project-description-analysis'],
+    mutationFn: analyzeProjectDescription,
   })
 
   const clarificationMutation = useMutation({
@@ -106,6 +112,11 @@ export function DashboardPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <WorkspaceForm
           isPending={createMutation.isPending}
+          isAnalyzing={descriptionAnalysisMutation.isPending}
+          analysisError={descriptionAnalysisMutation.isError
+            ? getErrorMessage(descriptionAnalysisMutation.error)
+            : null}
+          onAnalyze={(prompt) => descriptionAnalysisMutation.mutateAsync({ prompt })}
           onSubmit={(payload) => createMutation.mutate(payload)}
         />
 

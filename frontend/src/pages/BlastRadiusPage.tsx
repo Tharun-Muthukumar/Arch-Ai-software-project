@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { AlertTriangle, Zap, RotateCcw, Shield, ArrowRight, ChevronDown, ChevronUp } from 'lucide-react'
 import { StatePanel } from '../components/workspace/StatePanel'
@@ -17,6 +17,8 @@ export function BlastRadiusPage() {
   const [searchParams] = useSearchParams()
   const workspaceQuery = useWorkspacesQuery()
   const workspace = getActiveWorkspace(workspaceQuery.data, searchParams.get('workspace'))
+  const requestedComponent = searchParams.get('component')
+  const handledComponent = useRef('')
 
   const [result, setResult] = useState<BlastRadiusResult | null>(null)
   const [loadingComponent, setLoadingComponent] = useState<string | null>(null)
@@ -119,6 +121,15 @@ export function BlastRadiusPage() {
     setComparisonResults({})
     resetResilienceState()
   }, [resetResilienceState])
+
+  useEffect(() => {
+    if (!requestedComponent || !recommended || !workspace) return
+    const exists = recommended.components.some((item) => item.name === requestedComponent)
+    const requestKey = `${workspace.id}:${workspace.updated_at}:${requestedComponent}`
+    if (!exists || handledComponent.current === requestKey) return
+    handledComponent.current = requestKey
+    void handleComponentClick(requestedComponent)
+  }, [handleComponentClick, recommended, requestedComponent, workspace])
 
   // A simulation is a snapshot of one architecture revision: clear it as soon
   // as the workspace regenerates so a stale blast radius is never shown.

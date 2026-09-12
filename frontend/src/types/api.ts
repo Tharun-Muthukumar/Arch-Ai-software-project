@@ -139,6 +139,128 @@ export interface ArchitectureOption {
   maintenance: string
 }
 
+export type ArchitecturePatchKind =
+  | 'add_component'
+  | 'update_component'
+  | 'remove_component'
+  | 'replace_text'
+  | 'set_field'
+
+export type ArchitecturePatchField =
+  | 'overview'
+  | 'database'
+  | 'api_style'
+  | 'deployment'
+  | 'estimated_complexity'
+  | 'estimated_cost'
+  | 'maintenance'
+
+export interface ArchitecturePatchOperation {
+  operation: ArchitecturePatchKind
+  component_name?: string | null
+  component?: ArchitectureComponent | null
+  field?: ArchitecturePatchField | null
+  from_value?: string | null
+  to_value?: string | null
+}
+
+export interface ArchitectureRequirementAddition {
+  target_type:
+    | 'functional_requirement'
+    | 'non_functional_requirement'
+    | 'constraint'
+    | 'assumption'
+  text: string
+}
+
+export interface ArchitectureChangeProposal {
+  proposal_id: string
+  architecture_id: string
+  base_updated_at: string
+  request: string
+  summary: string
+  reasoning: string
+  architecture_changes: ArchitecturePatchOperation[]
+  requirement_additions: ArchitectureRequirementAddition[]
+  affected_components: string[]
+  tradeoffs: string[]
+  risk_level: 'low' | 'medium' | 'high'
+  auto_apply_safe: boolean
+}
+
+export interface ArchitectureChatHistoryMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ArchitectureChatRequest {
+  message: string
+  architecture_id?: string | null
+  history: ArchitectureChatHistoryMessage[]
+  images?: ArchitectureChatImage[]
+}
+
+export interface ArchitectureChatImage {
+  name: string
+  media_type: 'image/jpeg' | 'image/png' | 'image/webp'
+  data: string
+}
+
+export interface ArchitectureChatResponse {
+  type: 'question' | 'architecture_change'
+  answer: string
+  affected_components: string[]
+  recommendations: string[]
+  proposal?: ArchitectureChangeProposal | null
+}
+
+export type RiskSeverity = 'critical' | 'high' | 'medium' | 'low' | 'informational'
+
+export type RiskCategory =
+  | 'reliability'
+  | 'scalability'
+  | 'security'
+  | 'performance'
+  | 'data'
+  | 'cost'
+  | 'operations'
+  | 'compliance'
+  | 'architecture_complexity'
+  | 'resilience'
+
+export interface ArchitectureRisk {
+  id: string
+  title: string
+  category: RiskCategory
+  severity: RiskSeverity
+  description: string
+  evidence: string
+  affected_components: string[]
+  impact: string
+  recommendation: string
+  confidence: number
+  needs_verification: boolean
+  related_node_ids: string[]
+}
+
+export interface ArchitectureRiskSummary {
+  critical: number
+  high: number
+  medium: number
+  low: number
+  informational: number
+}
+
+export interface ArchitectureRiskAnalysis {
+  workspace_id: string
+  architecture_id: string
+  analyzed_workspace_updated_at: string
+  overall_risk: RiskSeverity
+  overview: string
+  summary: ArchitectureRiskSummary
+  risks: ArchitectureRisk[]
+}
+
 export interface MetricScore {
   metric: string
   score: number
@@ -708,4 +830,8 @@ export interface WorkspaceCreatePayload {
   preferred_cloud?: string
   constraints: string[]
   team_size?: number
+}
+
+export interface ProjectDescriptionAnalyzePayload {
+  prompt: string
 }

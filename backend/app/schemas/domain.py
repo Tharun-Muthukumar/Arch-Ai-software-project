@@ -1,7 +1,9 @@
+import base64
+import binascii
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 CURRENT_REQUIREMENT_MODEL_VERSION = "evidence-owned-domain-model-v3"
@@ -286,6 +288,236 @@ class ArchitectureOption(BaseModel):
     estimated_complexity: str
     estimated_cost: str
     maintenance: str
+
+
+ArchitecturePatchKind = Literal[
+    "add_component",
+    "update_component",
+    "remove_component",
+    "replace_text",
+    "set_field",
+]
+ArchitecturePatchField = Literal[
+    "overview",
+    "database",
+    "api_style",
+    "deployment",
+    "estimated_complexity",
+    "estimated_cost",
+    "maintenance",
+]
+
+
+class ArchitecturePatchOperation(BaseModel):
+    """A small, validated change to one existing architecture option."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: ArchitecturePatchKind
+    component_name: str | None = Field(default=None, max_length=120)
+    component: ArchitectureComponent | None = None
+    field: ArchitecturePatchField | None = None
+    from_value: str | None = Field(default=None, max_length=200)
+    to_value: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_operation_shape(self):
+        if self.operation == "add_component" and self.component is None:
+            raise ValueError("component is required when adding a component")
+        if self.operation == "update_component" and (
+            not self.component_name or self.component is None
+        ):
+            raise ValueError(
+                "component_name and component are required when updating a component"
+            )
+        if self.operation == "remove_component" and not self.component_name:
+            raise ValueError("component_name is required when removing a component")
+        if self.operation == "replace_text" and (
+            not self.from_value or not self.to_value
+        ):
+            raise ValueError("from_value and to_value are required for text replacement")
+        if self.operation == "set_field" and (not self.field or not self.to_value):
+            raise ValueError("field and to_value are required when setting a field")
+        return self
+
+
+class ArchitectureRequirementAddition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_type: Literal[
+        "functional_requirement",
+        "non_functional_requirement",
+        "constraint",
+        "assumption",
+    ]
+    text: str = Field(min_length=3, max_length=500)
+
+
+class ArchitectureChatHistoryMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=3000)
+
+
+class ArchitectureChatImage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    media_type: Literal["image/jpeg", "image/png", "image/webp"]
+    data: str = Field(min_length=16, max_length=5_600_000)
+
+    @field_validator("data")
+    @classmethod
+    def validate_image_data(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("Image data must be valid base64") from exc
+        if len(decoded) > 4 * 1024 * 1024:
+            raise ValueError("Images must be 4 MB or smaller")
+        return value
+
+    @model_validator(mode="after")
+    def validate_image_signature(self):
+        decoded = base64.b64decode(self.data)
+        valid_signature = {
+            "image/png": decoded.startswith(b"\x89PNG\r\n\x1a\n"),
+            "image/jpeg": decoded.startswith(b"\xff\xd8\xff"),
+            "image/webp": decoded.startswith(b"RIFF") and decoded[8:12] == b"WEBP",
+        }[self.media_type]
+        if not valid_signature:
+            raise ValueError("Image content does not match its media type")
+        return self
+
+
+class ArchitectureChangeProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_id: str
+    architecture_id: str
+    base_updated_at: datetime
+    request: str
+    summary: str
+    reasoning: str
+    architecture_changes: list[ArchitecturePatchOperation] = Field(
+        default_factory=list, max_length=8
+    )
+    requirement_additions: list[ArchitectureRequirementAddition] = Field(
+        default_factory=list, max_length=4
+    )
+    affected_components: list[str] = Field(default_factory=list, max_length=12)
+    tradeoffs: list[str] = Field(default_factory=list, max_length=8)
+    risk_level: Literal["low", "medium", "high"]
+    auto_apply_safe: bool = False
+
+    @model_validator(mode="after")
+    def validate_has_change(self):
+        if not self.architecture_changes and not self.requirement_additions:
+            raise ValueError("An architecture change proposal must contain a change")
+        return self
+
+
+class ArchitectureChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=3000)
+    architecture_id: str | None = Field(default=None, max_length=120)
+    history: list[ArchitectureChatHistoryMessage] = Field(
+        default_factory=list, max_length=12
+    )
+    images: list[ArchitectureChatImage] = Field(default_factory=list, max_length=1)
+
+    @field_validator("message")
+    @classmethod
+    def normalize_message(cls, value: str) -> str:
+        message = " ".join(value.split()).strip()
+        if not message:
+            raise ValueError("Message cannot be empty")
+        return message
+
+
+class ArchitectureChatResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["question", "architecture_change"]
+    answer: str
+    affected_components: list[str] = Field(default_factory=list, max_length=12)
+    recommendations: list[str] = Field(default_factory=list, max_length=8)
+    proposal: ArchitectureChangeProposal | None = None
+
+    @model_validator(mode="after")
+    def validate_response_shape(self):
+        if self.type == "architecture_change" and self.proposal is None:
+            raise ValueError("A change response must include a proposal")
+        if self.type == "question" and self.proposal is not None:
+            raise ValueError("An informational response cannot include a proposal")
+        return self
+
+
+class ArchitectureChatApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal: ArchitectureChangeProposal
+
+
+RiskSeverity = Literal["critical", "high", "medium", "low", "informational"]
+RiskCategory = Literal[
+    "reliability",
+    "scalability",
+    "security",
+    "performance",
+    "data",
+    "cost",
+    "operations",
+    "compliance",
+    "architecture_complexity",
+    "resilience",
+]
+
+
+class ArchitectureRisk(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    title: str = Field(min_length=3, max_length=140)
+    category: RiskCategory
+    severity: RiskSeverity
+    description: str = Field(min_length=3, max_length=1000)
+    evidence: str = Field(min_length=3, max_length=1000)
+    affected_components: list[str] = Field(default_factory=list, max_length=12)
+    impact: str = Field(min_length=3, max_length=1000)
+    recommendation: str = Field(min_length=3, max_length=1000)
+    confidence: float = Field(ge=0, le=1)
+    needs_verification: bool = False
+    related_node_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ArchitectureRiskSummary(BaseModel):
+    critical: int = Field(default=0, ge=0)
+    high: int = Field(default=0, ge=0)
+    medium: int = Field(default=0, ge=0)
+    low: int = Field(default=0, ge=0)
+    informational: int = Field(default=0, ge=0)
+
+
+class ArchitectureRiskAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str
+    architecture_id: str
+    analyzed_workspace_updated_at: datetime
+    overall_risk: RiskSeverity
+    overview: str
+    summary: ArchitectureRiskSummary
+    risks: list[ArchitectureRisk] = Field(default_factory=list, max_length=30)
+
+
+class ArchitectureRiskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    architecture_id: str | None = Field(default=None, max_length=120)
+    include_ai: bool = False
 
 
 class MetricScore(BaseModel):
@@ -795,6 +1027,22 @@ class WorkspaceCreateRequest(BaseModel):
     preferred_cloud: str | None = None
     constraints: list[str] = Field(default_factory=list)
     team_size: int | None = Field(default=None, ge=1, le=1000)
+
+
+class ProjectDescriptionAnalyzeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=5000)
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_useful_prompt(cls, value: str) -> str:
+        prompt = value.strip()
+        if len(prompt) < 40 or len(prompt.split()) < 8:
+            raise ValueError(
+                "Describe the project in at least 40 characters and 8 words."
+            )
+        return prompt
 
 
 class ClarificationAnswerRequest(BaseModel):

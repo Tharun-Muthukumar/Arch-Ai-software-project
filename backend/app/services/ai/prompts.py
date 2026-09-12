@@ -2,6 +2,30 @@ import json
 
 
 def build_structured_prompt(stage: str, payload: dict) -> str:
+    if stage == "project-description-extraction":
+        return (
+            "You convert one natural-language project description into ArchAI's existing "
+            "project-creation fields. Return only JSON matching the enforced schema.\n"
+            "The raw requirement is the sole source of facts.\n"
+            "Rules:\n"
+            "- title: a concise 2-8 word project name grounded in nouns from the prompt.\n"
+            "- business_context_excerpts: copy only exact prompt excerpts about motivation, "
+            "rollout, scale, organization, market, timeline, or business outcomes. Do not "
+            "copy product capabilities into this field. Return [] when absent.\n"
+            "- explicit_constraint_excerpts: copy exact prompt excerpts only when they state "
+            "a hard obligation such as must, required, only, cannot, shall, at least, or at "
+            "most. Preferences and ordinary feature statements are not constraints.\n"
+            "- preferred_cloud: set only when AWS, Azure, GCP, on-premise, or no cloud "
+            "preference is explicit. Otherwise return null.\n"
+            "- team_size: set only when the prompt explicitly gives the number of engineers "
+            "or developers. User/customer counts are not team size. Otherwise return null.\n"
+            "- Never invent requirements, actors, integrations, technologies, vendors, "
+            "numbers, regions, compliance rules, or quality targets.\n"
+            "- Do not summarize or rewrite excerpts: copy them from the prompt so their "
+            "source can be verified.\n"
+            f"Raw input JSON:\n{json.dumps(payload, indent=2)}"
+        )
+
     if stage == "unknown-domain-requirement-extraction":
         return (
             "You are ArchAI's domain-neutral requirements analyst. Analyze the raw project "
@@ -100,6 +124,57 @@ def build_structured_prompt(stage: str, payload: dict) -> str:
             "information in clarification_questions. Questions must not imply an answer.\n"
             "- Keep suggested_text under 60 words and each list item concise.\n"
             f"Raw edit and context JSON:\n{json.dumps(payload, indent=2)}"
+        )
+
+    if stage == "architecture-image-chat":
+        return (
+            "You are ArchAI's image-grounded project assistant. Inspect the attached image, then return "
+            "one compact JSON object with exactly these fields: answer (string), suggested_item "
+            "(string or null), affected_components (array of strings). Answer the latest raw_requirement "
+            "using only visible evidence. If text is unreadable, say so. Never infer hidden screens, "
+            "actors, requirements, numbers, technologies, or relationships. affected_components may "
+            "contain only exact names from component_names. When requested_item_type is null, set "
+            "suggested_item to null. Otherwise provide one concise item of exactly that type only when "
+            "the image supports it; use null if uncertain. Never claim a change was applied.\n"
+            f"Input:{json.dumps(payload, separators=(',', ':'))}"
+        )
+
+    if stage == "architecture-chat":
+        return (
+            "You are ArchAI's grounded project and architecture assistant. Return schema-valid JSON only. "
+            "Use only the supplied project, current architecture, deployment, conversation, and "
+            "latest raw_requirement. Classify it as question or architecture_change.\n"
+            "Question: explain represented facts, mark uncertainty, return no changes, and never "
+            "claim state changed. Treat direct imperative requests such as add, remove, replace, "
+            "switch, migrate, or use as architecture_change, even when the user gives no rationale. "
+            "Change: propose the smallest patch and say it is only proposed; never claim it was applied. "
+            "Use exact component names; replace_text.from_value must exist; component updates must "
+            "preserve supplied fields and valid dependencies. You may add a functional requirement, "
+            "non-functional requirement, constraint, or assumption only when the user explicitly asks "
+            "for it; preserve the user's meaning and invent no numbers. If images are attached, inspect "
+            "only visible evidence and clearly mark uncertainty. Never "
+            "invent requirements, components, vendors, regions, compliance, or guarantees. "
+            "Recommendations must be labeled as advice. Preserve unrelated design.\n"
+            f"Input:{json.dumps(payload, separators=(',', ':'))}"
+        )
+
+    if stage == "architecture-risk-analysis":
+        return (
+            "You are ArchAI's evidence-grounded architecture risk reviewer. Return only JSON "
+            "matching the enforced schema. Analyze the supplied current architecture against its "
+            "actual project requirements and deployment data. Deterministic findings are already "
+            "provided; add only distinct risks that those checks missed.\n"
+            "Every finding needs concrete evidence from supplied structured fields. Do not infer a "
+            "definite vulnerability from an omitted implementation detail. For absence-based or "
+            "uncertain findings, use wording such as `Potential risk`, `Not explicitly represented`, "
+            "or `Needs verification`, set needs_verification=true, and lower confidence.\n"
+            "Affected components must be exact names from current_architecture.components. Use [] "
+            "for a cross-cutting or unrepresented concern. Never invent components, traffic, "
+            "availability, latency, regions, budgets, compliance rules, or incidents. Do not repeat "
+            "a deterministic finding. Return at most three distinct risks. Keep each description, "
+            "evidence, impact, and recommendation under 30 words. Recommendations are architecture "
+            "advice, not user requirements.\n"
+            f"Input:{json.dumps(payload, separators=(',', ':'))}"
         )
 
     if stage == "actor-semantic-generation":

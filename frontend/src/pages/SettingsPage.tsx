@@ -75,7 +75,21 @@ export function SettingsPage() {
             ) : (
               <div className="mt-2 space-y-1 text-sm" style={{ color: 'var(--text-muted)' }}>
                 <p>Service: <strong>{healthQuery.data?.service}</strong> ({healthQuery.data?.environment})</p>
-                <p>Ollama: {ollamaStatus}</p>
+                <p>Architecture generation: {ollamaStatus}</p>
+                {healthQuery.data?.ollama_assistant_model ? (
+                  <p>
+                    AI Assistant: {healthQuery.data.ollama_assistant_model_available
+                      ? `${healthQuery.data.ollama_assistant_model} ready`
+                      : `${healthQuery.data.ollama_assistant_model} not installed`}
+                  </p>
+                ) : null}
+                {healthQuery.data?.ollama_vision_model ? (
+                  <p>
+                    Vision: {healthQuery.data.ollama_vision_model_available
+                      ? `${healthQuery.data.ollama_vision_model} ready`
+                      : `${healthQuery.data.ollama_vision_model} not installed`}
+                  </p>
+                ) : null}
                 <p>URL: <code>{getApiBaseUrl()}</code></p>
               </div>
             )}
