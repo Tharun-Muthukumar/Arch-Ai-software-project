@@ -206,6 +206,42 @@ def test_actor_action_updates_roles_and_can_be_undone(client):
     assert actor_name not in {actor["name"] for actor in restored["requirements"]["actors"]}
 
 
+def test_assistant_renames_actor_without_waiting_for_ollama(client, monkeypatch):
+    workspace = create_workspace(
+        client,
+        title="Driver workspace",
+        description="Drivers find charging stations and reserve available charging slots.",
+    )
+    actor = workspace["requirements"]["actors"][0]
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("An exact actor rename must not call Ollama")
+
+    monkeypatch.setattr(OllamaStructuredClient, "generate", fail_if_called)
+    proposed = client.post(
+        f"/api/v1/workspaces/{workspace['id']}/architecture-chat",
+        json={
+            "message": f"change the actor name {actor['name']} to Charging User",
+            "history": [],
+        },
+    )
+    assert proposed.status_code == 200, proposed.text
+    proposal = proposed.json()["proposal"]
+    assert proposal["project_actions"][0]["action"] == "update_actor"
+    assert proposal["project_actions"][0]["value"]["name"] == "Charging User"
+    assert proposal["project_actions"][0]["value"]["responsibilities"] == actor["responsibilities"]
+    assert proposal["auto_apply_safe"] is True
+
+    applied = client.post(
+        f"/api/v1/workspaces/{workspace['id']}/architecture-chat/apply",
+        json={"proposal": proposal},
+    )
+    assert applied.status_code == 200, applied.text
+    changed = applied.json()["workspace"]
+    assert "Charging User" in {item["name"] for item in changed["requirements"]["actors"]}
+    assert "Charging User" in {item["name"] for item in changed["prototype"]["roles"]}
+
+
 def test_assistant_proposes_requirement_before_new_functional_screen(client, monkeypatch):
     workspace = create_workspace(
         client,

@@ -862,6 +862,69 @@ class ArchitectureAssistantService:
             risk = "high"
             auto_apply = False
 
+        actor_rename = re.fullmatch(
+            r"(?:please\s+)?(?:rename|change|update)\s+(?:the\s+)?actor"
+            r"(?:\s+name)?\s+(?:from\s+)?(?P<old>.+?)\s+(?:to|as)\s+(?P<new>.+)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and actor_rename:
+            old_name = actor_rename.group("old").strip(" .!?\"'")
+            new_name = actor_rename.group("new").strip(" .!?\"'")
+            index = next(
+                (
+                    index
+                    for index, actor in enumerate(workspace.requirements.actors)
+                    if actor.name.casefold() == old_name.casefold()
+                ),
+                None,
+            )
+            if index is None:
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer=f"Actor {old_name} does not exist in the current project.",
+                )
+            if not new_name:
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer="Provide the new actor name after 'to'.",
+                )
+            duplicate = next(
+                (
+                    actor.name
+                    for actor_index, actor in enumerate(workspace.requirements.actors)
+                    if actor_index != index and actor.name.casefold() == new_name.casefold()
+                ),
+                None,
+            )
+            if duplicate:
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer=f"Actor {duplicate} already exists, so the rename was not applied.",
+                )
+            actor = workspace.requirements.actors[index]
+            value = actor.model_dump(mode="json")
+            value["name"] = new_name
+            value["source_evidence"] = [
+                *value.get("source_evidence", []),
+                {
+                    "source_id": "AI-USER-ACTOR-RENAME",
+                    "source": "explicit assistant command",
+                    "status": "user-edited",
+                    "excerpt": request.message,
+                },
+            ]
+            action = ProjectAction(
+                action="update_actor",
+                target_id=f"ACTOR-{index + 1:03d}",
+                value=value,
+                rationale=(
+                    f"The user explicitly renamed actor {actor.name} to {new_name}; "
+                    "all other actor facts are preserved."
+                ),
+            )
+            summary = f"Rename actor {actor.name} to {new_name}."
+
         actor_remove = re.fullmatch(
             r"(?:please\s+)?(?:delete|remove)\s+(?:the\s+)?actor\s+(?P<name>.+)",
             message,

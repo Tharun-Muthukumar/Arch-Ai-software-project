@@ -37,6 +37,15 @@ class PrototypeGenerator:
         "operations": ("Operations", "records", "table"),
         "reports": ("Reports", "records", "metrics"),
     }
+    _GROUP_ORDER = {
+        "account": 0,
+        "search": 1,
+        "booking": 2,
+        "payment": 3,
+        "monitoring": 4,
+        "operations": 5,
+        "reports": 6,
+    }
     _STOP_WORDS = {
         "a", "an", "and", "are", "be", "can", "for", "from", "in", "of", "on",
         "or", "should", "system", "that", "the", "their", "to", "user", "users", "with",
@@ -78,7 +87,14 @@ class PrototypeGenerator:
         screens: list[PrototypeScreen] = [
             self._overview_screen(title, requirements, requirement_rows, actor_rows, theme)
         ]
-        for group, rows in grouped.items():
+        ordered_groups = sorted(
+            grouped.items(),
+            key=lambda item: (
+                self._GROUP_ORDER.get(item[0], len(self._GROUP_ORDER)),
+                min(int(req_id.split("-")[1]) for req_id, _ in item[1]),
+            ),
+        )
+        for group, rows in ordered_groups:
             screens.append(
                 self._requirement_screen(
                     group,
@@ -373,11 +389,13 @@ class PrototypeGenerator:
 
     def _capability_name(self, text: str) -> str:
         cleaned = re.sub(r"^(?:the\s+)?[^.]{0,40}?\b(?:can|must|should)\b\s*", "", text, flags=re.I)
+        cleaned = re.sub(r"^(?:support|enable|allow|provide|manage)\s+", "", cleaned, flags=re.I)
         words = [word for word in re.findall(r"[A-Za-z0-9]+", cleaned) if word.casefold() not in self._STOP_WORDS]
         return " ".join(words[:5]).title() or "Product workflow"
 
     def _action_label(self, text: str) -> str:
         cleaned = re.sub(r"^(?:the\s+)?[^.]{0,50}?\b(?:can|must|should(?:\s+be\s+able\s+to)?)\b\s*", "", text, flags=re.I)
+        cleaned = re.sub(r"^(?:support|enable|allow|provide)\s+", "", cleaned, flags=re.I)
         words = re.findall(r"[A-Za-z0-9'-]+", cleaned)
         label = " ".join(words[:6]).strip()
         return (label[:1].upper() + label[1:]) if label else "Continue"

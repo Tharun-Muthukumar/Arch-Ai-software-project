@@ -147,6 +147,72 @@ describe('PrototypePage', () => {
     expect(screen.getByText('Reservation simulated.')).toBeInTheDocument()
   })
 
+  it('shows a map only when search requirements are geospatial', () => {
+    const searchScreen = {
+      ...workspace.prototype.screens[0],
+      id: 'PROTO-SCREEN-SEARCH',
+      name: 'Explore',
+      route: '/explore',
+      purpose: 'Drivers find nearby charging stations.',
+      layout: 'search' as const,
+      components: [{
+        ...workspace.prototype.screens[0].components[0],
+        id: 'PROTO-COMP-SEARCH',
+        component_type: 'search' as const,
+        title: 'Find charging stations',
+        description: 'Search nearby charging stations.',
+        items: ['Nearby charging stations'],
+        actions: [],
+      }],
+    }
+    const chargingWorkspace = {
+      ...workspace,
+      prototype: {
+        ...workspace.prototype,
+        start_screen_id: searchScreen.id,
+        screens: [searchScreen],
+      },
+    }
+    mocks.useWorkspacesQuery.mockReturnValue({ data: [chargingWorkspace], isLoading: false, isError: false })
+    renderPage()
+    expect(screen.getByLabelText('Concept map preview')).toBeInTheDocument()
+  })
+
+  it('does not invent a map for non-geospatial search', () => {
+    const searchScreen = {
+      ...workspace.prototype.screens[0],
+      id: 'PROTO-SCREEN-DOCUMENT-SEARCH',
+      name: 'Document search',
+      route: '/documents',
+      purpose: 'Reviewers search case documents by reference and title.',
+      layout: 'search' as const,
+      components: [{
+        ...workspace.prototype.screens[0].components[0],
+        id: 'PROTO-COMP-DOCUMENT-SEARCH',
+        component_type: 'search' as const,
+        title: 'Search documents',
+        description: 'Search case documents by reference and title.',
+        items: ['Case document search'],
+        actions: [],
+      }],
+    }
+    const documentWorkspace = {
+      ...workspace,
+      title: 'Case review',
+      prototype: {
+        ...workspace.prototype,
+        domain: 'Legal case document review',
+        theme: { ...workspace.prototype.theme, pattern: 'records' as const, realtime: false },
+        start_screen_id: searchScreen.id,
+        screens: [searchScreen],
+      },
+    }
+    mocks.useWorkspacesQuery.mockReturnValue({ data: [documentWorkspace], isLoading: false, isError: false })
+    renderPage()
+    expect(screen.queryByLabelText('Concept map preview')).not.toBeInTheDocument()
+    expect(screen.getByText('Case document search')).toBeInTheDocument()
+  })
+
   it('sends visual-only screen edits through the canonical workspace editor', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
