@@ -1,6 +1,53 @@
 import re
 
+from app.services.domain_inference import (
+    extract_actors,
+    extract_capabilities,
+    extract_entities,
+    tokenize,
+)
 from app.services.requirement_analyzer import RequirementAnalyzer
+
+
+def test_explicit_noun_led_capabilities_are_preserved_without_technology_or_scale():
+    description = (
+        "Build a cryogenic specimen custody tool with sample intake, vial tracking, "
+        "thaw requests, 1500 samples, and PostgreSQL."
+    )
+    entities = extract_entities(description, limit=16)
+    actors = extract_actors(description)
+    entity_tokens = {token for name in entities for token in tokenize(name)}
+    actor_tokens = {token for name, _ in actors for token in tokenize(name)}
+
+    capabilities = extract_capabilities(
+        description, None, entity_tokens, actor_tokens
+    )
+    combined = " ".join(capabilities).casefold()
+
+    assert "sample intake" in combined
+    assert "vial tracking" in combined
+    assert "thaw requests" in combined
+    assert "1500" not in combined
+    assert "postgresql" not in combined
+
+
+def test_resource_availability_stays_functional_while_sla_stays_non_functional():
+    requirements = RequirementAnalyzer().analyze(
+        "Cold-chain Slot Coordination",
+        (
+            "Build a cold-chain slot coordination tool with depot discovery, live bay "
+            "availability, slot booking, and cancellation requests. The service must "
+            "meet a 99.95% availability target."
+        ),
+    )
+
+    assert any(
+        "live bay availability" in item.casefold()
+        for item in requirements.functional_requirements
+    )
+    assert any(
+        "99.95%" in item for item in requirements.non_functional_requirements
+    )
 
 
 def _model_output() -> dict:

@@ -20,7 +20,7 @@ services:
     container_name: archai-backend
     environment:
       ARCHAI_DATABASE_URL: postgresql+psycopg://archai:archai@postgres:5432/archai
-      ARCHAI_ALLOWED_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173","http://localhost:3000"]'
+      ARCHAI_ALLOWED_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173","http://localhost:5174","http://127.0.0.1:5174","http://localhost:5175","http://127.0.0.1:5175","http://localhost:3000"]'
       ARCHAI_OLLAMA_BASE_URL: http://host.docker.internal:11434
       ARCHAI_OLLAMA_MODEL: qwen3:8b
       ARCHAI_OLLAMA_ASSISTANT_MODEL: qwen3:1.7b

@@ -8,6 +8,7 @@ import {
   Network,
   Plus,
   ShieldCheck,
+  Sparkles,
   Trash2,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -16,6 +17,7 @@ import { StatePanel } from '../components/workspace/StatePanel'
 import { WorkspaceEditDialog, type EditField } from '../components/workspace/WorkspaceEditDialog'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { cn, getActiveWorkspace, getErrorMessage } from '../lib/utils'
+import { openAssistantWithSelection } from '../lib/assistantContext'
 import type { ApiEndpoint, DatabaseEntity, WorkspaceEditRequest } from '../types/api'
 
 type Section = 'api' | 'data' | 'deployment'
@@ -164,7 +166,7 @@ export function InterfacesDataPage() {
                         <td data-label="Contract"><code>{endpoint.path}</code><p>{endpoint.purpose}</p></td>
                         <td data-label="Owner">{endpoint.service || <span className="text-muted">Unassigned</span>}</td>
                         <td data-label="Requirements">{endpoint.requirement_ids.length > 0 ? <div className="tag-list">{endpoint.requirement_ids.map((id) => <span key={id}>{id}</span>)}</div> : <span className="text-muted">Inferred</span>}</td>
-                        <td data-label="Actions"><div className="row-actions justify-end"><button type="button" className="icon-button" title="Edit endpoint" aria-label={`Edit ${endpoint.method} ${endpoint.path}`} onClick={() => endpointEdit('update', groupIndex, endpoint, endpointIndex)}><Edit3 className="h-3.5 w-3.5" /></button><button type="button" className="icon-button danger-hover" title="Delete endpoint" aria-label={`Delete ${endpoint.method} ${endpoint.path}`} onClick={() => endpointEdit('delete', groupIndex, endpoint, endpointIndex)}><Trash2 className="h-3.5 w-3.5" /></button></div></td>
+                        <td data-label="Actions"><div className="row-actions justify-end"><button type="button" className="icon-button" title="Ask AI about endpoint" aria-label={`Ask AI about ${endpoint.method} ${endpoint.path}`} onClick={() => openAssistantWithSelection({ object_type: 'api_endpoint', object_id: `API-GROUP-${groupIndex}-ENDPOINT-${endpointIndex}`, name: `${endpoint.method} ${endpoint.path}` })}><Sparkles className="h-3.5 w-3.5" /></button><button type="button" className="icon-button" title="Edit endpoint" aria-label={`Edit ${endpoint.method} ${endpoint.path}`} onClick={() => endpointEdit('update', groupIndex, endpoint, endpointIndex)}><Edit3 className="h-3.5 w-3.5" /></button><button type="button" className="icon-button danger-hover" title="Delete endpoint" aria-label={`Delete ${endpoint.method} ${endpoint.path}`} onClick={() => endpointEdit('delete', groupIndex, endpoint, endpointIndex)}><Trash2 className="h-3.5 w-3.5" /></button></div></td>
                       </tr>
                     ))}
                     {group.endpoints.length === 0 ? <tr><td colSpan={5}><div className="empty-row">No endpoints in this API group.</div></td></tr> : null}
@@ -189,7 +191,7 @@ export function InterfacesDataPage() {
           <div className="entity-grid">
             {workspace.database_design.entities.map((entity, index) => (
               <section key={`${entity.name}-${index}`} className="panel min-w-0">
-                <div className="flex items-start justify-between gap-3"><div><span className="id-badge">DATA-{String(index + 1).padStart(3, '0')}</span>{entity.bounded_context ? <span className="pill ml-2">{entity.bounded_context}</span> : null}<h3 className="panel-title mt-2">{entity.name}</h3><p className="panel-description">{entity.description}</p></div><div className="row-actions"><button type="button" className="icon-button" title="Edit entity" aria-label={`Edit ${entity.name}`} onClick={() => entityEdit('update', entity, index)}><Edit3 className="h-3.5 w-3.5" /></button><button type="button" className="icon-button danger-hover" title="Delete entity" aria-label={`Delete ${entity.name}`} onClick={() => entityEdit('delete', entity, index)}><Trash2 className="h-3.5 w-3.5" /></button></div></div>
+                <div className="flex items-start justify-between gap-3"><div><span className="id-badge">DATA-{String(index + 1).padStart(3, '0')}</span>{entity.bounded_context ? <span className="pill ml-2">{entity.bounded_context}</span> : null}<h3 className="panel-title mt-2">{entity.name}</h3><p className="panel-description">{entity.description}</p></div><div className="row-actions"><button type="button" className="icon-button" title="Ask AI about entity" aria-label={`Ask AI about ${entity.name}`} onClick={() => openAssistantWithSelection({ object_type: 'database_entity', object_id: `ENTITY-${String(index + 1).padStart(3, '0')}`, name: entity.name })}><Sparkles className="h-3.5 w-3.5" /></button><button type="button" className="icon-button" title="Edit entity" aria-label={`Edit ${entity.name}`} onClick={() => entityEdit('update', entity, index)}><Edit3 className="h-3.5 w-3.5" /></button><button type="button" className="icon-button danger-hover" title="Delete entity" aria-label={`Delete ${entity.name}`} onClick={() => entityEdit('delete', entity, index)}><Trash2 className="h-3.5 w-3.5" /></button></div></div>
                 <div className="field-list mt-4">{entity.fields.map((field) => <div key={field.name}><code>{field.name}</code><span>{field.data_type}{field.nullable ? ' · nullable' : ''}</span>{field.indexed ? <KeyRound className="h-3.5 w-3.5" aria-label="Indexed" /> : null}</div>)}</div>
               </section>
             ))}

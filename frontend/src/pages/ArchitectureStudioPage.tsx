@@ -6,6 +6,7 @@ import { ADRTimeline } from '../components/workspace/ADRTimeline'
 import { WorkspaceEditDialog, type EditField } from '../components/workspace/WorkspaceEditDialog'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage, formatMetricName } from '../lib/utils'
+import { openAssistantWithSelection } from '../lib/assistantContext'
 import { isLowerBetter, metricDirectionLabel, metricUtility } from '../lib/architectureMetrics'
 import type { ArchitectureDecisionRecord, Workspace } from '../types/api'
 import type { ArchitectureComponent, WorkspaceEditRequest } from '../types/api'
@@ -211,6 +212,7 @@ export function ArchitectureStudioPage() {
                 onAdd={() => openComponentEdit('add')}
                 onEdit={(component, index) => openComponentEdit('update', component, index)}
                 onDelete={(component, index) => openComponentEdit('delete', component, index)}
+                onAsk={(component, index) => openAssistantWithSelection({ object_type: 'architecture_component', object_id: `COMPONENT-${String(index + 1).padStart(3, '0')}`, name: component.name })}
               />
             </div>
             <div className="space-y-4">

@@ -1,4 +1,4 @@
-import { CircleHelp, Edit3, Plus, Trash2 } from 'lucide-react'
+import { CircleHelp, Edit3, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import type { ArchitectureComponent, ArchitectureOption } from '../../types/api'
 
@@ -8,9 +8,10 @@ interface ArchitectureFlowProps {
   onAdd?: () => void
   onEdit?: (component: ArchitectureComponent, index: number) => void
   onDelete?: (component: ArchitectureComponent, index: number) => void
+  onAsk?: (component: ArchitectureComponent, index: number) => void
 }
 
-export function ArchitectureFlow({ architecture, whyHref, onAdd, onEdit, onDelete }: ArchitectureFlowProps) {
+export function ArchitectureFlow({ architecture, whyHref, onAdd, onEdit, onDelete, onAsk }: ArchitectureFlowProps) {
   return (
     <div className="panel">
       <div className="mb-4 flex items-start justify-between gap-3">
@@ -40,6 +41,7 @@ export function ArchitectureFlow({ architecture, whyHref, onAdd, onEdit, onDelet
                   <h4 className="font-medium">{component.name}</h4>
                   {onEdit && onDelete ? (
                     <div className="row-actions">
+                      {onAsk ? <button type="button" className="icon-button" title="Ask AI about component" aria-label={`Ask AI about ${component.name}`} onClick={() => onAsk(component, index)}><Sparkles className="h-3.5 w-3.5" /></button> : null}
                       <button type="button" className="icon-button" title="Edit component" aria-label={`Edit ${component.name}`} onClick={() => onEdit(component, index)}><Edit3 className="h-3.5 w-3.5" /></button>
                       <button type="button" className="icon-button danger-hover" title="Delete component" aria-label={`Delete ${component.name}`} onClick={() => onDelete(component, index)}><Trash2 className="h-3.5 w-3.5" /></button>
                     </div>

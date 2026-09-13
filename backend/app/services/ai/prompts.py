@@ -158,6 +158,18 @@ def build_structured_prompt(stage: str, payload: dict) -> str:
             f"Input:{json.dumps(payload, separators=(',', ':'))}"
         )
 
+    if stage == "architecture-chat-question":
+        return (
+            "You are ArchAI's grounded project assistant. Return exactly one compact JSON object "
+            "matching the enforced schema. Answer only from the supplied current project, architecture, "
+            "deployment, conversation, and raw_requirement. Separate confirmed facts from inference, "
+            "unknowns, and recommendations. Quote requirement IDs when supplied. Do not invent actors, "
+            "technologies, numbers, integrations, compliance, or guarantees. affected_components may "
+            "contain only exact names from current_architecture. Keep the answer under 130 words. Never "
+            "claim a change was applied.\n"
+            f"Input:{json.dumps(payload, separators=(',', ':'))}"
+        )
+
     if stage == "architecture-risk-analysis":
         return (
             "You are ArchAI's evidence-grounded architecture risk reviewer. Return only JSON "

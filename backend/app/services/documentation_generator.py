@@ -39,8 +39,12 @@ class DocumentationGenerator:
             graph_lines = [
                 f"- {len(graph.nodes)} traceable nodes",
                 f"- {len(graph.edges)} validated relationships",
-                f"- {len(graph.orphan_node_ids)} unjustified architecture components",
+                f"- {len(graph.orphan_node_ids)} artifacts without a validated requirement path",
             ]
+        prototype_lines = [
+            f"- {screen.name}: {', '.join(screen.source_requirement_ids) or 'prototype-only'}"
+            for screen in workspace.prototype.screens
+        ]
 
         return "\n".join(
             [
@@ -99,6 +103,11 @@ class DocumentationGenerator:
                 "",
                 "## Diagrams",
                 diagrams,
+                "",
+                "## Interactive Prototype",
+                f"Pattern: {workspace.prototype.theme.pattern}",
+                f"Actor views: {', '.join(role.name for role in workspace.prototype.roles) or 'not assigned'}",
+                *prototype_lines,
                 "",
                 "## Requirement-to-Architecture Traceability",
                 *graph_lines,

@@ -11,6 +11,8 @@ from app.schemas.domain import (
     ConsistencyIssue,
     DatabaseEntity,
     DomainEntityHint,
+    PrototypeScreen,
+    PrototypeTheme,
     SemanticEditSuggestion,
     WorkspaceEditImpact,
     WorkspaceEditPreview,
@@ -169,6 +171,46 @@ class WorkspaceEditService:
             self._edit_deployment(updated, normalized)
         elif edit.target_type == "diagram_layout":
             self._edit_diagram_layout(updated, edit, normalized)
+        elif edit.target_type == "prototype_screen":
+            screens = list(updated.prototype.screens)
+            if edit.operation == "add":
+                if not isinstance(normalized, dict):
+                    raise ValueError("Prototype screen edits require a structured value.")
+                screen = PrototypeScreen.model_validate(normalized)
+                screen.visual_overrides = {
+                    **screen.visual_overrides,
+                    "custom": screen.visual_overrides.get("custom", "true"),
+                }
+                screens.append(screen)
+            else:
+                index = self._prototype_screen_index(updated, edit.target_id)
+                if edit.operation == "update":
+                    if not isinstance(normalized, dict):
+                        raise ValueError("Prototype screen edits require a structured value.")
+                    screens[index] = PrototypeScreen.model_validate(normalized)
+                elif edit.operation == "delete":
+                    removed = screens.pop(index)
+                    updated.prototype.dismissed_screen_ids = self._dedupe_strings([
+                        *updated.prototype.dismissed_screen_ids,
+                        removed.id,
+                    ])
+                else:
+                    screen = screens.pop(index)
+                    screens.insert(min(edit.destination_index or 0, len(screens)), screen)
+            if not screens:
+                raise ValueError("A prototype must retain at least one screen.")
+            updated.prototype.screens = screens
+            if updated.prototype.start_screen_id not in {screen.id for screen in screens}:
+                updated.prototype.start_screen_id = screens[0].id
+            updated.prototype = type(updated.prototype).model_validate(
+                updated.prototype.model_dump()
+            )
+        elif edit.target_type == "prototype_theme":
+            if not isinstance(normalized, dict):
+                raise ValueError("Prototype theme edits require a structured value.")
+            payload = updated.prototype.theme.model_dump()
+            payload.update(normalized)
+            updated.prototype.theme = PrototypeTheme.model_validate(payload)
 
         issues = self.consistency_issues(updated)
         errors = [issue for issue in issues if issue.severity == "error"]
@@ -722,6 +764,15 @@ class WorkspaceEditService:
                 ("Diagram layout", "visual", "Only saved positions and notes change."),
                 ("Architecture", "none", "The underlying architecture is unchanged."),
             ],
+            "prototype_screen": [
+                ("Prototype", "visual", "The selected prototype screen changes."),
+                ("Requirements", "none", "Prototype-only edits do not alter product requirements."),
+                ("Traceability", "moderate", "Screen-to-requirement links are revalidated."),
+            ],
+            "prototype_theme": [
+                ("Prototype", "visual", "Only prototype presentation settings change."),
+                ("Requirements", "none", "The canonical product behavior is unchanged."),
+            ],
         }
         requirement_default = [
             ("Requirements", "major", "The structured project model changes."),
@@ -735,6 +786,10 @@ class WorkspaceEditService:
     def _regeneration_sections(self, target_type: str) -> list[str]:
         if target_type == "diagram_layout":
             return []
+        if target_type == "prototype_theme":
+            return []
+        if target_type == "prototype_screen":
+            return ["causal_graph", "documentation"]
         if target_type == "architecture_component":
             # A topology edit changes evaluation and deployment views, but it
             # does not change the canonical business data model or interfaces.
@@ -750,11 +805,11 @@ class WorkspaceEditService:
         if target_type == "non_functional_requirement":
             return [
                 "clarifications", "architectures", "comparison", "recommendation",
-                "database", "api", "deployment", "diagrams", "causal_graph", "documentation",
+                "database", "api", "deployment", "diagrams", "prototype", "causal_graph", "documentation",
             ]
         return [
             "clarifications", "architectures", "comparison", "recommendation",
-            "database", "api", "deployment", "diagrams", "causal_graph", "documentation",
+            "database", "api", "deployment", "diagrams", "prototype", "causal_graph", "documentation",
         ]
 
     def _validate_locator(self, workspace: WorkspaceResponse, edit: WorkspaceEditRequest) -> None:
@@ -779,6 +834,8 @@ class WorkspaceEditService:
             self._index(edit.target_id, "ENDPOINT", len(group.endpoints))
         elif edit.target_type == "database_entity":
             self._index(edit.target_id, "ENTITY", len(workspace.database_design.entities))
+        elif edit.target_type == "prototype_screen":
+            self._prototype_screen_index(workspace, edit.target_id)
 
     def _normalize_value(self, edit: WorkspaceEditRequest) -> str | dict[str, Any] | None:
         if isinstance(edit.value, str):
@@ -872,6 +929,17 @@ class WorkspaceEditService:
         layouts = dict(workspace.diagram_layouts)
         layouts[edit.target_id] = normalized
         workspace.diagram_layouts = layouts
+
+    @staticmethod
+    def _prototype_screen_index(
+        workspace: WorkspaceResponse, screen_id: str | None
+    ) -> int:
+        if not screen_id:
+            raise ValueError("A prototype screen identifier is required.")
+        for index, screen in enumerate(workspace.prototype.screens):
+            if screen.id == screen_id:
+                return index
+        raise ValueError("The selected prototype screen does not exist.")
 
     def _architecture(self, workspace: WorkspaceResponse, architecture_id: str | None):
         architecture = next(

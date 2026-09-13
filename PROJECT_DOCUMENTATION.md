@@ -292,7 +292,7 @@ npm run dev
 ```
 
 Frontend: http://127.0.0.1:5173
-Backend API: http://127.0.0.1:8010
+Backend API: http://127.0.0.1:8011
 
 ### Production (with Docker)
 ```bash

@@ -16,6 +16,7 @@ from app.schemas.domain import (
 )
 from app.services.ai.client import OllamaStructuredClient
 from app.services.domain_inference import (
+    TECHNOLOGY_NAMES,
     _normalize_role,
     capability_object_tokens,
     classify_domain,
@@ -228,26 +229,6 @@ BLUEPRINTS = (
     ),
 )
 
-
-TECHNOLOGY_NAMES = (
-    "aws",
-    "azure",
-    "cassandra",
-    "docker",
-    "dynamodb",
-    "elasticsearch",
-    "fastapi",
-    "gcp",
-    "kafka",
-    "kubernetes",
-    "mongodb",
-    "mysql",
-    "postgresql",
-    "rabbitmq",
-    "react",
-    "redis",
-    "terraform",
-)
 
 GENERIC_ACTOR_NAMES = {"application", "platform", "software", "system"}
 
@@ -1248,10 +1229,9 @@ class RequirementAnalyzer:
         existing requirement: deterministic items are already normalized.
         """
         from app.services.domain_inference import (
-            _CAPABILITY_NOUNS,
-            _CAPABILITY_VERBS,
             _looks_like_capability,
             _normalize_capability,
+            _normalize_enumerated_capability,
             _split_enumeration,
         )
 
@@ -1261,15 +1241,20 @@ class RequirementAnalyzer:
             " ".join(part for part in (description, business_context or "") if part)
         ):
             candidates = _split_enumeration(sentence)
-            if len(candidates) <= 1:
+            enumerated = len(candidates) > 1
+            if not enumerated:
                 candidates = [sentence]
             for candidate in candidates:
-                cleaned = _normalize_capability(candidate)
+                cleaned = (
+                    _normalize_enumerated_capability(candidate, entity_tokens, actor_tokens)
+                    if enumerated
+                    else _normalize_capability(candidate)
+                )
                 if not cleaned or cleaned in extended:
                     continue
                 if self._clause_coverage(cleaned, represented) >= 0.85:
                     continue
-                if _looks_like_capability(cleaned, entity_tokens, actor_tokens):
+                if enumerated or _looks_like_capability(cleaned, entity_tokens, actor_tokens):
                     extended.append(cleaned)
                     represented += f" {cleaned}"
         return self._dedupe(extended)
@@ -1327,6 +1312,19 @@ class RequirementAnalyzer:
                 for marker in domain_action_markers
             )
 
+        def _resource_availability_capability(value: str) -> bool:
+            lower = value.casefold()
+            if any(marker in lower for marker in (
+                "availability target", "uptime", "service availability",
+                "system availability", "platform availability",
+            )):
+                return False
+            return bool(re.search(
+                r"\b(?:check|display|expose|find|search|show|track|view)\w*\b"
+                r".{0,80}\b(?:availability|available)\b",
+                lower,
+            ))
+
         kept_functional: list[str] = []
         moved_nfr: list[str] = []
         moved_constraints: list[str] = []
@@ -1359,7 +1357,7 @@ class RequirementAnalyzer:
             ))
             if quality_hits and _solution_constraint(item):
                 moved_constraints.append(item)
-            elif quality_hits and (
+            elif quality_hits and not _resource_availability_capability(item) and (
                 numeric_quality
                 or quality_hits >= 2
                 or domain_actions == 0

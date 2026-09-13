@@ -16,6 +16,7 @@ def ensure_workspace_columns(engine: Engine) -> None:
         "adrs_json": json_type,
         "diagram_layouts_json": json_type,
         "edit_history_json": json_type,
+        "prototype_json": json_type,
     }
     with engine.begin() as connection:
         for column_name, column_type in additions.items():

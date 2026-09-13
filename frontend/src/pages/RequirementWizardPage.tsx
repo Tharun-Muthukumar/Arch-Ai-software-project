@@ -10,6 +10,7 @@ import {
   MessageSquareText,
   Plus,
   ShieldCheck,
+  Sparkles,
   Trash2,
   UserRound,
 } from 'lucide-react'
@@ -19,6 +20,7 @@ import { StatePanel } from '../components/workspace/StatePanel'
 import { WorkspaceEditDialog, type EditField } from '../components/workspace/WorkspaceEditDialog'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage } from '../lib/utils'
+import { openAssistantWithSelection } from '../lib/assistantContext'
 import type { WorkspaceEditRequest, WorkspaceEditTarget } from '../types/api'
 
 interface ActiveEdit {
@@ -140,6 +142,7 @@ export function RequirementWizardPage() {
           values={requirements.functional_requirements}
           empty="No functional requirements are confirmed yet."
           onAction={(operation, value, index, destination) => openStringEdit('functional_requirement', operation, value, index, destination)}
+          onAsk={(id, name) => openAssistantWithSelection({ object_type: 'requirement', object_id: id, name })}
         />
         <StringEditor
           title="Non-functional requirements"
@@ -148,6 +151,7 @@ export function RequirementWizardPage() {
           values={requirements.non_functional_requirements}
           empty="No quality requirements are confirmed yet."
           onAction={(operation, value, index, destination) => openStringEdit('non_functional_requirement', operation, value, index, destination)}
+          onAsk={(id, name) => openAssistantWithSelection({ object_type: 'requirement', object_id: id, name })}
         />
       </div>
 
@@ -159,6 +163,7 @@ export function RequirementWizardPage() {
               <div className="id-badge">ACT-{String(index + 1).padStart(3, '0')}</div>
               <div className="min-w-0 flex-1"><strong>{actor.name}</strong><p>{actor.description}</p><div className="tag-list"><span>{actor.actor_type ?? 'unknown'}</span>{actor.owning_boundary ? <span>{actor.owning_boundary}</span> : null}{actor.permissions?.map((permission) => <span key={permission}>{permission}</span>)}</div></div>
               <RowActions
+                onAsk={() => openAssistantWithSelection({ object_type: 'actor', object_id: actor.id ?? `ACTOR-${String(index + 1).padStart(3, '0')}`, name: actor.name })}
                 onEdit={() => setActiveEdit(actorEdit('update', actor, index))}
                 onDelete={() => setActiveEdit(actorEdit('delete', actor, index))}
                 onUp={index > 0 ? () => setActiveEdit(actorReorder(actor, index, index - 1)) : undefined}
@@ -207,7 +212,7 @@ export function RequirementWizardPage() {
             <div key={`${entity.name}-${index}`} className="editor-row items-start">
               <div className="id-badge">ENT-{String(index + 1).padStart(3, '0')}</div>
               <div className="min-w-0 flex-1"><strong>{entity.name}</strong><p>{entity.description}</p><div className="tag-list">{entity.bounded_context ? <span>Owner: {entity.bounded_context}</span> : null}{entity.attributes.map((attribute) => <span key={attribute}>{attribute}</span>)}{entity.lifecycle_fields?.map((field) => <span key={field}>{field}</span>)}</div></div>
-              <RowActions onEdit={() => setActiveEdit(entityEdit('update', entity, index))} onDelete={() => setActiveEdit(entityEdit('delete', entity, index))} />
+              <RowActions onAsk={() => openAssistantWithSelection({ object_type: 'entity', object_id: entity.id ?? `ENTITY-HINT-${String(index + 1).padStart(3, '0')}`, name: entity.name })} onEdit={() => setActiveEdit(entityEdit('update', entity, index))} onDelete={() => setActiveEdit(entityEdit('delete', entity, index))} />
             </div>
           ))}
           {requirements.domain_entities.length === 0 ? <EmptyRow text="No domain entities have been confirmed." /> : null}
@@ -237,13 +242,14 @@ export function RequirementWizardPage() {
   )
 }
 
-function StringEditor({ title, description, prefix, values, empty, onAction }: {
+function StringEditor({ title, description, prefix, values, empty, onAction, onAsk }: {
   title: string
   description: string
   prefix: string
   values: string[]
   empty: string
   onAction: (operation: WorkspaceEditRequest['operation'], value?: string, index?: number, destination?: number) => void
+  onAsk: (id: string, name: string) => void
 }) {
   return (
     <section className="panel min-w-0">
@@ -254,6 +260,7 @@ function StringEditor({ title, description, prefix, values, empty, onAction }: {
             <div className="id-badge">{prefix}-{String(index + 1).padStart(3, '0')}</div>
             <p className="min-w-0 flex-1">{value}</p>
             <RowActions
+              onAsk={() => onAsk(`${prefix}-${String(index + 1).padStart(3, '0')}`, value)}
               onEdit={() => onAction('update', value, index)}
               onDelete={() => onAction('delete', value, index)}
               onUp={index > 0 ? () => onAction('reorder', value, index, index - 1) : undefined}
@@ -300,9 +307,10 @@ function SectionHeader({ title, description, onAdd }: { title: string; descripti
   )
 }
 
-function RowActions({ onEdit, onDelete, onUp, onDown }: { onEdit: () => void; onDelete: () => void; onUp?: () => void; onDown?: () => void }) {
+function RowActions({ onEdit, onDelete, onAsk, onUp, onDown }: { onEdit: () => void; onDelete: () => void; onAsk?: () => void; onUp?: () => void; onDown?: () => void }) {
   return (
     <div className="row-actions">
+      {onAsk ? <button type="button" className="icon-button" title="Ask AI about this" aria-label="Ask AI about this" onClick={onAsk}><Sparkles className="h-3.5 w-3.5" /></button> : null}
       {onUp ? <button type="button" className="icon-button" title="Move up" aria-label="Move up" onClick={onUp}><ArrowUp className="h-3.5 w-3.5" /></button> : null}
       {onDown ? <button type="button" className="icon-button" title="Move down" aria-label="Move down" onClick={onDown}><ArrowDown className="h-3.5 w-3.5" /></button> : null}
       <button type="button" className="icon-button" title="Edit" aria-label="Edit" onClick={onEdit}><Edit3 className="h-3.5 w-3.5" /></button>

@@ -71,6 +71,12 @@ _GENERIC_ACTOR_NAMES = frozenset(
     {"application", "platform", "software", "system", "systems", "user", "users"}
 )
 
+TECHNOLOGY_NAMES = (
+    "aws", "azure", "cassandra", "docker", "dynamodb", "elasticsearch",
+    "fastapi", "gcp", "kafka", "kubernetes", "mongodb", "mysql",
+    "postgresql", "rabbitmq", "react", "redis", "terraform",
+)
+
 
 def tokenize(text: str) -> list[str]:
     """Lowercase alphanumeric tokens."""
@@ -765,6 +771,44 @@ def _normalize_capability(clause: str) -> str:
     return text[:1].upper() + text[1:] + "."
 
 
+def _normalize_enumerated_capability(
+    clause: str,
+    entity_tokens: set[str],
+    actor_tokens: set[str],
+) -> str:
+    """Preserve a grounded noun phrase from an explicit capability list.
+
+    Users commonly write ``with discovery, payments, and refunds``. Those are
+    product behaviors even though the individual list items contain no verb.
+    This path is deliberately restricted to enumerated items and vocabulary
+    already extracted from the brief, so it cannot introduce a new domain fact.
+    """
+    cleaned = _normalize_capability(clause)
+    if not cleaned:
+        return ""
+    if _looks_like_capability(cleaned, entity_tokens, actor_tokens):
+        return cleaned
+
+    words = tokenize(cleaned)
+    if not words or len(words) > 8 or any(character.isdigit() for character in cleaned):
+        return ""
+    if set(words) <= frozenset(TECHNOLOGY_NAMES):
+        return ""
+    phrase = cleaned.rstrip(".")
+    content = {word.rstrip("s") for word in words if word not in _ENGLISH_STOPWORDS}
+    if "availability" in words:
+        resource_terms = content - {
+            "availability", "available", "current", "high", "live", "real", "realtime", "time",
+        }
+        if resource_terms - {"application", "platform", "service", "system"}:
+            return f"Expose {phrase[:1].lower() + phrase[1:]}."
+
+    grounding = {word.rstrip("s") for word in (entity_tokens | actor_tokens)}
+    if not (content & grounding):
+        return ""
+    return f"Support {phrase[:1].lower() + phrase[1:]}."
+
+
 _ENUMERATION_FRAMING = re.compile(
     r"^(?:key\s+capabilities(?:\s+include|\s+including)?|capabilities(?:\s+include|\s+including)?"
     r"|including|include|includes|such\s+as|like)\s+",
@@ -831,11 +875,15 @@ def extract_capabilities(
     capabilities: list[str] = []
     seen: set[str] = set()
 
-    def _accept(text: str) -> bool:
-        cleaned = _normalize_capability(text)
+    def _accept(text: str, *, enumerated: bool = False) -> bool:
+        cleaned = (
+            _normalize_enumerated_capability(text, entity_tokens, actor_tokens)
+            if enumerated
+            else _normalize_capability(text)
+        )
         if not cleaned or cleaned.casefold() in seen:
             return False
-        if _looks_like_capability(cleaned, entity_tokens, actor_tokens):
+        if enumerated or _looks_like_capability(cleaned, entity_tokens, actor_tokens):
             seen.add(cleaned.casefold())
             capabilities.append(cleaned)
             return True
@@ -846,7 +894,7 @@ def extract_capabilities(
         # items; the framing sentence itself is skipped when items land.
         items = _split_enumeration(sentence)
         if len(items) > 1:
-            landed = sum(1 for item in items if _accept(item))
+            landed = sum(1 for item in items if _accept(item, enumerated=True))
             if landed >= 2:
                 if len(capabilities) >= limit:
                     return capabilities

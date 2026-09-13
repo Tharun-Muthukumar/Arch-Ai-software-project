@@ -27,6 +27,7 @@ CausalNodeType = Literal[
     "cost",
     "adr",
     "diagram",
+    "prototype_screen",
 ]
 
 CausalRelationshipType = Literal[
@@ -290,6 +291,176 @@ class ArchitectureOption(BaseModel):
     maintenance: str
 
 
+PrototypeComponentType = Literal[
+    "hero",
+    "search",
+    "filter",
+    "list",
+    "cards",
+    "table",
+    "form",
+    "status",
+    "timeline",
+    "details",
+    "notice",
+    "metrics",
+]
+
+
+class PrototypeAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    label: str = Field(min_length=1, max_length=100)
+    action_type: Literal["navigate", "submit", "filter", "toggle", "open_dialog"]
+    target_screen_id: str | None = None
+    feedback: str | None = Field(default=None, max_length=220)
+    source_requirement_ids: list[str] = Field(default_factory=list, max_length=12)
+
+
+class PrototypeComponent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    component_type: PrototypeComponentType
+    title: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=400)
+    fields: list[str] = Field(default_factory=list, max_length=10)
+    items: list[str] = Field(default_factory=list, max_length=12)
+    actions: list[PrototypeAction] = Field(default_factory=list, max_length=8)
+    source_requirement_ids: list[str] = Field(default_factory=list, max_length=12)
+    source_entity_ids: list[str] = Field(default_factory=list, max_length=12)
+
+
+class PrototypeScreen(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str = Field(min_length=1, max_length=100)
+    route: str = Field(min_length=1, max_length=140)
+    purpose: str = Field(min_length=3, max_length=500)
+    layout: Literal["overview", "search", "workflow", "records", "monitoring", "form"]
+    actor_ids: list[str] = Field(default_factory=list, max_length=12)
+    components: list[PrototypeComponent] = Field(default_factory=list, max_length=12)
+    states: list[str] = Field(default_factory=list, max_length=10)
+    source_requirement_ids: list[str] = Field(default_factory=list, max_length=20)
+    source_actor_ids: list[str] = Field(default_factory=list, max_length=12)
+    source_entity_ids: list[str] = Field(default_factory=list, max_length=12)
+    visual_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class PrototypeRole(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor_id: str
+    name: str
+    description: str
+
+
+class PrototypeTheme(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pattern: Literal["scheduling", "monitoring", "records", "catalog", "workspace", "workflow"]
+    accent: str = "cyan"
+    density: Literal["comfortable", "compact"] = "comfortable"
+    accessible: bool = False
+    realtime: bool = False
+    offline: bool = False
+
+
+class PrototypeSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    project_id: str
+    version: str = "1"
+    title: str
+    domain: str
+    theme: PrototypeTheme
+    roles: list[PrototypeRole] = Field(default_factory=list, max_length=20)
+    screens: list[PrototypeScreen] = Field(default_factory=list, max_length=30)
+    start_screen_id: str
+    dismissed_screen_ids: list[str] = Field(default_factory=list, max_length=30)
+    warnings: list[str] = Field(default_factory=list, max_length=12)
+    generated_at: datetime
+
+    @model_validator(mode="after")
+    def validate_references(self):
+        screen_ids = [screen.id for screen in self.screens]
+        if not self.screens:
+            raise ValueError("A prototype must contain at least one screen")
+        if len(screen_ids) != len(set(screen_ids)):
+            raise ValueError("Prototype screen IDs must be unique")
+        if self.start_screen_id not in set(screen_ids):
+            raise ValueError("Prototype start screen must reference an existing screen")
+        known_roles = {role.actor_id for role in self.roles}
+        for screen in self.screens:
+            if not set(screen.actor_ids).issubset(known_roles):
+                raise ValueError(f"Prototype screen {screen.id} references an unknown actor")
+            for component in screen.components:
+                for action in component.actions:
+                    if action.target_screen_id and action.target_screen_id not in set(screen_ids):
+                        raise ValueError(
+                            f"Prototype action {action.id} references an unknown screen"
+                        )
+        return self
+
+
+ProjectActionKind = Literal[
+    "add_requirement",
+    "update_requirement",
+    "delete_requirement",
+    "add_actor",
+    "update_actor",
+    "delete_actor",
+    "add_entity",
+    "update_entity",
+    "delete_entity",
+    "add_architecture_component",
+    "update_architecture_component",
+    "delete_architecture_component",
+    "add_api_endpoint",
+    "update_api_endpoint",
+    "delete_api_endpoint",
+    "add_database_entity",
+    "update_database_entity",
+    "delete_database_entity",
+    "update_deployment",
+    "update_prototype",
+    "add_prototype_screen",
+    "update_prototype_screen",
+    "remove_prototype_screen",
+    "regenerate_affected",
+    "undo",
+    "redo",
+]
+
+
+class ProjectAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: ProjectActionKind
+    target_id: str | None = Field(default=None, max_length=160)
+    parent_id: str | None = Field(default=None, max_length=160)
+    requirement_type: Literal["functional_requirement", "non_functional_requirement"] | None = None
+    value: str | dict[str, Any] | None = None
+    rationale: str = Field(default="User-requested project change.", max_length=500)
+
+    @model_validator(mode="after")
+    def validate_action_shape(self):
+        if self.action in {"undo", "redo", "regenerate_affected"}:
+            return self
+        if self.action.startswith("add_") or self.action.startswith("update_"):
+            if self.value is None:
+                raise ValueError(f"{self.action} requires a value")
+        if self.action.startswith("update_") or self.action.startswith("delete_") or self.action.startswith("remove_"):
+            if not self.target_id:
+                raise ValueError(f"{self.action} requires a target_id")
+        if "requirement" in self.action and not self.requirement_type:
+            raise ValueError("Requirement actions require requirement_type")
+        return self
+
+
 ArchitecturePatchKind = Literal[
     "add_component",
     "update_component",
@@ -360,6 +531,17 @@ class ArchitectureChatHistoryMessage(BaseModel):
     content: str = Field(min_length=1, max_length=3000)
 
 
+class AssistantSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    object_type: Literal[
+        "requirement", "actor", "entity", "architecture_component", "api_endpoint",
+        "database_entity", "diagram", "prototype_screen", "causal_node",
+    ]
+    object_id: str = Field(min_length=1, max_length=160)
+    name: str | None = Field(default=None, max_length=160)
+
+
 class ArchitectureChatImage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -406,6 +588,7 @@ class ArchitectureChangeProposal(BaseModel):
     requirement_additions: list[ArchitectureRequirementAddition] = Field(
         default_factory=list, max_length=4
     )
+    project_actions: list[ProjectAction] = Field(default_factory=list, max_length=8)
     affected_components: list[str] = Field(default_factory=list, max_length=12)
     tradeoffs: list[str] = Field(default_factory=list, max_length=8)
     risk_level: Literal["low", "medium", "high"]
@@ -413,7 +596,7 @@ class ArchitectureChangeProposal(BaseModel):
 
     @model_validator(mode="after")
     def validate_has_change(self):
-        if not self.architecture_changes and not self.requirement_additions:
+        if not self.architecture_changes and not self.requirement_additions and not self.project_actions:
             raise ValueError("An architecture change proposal must contain a change")
         return self
 
@@ -427,6 +610,8 @@ class ArchitectureChatRequest(BaseModel):
         default_factory=list, max_length=12
     )
     images: list[ArchitectureChatImage] = Field(default_factory=list, max_length=1)
+    page_context: str | None = Field(default=None, max_length=160)
+    selection: AssistantSelection | None = None
 
     @field_validator("message")
     @classmethod
@@ -691,6 +876,8 @@ WorkspaceEditTarget = Literal[
     "database_entity",
     "deployment",
     "diagram_layout",
+    "prototype_screen",
+    "prototype_theme",
 ]
 WorkspaceEditOperation = Literal["add", "update", "delete", "reorder"]
 ImpactLevel = Literal["none", "minor", "moderate", "major", "visual"]
@@ -747,6 +934,22 @@ class WorkspaceEditPreview(BaseModel):
     normalized_value: str | dict[str, Any] | None = None
     impact: WorkspaceEditImpact
     suggestion: SemanticEditSuggestion | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ProjectActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: ProjectAction
+    expected_updated_at: datetime | None = None
+
+
+class ProjectActionPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: ProjectAction
+    workspace_edit: WorkspaceEditRequest | None = None
+    impact: WorkspaceEditImpact
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -1138,6 +1341,7 @@ class WorkspaceResponse(BaseModel):
     database_design: DatabaseDesign
     api_design: ApiDesign
     deployment_plan: DeploymentPlan
+    prototype: PrototypeSpec
     documentation_markdown: str
     impact_history: list[ImpactAssessment] = Field(default_factory=list)
     adr: ArchitectureDecisionRecord | None = None

@@ -27,10 +27,9 @@ def test_architecture_question_does_not_change_workspace(client, monkeypatch):
     architecture = workspace["architectures"][0]
 
     def fake_generate(_self, stage, _input_data, **_kwargs):
-        if stage != "architecture-chat":
+        if stage != "architecture-chat-question":
             return None
         return {
-            "type": "question",
             "answer": f"{architecture['components'][0]['name']} is on the current request path.",
             "affected_components": [architecture["components"][0]["name"]],
             "recommendations": ["Measure the path before changing capacity."],
@@ -89,6 +88,51 @@ def test_component_ownership_question_is_fast_and_grounded(client, monkeypatch):
     assert expected["name"] in body["answer"]
     assert expected["responsibility"] in body["answer"]
     assert "Identity and Access" not in body["answer"]
+
+
+def test_transaction_freshness_tradeoff_is_fast_grounded_and_marks_unknowns(client, monkeypatch):
+    workspace = create_workspace(client)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("A grounded cross-requirement comparison should not call Ollama")
+
+    monkeypatch.setattr(OllamaStructuredClient, "generate", fail_if_called)
+    response = client.post(
+        f"/api/v1/workspaces/{workspace['id']}/architecture-chat",
+        json={
+            "message": (
+                "How should this project balance booking consistency against live charger "
+                "availability? Distinguish confirmed facts from recommendations."
+            ),
+            "history": [],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    answer = response.json()["answer"]
+    assert "Confirmed project evidence" in answer
+    assert "Recommendation:" in answer
+    assert "Unknown:" in answer
+    assert "booking" in answer.casefold()
+
+
+def test_ollama_timeout_returns_canonical_evidence_without_mutating_workspace(client, monkeypatch):
+    workspace = create_workspace(client)
+    monkeypatch.setattr(OllamaStructuredClient, "generate", lambda *_args, **_kwargs: None)
+
+    response = client.post(
+        f"/api/v1/workspaces/{workspace['id']}/architecture-chat",
+        json={"message": "Discuss the least obvious tension in this design.", "history": []},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["type"] == "question"
+    assert body["proposal"] is None
+    assert "no change was applied" in body["answer"]
+    assert workspace["title"] in body["answer"]
+    unchanged = client.get(f"/api/v1/workspaces/{workspace['id']}").json()
+    assert unchanged["updated_at"] == workspace["updated_at"]
 
 
 def test_vague_quality_change_requests_clarification_without_ollama(client, monkeypatch):

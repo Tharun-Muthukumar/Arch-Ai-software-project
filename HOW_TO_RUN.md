@@ -50,8 +50,8 @@ npm run dev
 It starts both services:
 
 - Frontend: `http://127.0.0.1:5173`
-- Backend API: `http://127.0.0.1:8010`
-- API docs: `http://127.0.0.1:8010/api/v1/docs`
+- Backend API: `http://127.0.0.1:8011`
+- API docs: `http://127.0.0.1:8011/api/v1/docs`
 - Ollama: `http://127.0.0.1:11434`
 
 Press `Ctrl+C` once to stop the frontend and backend.
@@ -113,10 +113,10 @@ The local backend configuration is read from `backend\.env`. A fresh copy can be
 Copy-Item .env.example backend\.env
 ```
 
-The frontend defaults to port `8010`. To override it, create `frontend\.env.local` containing:
+The frontend defaults to backend port `8011`. To override it, create `frontend\.env.local` containing:
 
 ```dotenv
-VITE_API_BASE_URL=http://127.0.0.1:8010/api/v1
+VITE_API_BASE_URL=http://127.0.0.1:8011/api/v1
 ```
 
 ## Port Checks
@@ -124,7 +124,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8010/api/v1
 To see which processes own the local ports:
 
 ```powershell
-Get-NetTCPConnection -State Listen -LocalPort 5173,8010,11434 |
+Get-NetTCPConnection -State Listen -LocalPort 5173,8011,11434 |
   Select-Object LocalPort, OwningProcess
 ```
 

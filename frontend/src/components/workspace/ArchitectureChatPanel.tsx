@@ -19,6 +19,8 @@ import type {
   ArchitectureChatImage,
   ArchitectureChatResponse,
   ArchitecturePatchOperation,
+  AssistantSelection,
+  ProjectAction,
   Workspace,
 } from '../../types/api'
 import { useToast } from '../ui/ToastProvider'
@@ -36,6 +38,8 @@ interface ArchitectureChatPanelProps {
   architectureId: string
   open: boolean
   initialMessage?: string | null
+  pageContext?: string
+  selection?: AssistantSelection | null
   onClose: () => void
 }
 
@@ -70,6 +74,7 @@ function isStoredResponse(value: unknown) {
     typeof proposal.auto_apply_safe === 'boolean' &&
     Array.isArray(proposal.architecture_changes) &&
     Array.isArray(proposal.requirement_additions) &&
+    Array.isArray(proposal.project_actions) &&
     Array.isArray(proposal.affected_components) &&
     Array.isArray(proposal.tradeoffs)
 }
@@ -114,6 +119,12 @@ function operationLabel(operation: ArchitecturePatchOperation) {
   return `Update ${(operation.field ?? 'architecture field').replaceAll('_', ' ')}`
 }
 
+function projectActionLabel(action: ProjectAction) {
+  const label = action.action.replaceAll('_', ' ')
+  const target = action.target_id ? ` ${action.target_id}` : ''
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}${target}`
+}
+
 function proposalIsStale(proposal: ArchitectureChangeProposal, workspace: Workspace) {
   return new Date(proposal.base_updated_at).getTime() !== new Date(workspace.updated_at).getTime()
 }
@@ -123,6 +134,8 @@ export function ArchitectureChatPanel({
   architectureId,
   open,
   initialMessage,
+  pageContext = 'unknown',
+  selection,
   onClose,
 }: ArchitectureChatPanelProps) {
   const queryClient = useQueryClient()
@@ -194,6 +207,8 @@ export function ArchitectureChatPanel({
       architecture_id: architectureId,
       history,
       images,
+      page_context: pageContext,
+      selection,
     }),
     onSuccess: (response) => {
       setEntries((current) => [
@@ -340,6 +355,12 @@ export function ArchitectureChatPanel({
                           <span>Add {addition.target_type.replaceAll('_', ' ')}: {addition.text}</span>
                         </div>
                       ))}
+                      {proposal.project_actions.map((action, index) => (
+                        <div key={`${action.action}-${action.target_id ?? index}`} className="proposal-line">
+                          <Check className="h-3.5 w-3.5 shrink-0" />
+                          <span>{projectActionLabel(action)}</span>
+                        </div>
+                      ))}
                     </div>
                     {proposal.affected_components.length ? (
                       <div className="mt-3">
@@ -398,6 +419,12 @@ export function ArchitectureChatPanel({
         </div>
 
         <div className="architecture-chat-composer">
+          {selection ? (
+            <div className="assistant-selection-context">
+              <span>Selected: {selection.name ?? selection.object_id}</span>
+              <span>{selection.object_type.replaceAll('_', ' ')}</span>
+            </div>
+          ) : null}
           {error ? <div className="mb-2 text-xs text-red-300" role="alert">{error}</div> : null}
           {attachment ? (
             <div className="assistant-attachment">

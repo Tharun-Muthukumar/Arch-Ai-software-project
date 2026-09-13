@@ -15,6 +15,7 @@ import {
   Network,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelsTopLeft,
   Redo2,
   ShieldAlert,
   Settings,
@@ -33,7 +34,7 @@ import { useWorkspaceEditing } from '../../hooks/useWorkspaceEditing'
 import { useWorkspacesQuery } from '../../hooks/useWorkspaces'
 import { WORKSPACE_WRITE_KEY } from '../../lib/workspaceSync'
 import { cn, formatUpdatedAt, getActiveWorkspace, getErrorMessage } from '../../lib/utils'
-import type { Workspace } from '../../types/api'
+import type { AssistantSelection, Workspace } from '../../types/api'
 
 const navGroups = [
   {
@@ -43,6 +44,7 @@ const navGroups = [
       { to: '/wizard', label: 'Requirements', icon: ClipboardList },
       { to: '/architecture', label: 'Architecture', icon: Network },
       { to: '/interfaces', label: 'Interfaces & data', icon: Boxes },
+      { to: '/prototype', label: 'Prototype', icon: PanelsTopLeft },
       { to: '/causal-graph', label: 'Causal graph', icon: GitBranch },
       { to: '/diagrams', label: 'Diagrams', icon: BookOpenText },
     ],
@@ -141,6 +143,7 @@ export function AppShell() {
   const [assistantOpen, setAssistantOpen] = useState(
     searchParams.get('chat') === 'open' || Boolean(searchParams.get('message')),
   )
+  const [assistantSelection, setAssistantSelection] = useState<AssistantSelection | null>(null)
   const pageTitle = allNavItems.find((item) => item.to === location.pathname)?.label ?? 'Overview'
   const requestedArchitecture = searchParams.get('architecture')
   const assistantArchitecture = workspace?.architectures.find(
@@ -154,6 +157,21 @@ export function AppShell() {
       setAssistantOpen(true)
     }
   }, [searchParams])
+
+  useEffect(() => {
+    setAssistantSelection(null)
+    const handleSelection = (event: Event) => {
+      const detail = (event as CustomEvent<AssistantSelection | null>).detail
+      setAssistantSelection(detail ?? null)
+    }
+    window.addEventListener('archai:assistant-selection', handleSelection)
+    const handleOpen = () => setAssistantOpen(true)
+    window.addEventListener('archai:assistant-open', handleOpen)
+    return () => {
+      window.removeEventListener('archai:assistant-selection', handleSelection)
+      window.removeEventListener('archai:assistant-open', handleOpen)
+    }
+  }, [location.pathname, workspace?.id])
 
   async function handleLogout() {
     if (isLoggingOut) return
@@ -269,6 +287,8 @@ export function AppShell() {
             architectureId={assistantArchitecture.id}
             open={assistantOpen}
             initialMessage={searchParams.get('message')}
+            pageContext={location.pathname}
+            selection={assistantSelection}
             onClose={closeAssistant}
           />
         </>

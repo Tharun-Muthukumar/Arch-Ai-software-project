@@ -17,6 +17,7 @@ import { HistoryPage } from './pages/HistoryPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { InterfacesDataPage } from './pages/InterfacesDataPage'
 import { RiskDetectorPage } from './pages/RiskDetectorPage'
+import { PrototypePage } from './pages/PrototypePage'
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
           <Route path="/wizard" element={<RequirementWizardPage />} />
           <Route path="/architecture" element={<ArchitectureStudioPage />} />
           <Route path="/interfaces" element={<InterfacesDataPage />} />
+          <Route path="/prototype" element={<PrototypePage />} />
           <Route path="/causal-graph" element={<CausalGraphPage />} />
           <Route path="/comparison" element={<ComparisonPage />} />
           <Route path="/blast-radius" element={<BlastRadiusPage />} />

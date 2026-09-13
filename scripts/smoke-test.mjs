@@ -1,4 +1,4 @@
-const apiBase = (process.env.ARCHAI_API_BASE ?? 'http://127.0.0.1:8010/api/v1').replace(
+const apiBase = (process.env.ARCHAI_API_BASE ?? 'http://127.0.0.1:8011/api/v1').replace(
   /\/$/,
   '',
 )
@@ -143,6 +143,20 @@ async function main() {
     workspace.causal_graph?.nodes?.length > 0 &&
       workspace.causal_graph?.edges?.length > 0,
     'Workspace creation did not generate a causal graph',
+  )
+  assert(
+    workspace.prototype?.screens?.length > 1 &&
+      workspace.prototype.screens.some((screen) => screen.source_requirement_ids?.length > 0),
+    'Workspace creation did not generate a requirement-traced prototype',
+  )
+  assert(
+    workspace.prototype.screens.some((screen) => screen.name === 'Payments') &&
+      workspace.prototype.screens.some((screen) => screen.name === 'Live status'),
+    'Prototype did not reflect the explicit payment and live-session capabilities',
+  )
+  assert(
+    workspace.causal_graph.nodes.some((node) => node.type === 'prototype_screen'),
+    'Causal graph did not include prototype traceability nodes',
   )
   assert(
     workspace.adrs?.length === 1,

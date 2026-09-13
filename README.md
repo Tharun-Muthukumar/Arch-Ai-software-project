@@ -31,7 +31,7 @@ npm run dev
 
 This starts:
 
-- FastAPI on `http://127.0.0.1:8010`
+- FastAPI on `http://127.0.0.1:8011`
 - React on `http://127.0.0.1:5173`
 
 Once both servers are up, run this end-to-end API smoke test from a second terminal:
@@ -71,6 +71,8 @@ The backend will run when Ollama is unavailable, but unseen domains then use a d
 - Mermaid and PlantUML generation for multiple diagram types
 - Database schema, API design, deployment plan, and documentation generation
 - Incremental impact-aware updates for change requests
+- Requirement-traced, actor-aware interactive prototypes rendered from a validated `PrototypeSpec`
+- A global project assistant with compact page/selection context and reviewed typed actions
 - User profiles and automatically persisted conversation history
 - Owner-controlled, read-only conversation sharing with revocation
 
@@ -80,6 +82,8 @@ SQLite development databases create the account and history tables automatically
 
 ```bash
 psql "$DATABASE_URL" -f backend/migrations/002_accounts_history.sql
+psql "$DATABASE_URL" -f backend/migrations/003_interactive_workspace.sql
+psql "$DATABASE_URL" -f backend/migrations/004_prototype_studio.sql
 ```
 
 Authentication uses an opaque random session token in an `HttpOnly`, `SameSite=Lax` cookie. Only a SHA-256 hash of the token is stored in the database; passwords are stored as Argon2 hashes.

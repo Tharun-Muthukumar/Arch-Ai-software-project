@@ -25,6 +25,8 @@ from app.schemas.domain import (
     CounterfactualSimulationRequest,
     CounterfactualSimulationResult,
     ProjectDescriptionAnalyzeRequest,
+    ProjectActionPreview,
+    ProjectActionRequest,
     WorkspaceEditPreview,
     WorkspaceEditRequest,
     WorkspaceMutationResponse,
@@ -253,6 +255,56 @@ def apply_architecture_chat_proposal(
         history_service.record_exchange(
             workspace_id,
             f"Apply proposal: {payload.proposal.request}",
+            result.message,
+        )
+    return result
+
+
+@router.post(
+    "/{workspace_id}/project-actions/preview",
+    response_model=ProjectActionPreview,
+)
+def preview_project_action(
+    workspace_id: str,
+    payload: ProjectActionRequest,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> ProjectActionPreview:
+    require_workspace_access(workspace_id, user, history_service, write=True)
+    try:
+        result = orchestrator.preview_project_action(workspace_id, payload)
+    except ValueError as exc:
+        status = 409 if "changed after you opened" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return result
+
+
+@router.post(
+    "/{workspace_id}/project-actions",
+    response_model=WorkspaceMutationResponse,
+)
+def apply_project_action(
+    workspace_id: str,
+    payload: ProjectActionRequest,
+    orchestrator: WorkspaceOrchestrator = Depends(get_orchestrator),
+    user: User | None = Depends(get_optional_current_user),
+    history_service: HistoryService = Depends(get_history_service),
+) -> WorkspaceMutationResponse:
+    require_workspace_access(workspace_id, user, history_service, write=True)
+    try:
+        result = orchestrator.apply_project_action(workspace_id, payload)
+    except ValueError as exc:
+        status = 409 if "changed after you opened" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if user is not None:
+        history_service.record_exchange(
+            workspace_id,
+            f"Project action: {payload.action.action}",
             result.message,
         )
     return result

@@ -182,6 +182,7 @@ export interface ArchitectureChangeProposal {
   reasoning: string
   architecture_changes: ArchitecturePatchOperation[]
   requirement_additions: ArchitectureRequirementAddition[]
+  project_actions: ProjectAction[]
   affected_components: string[]
   tradeoffs: string[]
   risk_level: 'low' | 'medium' | 'high'
@@ -198,6 +199,14 @@ export interface ArchitectureChatRequest {
   architecture_id?: string | null
   history: ArchitectureChatHistoryMessage[]
   images?: ArchitectureChatImage[]
+  page_context?: string | null
+  selection?: AssistantSelection | null
+}
+
+export interface AssistantSelection {
+  object_type: 'requirement' | 'actor' | 'entity' | 'architecture_component' | 'api_endpoint' | 'database_entity' | 'diagram' | 'prototype_screen' | 'causal_node'
+  object_id: string
+  name?: string | null
 }
 
 export interface ArchitectureChatImage {
@@ -388,6 +397,83 @@ export interface DeploymentPlan {
   rpo?: string | null
 }
 
+export type PrototypeComponentType = 'hero' | 'search' | 'filter' | 'list' | 'cards' | 'table' | 'form' | 'status' | 'timeline' | 'details' | 'notice' | 'metrics'
+
+export interface PrototypeActionSpec {
+  id: string
+  label: string
+  action_type: 'navigate' | 'submit' | 'filter' | 'toggle' | 'open_dialog'
+  target_screen_id?: string | null
+  feedback?: string | null
+  source_requirement_ids: string[]
+}
+
+export interface PrototypeComponent {
+  id: string
+  component_type: PrototypeComponentType
+  title: string
+  description?: string | null
+  fields: string[]
+  items: string[]
+  actions: PrototypeActionSpec[]
+  source_requirement_ids: string[]
+  source_entity_ids: string[]
+}
+
+export interface PrototypeScreen {
+  id: string
+  name: string
+  route: string
+  purpose: string
+  layout: 'overview' | 'search' | 'workflow' | 'records' | 'monitoring' | 'form'
+  actor_ids: string[]
+  components: PrototypeComponent[]
+  states: string[]
+  source_requirement_ids: string[]
+  source_actor_ids: string[]
+  source_entity_ids: string[]
+  visual_overrides: Record<string, string>
+}
+
+export interface PrototypeRole {
+  actor_id: string
+  name: string
+  description: string
+}
+
+export interface PrototypeSpec {
+  id: string
+  project_id: string
+  version: string
+  title: string
+  domain: string
+  theme: {
+    pattern: 'scheduling' | 'monitoring' | 'records' | 'catalog' | 'workspace' | 'workflow'
+    accent: string
+    density: 'comfortable' | 'compact'
+    accessible: boolean
+    realtime: boolean
+    offline: boolean
+  }
+  roles: PrototypeRole[]
+  screens: PrototypeScreen[]
+  start_screen_id: string
+  dismissed_screen_ids: string[]
+  warnings: string[]
+  generated_at: string
+}
+
+export type ProjectActionKind = 'add_requirement' | 'update_requirement' | 'delete_requirement' | 'add_actor' | 'update_actor' | 'delete_actor' | 'add_entity' | 'update_entity' | 'delete_entity' | 'add_architecture_component' | 'update_architecture_component' | 'delete_architecture_component' | 'add_api_endpoint' | 'update_api_endpoint' | 'delete_api_endpoint' | 'add_database_entity' | 'update_database_entity' | 'delete_database_entity' | 'update_deployment' | 'update_prototype' | 'add_prototype_screen' | 'update_prototype_screen' | 'remove_prototype_screen' | 'regenerate_affected' | 'undo' | 'redo'
+
+export interface ProjectAction {
+  action: ProjectActionKind
+  target_id?: string | null
+  parent_id?: string | null
+  requirement_type?: 'functional_requirement' | 'non_functional_requirement' | null
+  value?: string | Record<string, unknown> | null
+  rationale: string
+}
+
 export interface ImpactAssessment {
   change_request: string
   impacted_modules: string[]
@@ -412,6 +498,8 @@ export type WorkspaceEditTarget =
   | 'database_entity'
   | 'deployment'
   | 'diagram_layout'
+  | 'prototype_screen'
+  | 'prototype_theme'
 
 export type WorkspaceEditOperation = 'add' | 'update' | 'delete' | 'reorder'
 export type ImpactLevel = 'none' | 'minor' | 'moderate' | 'major' | 'visual'
@@ -455,6 +543,13 @@ export interface WorkspaceEditPreview {
   normalized_value?: string | Record<string, unknown> | null
   impact: WorkspaceEditImpact
   suggestion?: SemanticEditSuggestion | null
+  warnings: string[]
+}
+
+export interface ProjectActionPreview {
+  action: ProjectAction
+  workspace_edit?: WorkspaceEditRequest | null
+  impact: WorkspaceEditImpact
   warnings: string[]
 }
 
@@ -803,6 +898,7 @@ export interface Workspace {
   database_design: DatabaseDesign
   api_design: ApiDesign
   deployment_plan: DeploymentPlan
+  prototype: PrototypeSpec
   documentation_markdown: string
   impact_history: ImpactAssessment[]
   adr?: ArchitectureDecisionRecord | null

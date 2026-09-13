@@ -15,6 +15,7 @@ from app.schemas.domain import (
     ArchitectureRisk,
     ArchitectureRiskAnalysis,
     ArchitectureRiskSummary,
+    ProjectAction,
     RiskCategory,
     RiskSeverity,
     WorkspaceResponse,
@@ -52,6 +53,14 @@ class _ArchitectureChatAIResult(BaseModel):
         if self.type == "question" and has_changes:
             raise ValueError("An informational response cannot contain changes")
         return self
+
+
+class _ArchitectureQuestionAIResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = Field(min_length=3, max_length=1800)
+    affected_components: list[str] = Field(default_factory=list, max_length=8)
+    recommendations: list[str] = Field(default_factory=list, max_length=5)
 
 
 class _ArchitectureImageAIResult(BaseModel):
@@ -135,6 +144,9 @@ class ArchitectureAssistantService:
         direct_response = self._direct_command_response(workspace, architecture, request)
         if direct_response is not None:
             return direct_response
+        project_answer = self._project_question_response(workspace, architecture, request)
+        if project_answer is not None:
+            return project_answer
         clarification = self._clarify_vague_quality_change(workspace, request.message)
         if clarification is not None:
             return clarification
@@ -144,49 +156,46 @@ class ArchitectureAssistantService:
         input_data = {
             "project_id": workspace.id,
             "raw_requirement": request.message,
-            "project": {
-                "title": workspace.title,
-                "original_prompt": workspace.original_prompt[:1200],
-                "requirements": {
-                    "domain": workspace.requirements.domain,
-                    "functional": workspace.requirements.functional_requirements[:12],
-                    "non_functional": workspace.requirements.non_functional_requirements[:6],
-                    "constraints": workspace.requirements.constraints[:6],
-                    "assumptions": workspace.requirements.assumptions[:6],
-                    "actors": [
-                        self._known_values(item.model_dump())
-                        for item in workspace.requirements.actors[:8]
-                    ],
-                    "domain_entities": [
-                        self._known_values(item.model_dump())
-                        for item in workspace.requirements.domain_entities[:8]
-                    ],
-                    "integrations": workspace.requirements.integrations[:5],
-                    "technical_characteristics": [
-                        {
-                            "category": item.category,
-                            "value": item.value,
-                            "status": item.status,
-                        }
-                        for item in workspace.requirements.technical_characteristics[:6]
-                    ],
-                    "project_profile": self._known_values(
-                        workspace.requirements.project_profile.model_dump()
-                    ),
-                },
-            },
+            "project": self._retrieve_project_context(workspace, request),
             "current_architecture": self._compact_architecture(architecture),
             "current_deployment": self._compact_deployment(workspace),
             "conversation": [item.model_dump() for item in request.history[-8:]],
             "attached_images": [image.name for image in request.images],
         }
+        if self._is_informational_request(request.message):
+            raw_question = self.ai_client.generate(
+                "architecture-chat-question",
+                input_data,
+                response_schema=_ArchitectureQuestionAIResult.model_json_schema(),
+                num_predict=160,
+                num_ctx=2048,
+                timeout_seconds=30,
+                model=self.ai_client.settings.ollama_assistant_model,
+            )
+            if raw_question is None:
+                return self._evidence_fallback_response(workspace, architecture, request)
+            try:
+                result = _ArchitectureQuestionAIResult.model_validate(raw_question)
+            except ValidationError:
+                return self._evidence_fallback_response(workspace, architecture, request)
+            known_names = {
+                component.name.casefold(): component.name for component in architecture.components
+            }
+            affected = self._known_component_names(result.affected_components, known_names)
+            return ArchitectureChatResponse(
+                type="question",
+                answer=result.answer,
+                affected_components=affected,
+                recommendations=self._dedupe(result.recommendations),
+            )
+
         raw = self.ai_client.generate(
             "architecture-chat",
             input_data,
             response_schema=_ArchitectureChatAIResult.model_json_schema(),
-            num_predict=280,
-            num_ctx=3072,
-            timeout_seconds=60,
+            num_predict=220,
+            num_ctx=2048,
+            timeout_seconds=40,
             model=self.ai_client.settings.ollama_assistant_model,
         )
         if raw is None:
@@ -195,9 +204,7 @@ class ArchitectureAssistantService:
                     "Image analysis is unavailable. Install the configured vision model "
                     f"with: ollama pull {self.ai_client.settings.ollama_vision_model}"
                 )
-            raise ArchitectureAssistantUnavailableError(
-                "AI Assistant is currently unavailable. Verify Ollama is running and try again."
-            )
+            return self._evidence_fallback_response(workspace, architecture, request)
         try:
             result = _ArchitectureChatAIResult.model_validate(raw)
         except ValidationError as exc:
@@ -714,6 +721,11 @@ class ArchitectureAssistantService:
         architecture: ArchitectureOption,
         request: ArchitectureChatRequest,
     ) -> ArchitectureChatResponse | None:
+        project_response = self._explicit_project_action_response(
+            workspace, architecture, request
+        )
+        if project_response is not None:
+            return project_response
         replacement = self._explicit_replacement_operation(request.message, architecture)
         addition = self._explicit_requirement_addition(request.message)
         if replacement is None and addition is None:
@@ -783,6 +795,787 @@ class ArchitectureAssistantService:
             affected_components=[old],
             proposal=proposal,
         )
+
+    def _explicit_project_action_response(
+        self,
+        workspace: WorkspaceResponse,
+        architecture: ArchitectureOption,
+        request: ArchitectureChatRequest,
+    ) -> ArchitectureChatResponse | None:
+        message = " ".join(request.message.strip(" .!?").split())
+        lowered = message.casefold()
+        action: ProjectAction | None = None
+        summary = ""
+        risk: Literal["low", "medium", "high"] = "low"
+        auto_apply = True
+        requirement_additions: list[ArchitectureRequirementAddition] = []
+
+        if re.fullmatch(r"(?:please\s+)?undo(?:\s+(?:my\s+)?last\s+change)?", lowered):
+            action = ProjectAction(action="undo", rationale="The user explicitly requested undo.")
+            summary = "Undo the last canonical workspace change."
+        elif re.fullmatch(r"(?:please\s+)?redo(?:\s+(?:my\s+)?last\s+change)?", lowered):
+            action = ProjectAction(action="redo", rationale="The user explicitly requested redo.")
+            summary = "Redo the last canonical workspace change."
+        else:
+            requirement_match = re.fullmatch(
+                r"(?:please\s+)?(?:delete|remove)\s+(?P<kind>fr|nfr)-(?P<index>\d{1,3})",
+                lowered,
+            )
+            if requirement_match:
+                kind = requirement_match.group("kind").upper()
+                target_id = f"{kind}-{int(requirement_match.group('index')):03d}"
+                values = (
+                    workspace.requirements.functional_requirements
+                    if kind == "FR"
+                    else workspace.requirements.non_functional_requirements
+                )
+                index = int(requirement_match.group("index")) - 1
+                if index < 0 or index >= len(values):
+                    return ArchitectureChatResponse(
+                        type="question",
+                        answer=f"{target_id} does not exist in the current canonical requirement model.",
+                    )
+                action = ProjectAction(
+                    action="delete_requirement",
+                    target_id=target_id,
+                    requirement_type=(
+                        "functional_requirement" if kind == "FR" else "non_functional_requirement"
+                    ),
+                    rationale=f"The user explicitly requested deletion of {target_id}.",
+                )
+                summary = f"Delete {target_id}: {values[index]}"
+                risk = "high"
+                auto_apply = False
+
+        if action is None and request.selection and re.fullmatch(
+            r"(?:please\s+)?(?:delete|remove)\s+(?:this|the\s+selected\s+(?:item|object))",
+            lowered,
+        ):
+            selected_action = self._selected_delete_action(workspace, architecture, request)
+            if selected_action is None:
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer="The selected item cannot be removed through a validated project action.",
+                )
+            action, selected_label = selected_action
+            summary = f"Delete selected {selected_label}."
+            risk = "high"
+            auto_apply = False
+
+        actor_remove = re.fullmatch(
+            r"(?:please\s+)?(?:delete|remove)\s+(?:the\s+)?actor\s+(?P<name>.+)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and actor_remove:
+            name = actor_remove.group("name").strip(" .!?")
+            index = next(
+                (index for index, actor in enumerate(workspace.requirements.actors) if actor.name.casefold() == name.casefold()),
+                None,
+            )
+            if index is None:
+                return ArchitectureChatResponse(type="question", answer=f"Actor {name} does not exist.")
+            action = ProjectAction(
+                action="delete_actor",
+                target_id=f"ACTOR-{index + 1:03d}",
+                rationale=f"The user explicitly requested removal of actor {workspace.requirements.actors[index].name}.",
+            )
+            summary = f"Delete actor {workspace.requirements.actors[index].name}."
+            risk = "high"
+            auto_apply = False
+
+        database_entity_remove = re.fullmatch(
+            r"(?:please\s+)?(?:delete|remove)\s+(?:the\s+)?(?:database|db)\s+entity\s+(?P<name>.+)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and database_entity_remove:
+            name = database_entity_remove.group("name").strip(" .!?")
+            index = next(
+                (index for index, entity in enumerate(workspace.database_design.entities) if entity.name.casefold() == name.casefold()),
+                None,
+            )
+            if index is None:
+                return ArchitectureChatResponse(type="question", answer=f"Database entity {name} does not exist.")
+            action = ProjectAction(
+                action="delete_database_entity",
+                target_id=f"ENTITY-{index + 1:03d}",
+                rationale=f"The user explicitly requested removal of database entity {workspace.database_design.entities[index].name}.",
+            )
+            summary = f"Delete database entity {workspace.database_design.entities[index].name}."
+            risk = "high"
+            auto_apply = False
+
+        entity_remove = re.fullmatch(
+            r"(?:please\s+)?(?:delete|remove)\s+(?:the\s+)?(?:domain\s+)?entity\s+(?P<name>.+)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and entity_remove:
+            name = entity_remove.group("name").strip(" .!?")
+            index = next(
+                (index for index, entity in enumerate(workspace.requirements.domain_entities) if entity.name.casefold() == name.casefold()),
+                None,
+            )
+            if index is None:
+                return ArchitectureChatResponse(type="question", answer=f"Domain entity {name} does not exist.")
+            action = ProjectAction(
+                action="delete_entity",
+                target_id=f"ENTITY-HINT-{index + 1:03d}",
+                rationale=f"The user explicitly requested removal of domain entity {workspace.requirements.domain_entities[index].name}.",
+            )
+            summary = f"Delete domain entity {workspace.requirements.domain_entities[index].name}."
+            risk = "high"
+            auto_apply = False
+
+        component_remove = re.fullmatch(
+            r"(?:please\s+)?(?:delete|remove)\s+(?:the\s+)?(?P<name>.+?)\s+(?:service|component)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and component_remove:
+            name = component_remove.group("name").strip(" .!?")
+            index = next(
+                (index for index, component in enumerate(architecture.components) if component.name.casefold() in {name.casefold(), f"{name} service".casefold(), f"{name} component".casefold()}),
+                None,
+            )
+            if index is None:
+                return ArchitectureChatResponse(type="question", answer=f"Architecture component {name} does not exist in {architecture.name}.")
+            component = architecture.components[index]
+            action = ProjectAction(
+                action="delete_architecture_component",
+                target_id=f"COMPONENT-{index + 1:03d}",
+                parent_id=architecture.id,
+                rationale=f"The user explicitly requested removal of architecture component {component.name}.",
+            )
+            summary = f"Delete architecture component {component.name}."
+            risk = "high"
+            auto_apply = False
+
+        api_remove = re.fullmatch(
+            r"(?:please\s+)?(?:delete|remove)\s+(?:the\s+)?(?:api\s+)?(?:endpoint\s+)?(?:(?P<method>get|post|put|patch|delete)\s+)?(?P<path>/\S+)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and api_remove:
+            method = api_remove.group("method")
+            path = api_remove.group("path").rstrip(".!?")
+            matches = [
+                (group_index, endpoint_index, endpoint)
+                for group_index, group in enumerate(workspace.api_design.groups)
+                for endpoint_index, endpoint in enumerate(group.endpoints)
+                if endpoint.path.casefold() == path.casefold()
+                and (method is None or endpoint.method.casefold() == method.casefold())
+            ]
+            if len(matches) != 1:
+                qualifier = "does not exist" if not matches else "is ambiguous; include the HTTP method"
+                return ArchitectureChatResponse(type="question", answer=f"API endpoint {path} {qualifier}.")
+            group_index, endpoint_index, endpoint = matches[0]
+            action = ProjectAction(
+                action="delete_api_endpoint",
+                target_id=f"ENDPOINT-{endpoint_index + 1:03d}",
+                parent_id=str(group_index),
+                rationale=f"The user explicitly requested removal of {endpoint.method} {endpoint.path}.",
+            )
+            summary = f"Delete API endpoint {endpoint.method} {endpoint.path}."
+            risk = "high"
+            auto_apply = False
+
+        availability_change = re.fullmatch(
+            r"(?:please\s+)?(?:change|set|update)\s+(?:the\s+)?availability(?:\s+(?:target|sla))?\s+(?:to\s+)?(?P<value>\d{2,3}(?:\.\d+)?)%?",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and availability_change:
+            value = float(availability_change.group("value"))
+            if value < 90 or value > 100:
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer="Availability targets must be between 90% and 100%. Confirm a valid target.",
+                )
+            action = ProjectAction(
+                action="update_deployment",
+                target_id="deployment",
+                value={
+                    "availability_target_percent": value,
+                    "availability_configuration": f"User-specified availability target: {value:g}%.",
+                },
+                rationale=f"The user explicitly specified an availability target of {value:g}%.",
+            )
+            summary = f"Set the deployment availability target to {value:g}%."
+            risk = "medium"
+            auto_apply = False
+
+        actor_add = re.fullmatch(
+            r"(?:please\s+)?add\s+(?:an?\s+)?actor(?:\s+(?:called|named))?\s+(?P<name>.+)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and actor_add:
+            name = actor_add.group("name").strip(" .!?")
+            if any(actor.name.casefold() == name.casefold() for actor in workspace.requirements.actors):
+                return ArchitectureChatResponse(type="question", answer=f"Actor {name} already exists.")
+            action = ProjectAction(
+                action="add_actor",
+                value={
+                    "id": f"ACT-{len(workspace.requirements.actors) + 1:03d}",
+                    "name": name,
+                    "description": "User-requested actor; responsibilities require confirmation.",
+                    "actor_type": "unknown",
+                    "responsibilities": [],
+                    "permissions": [],
+                    "source_evidence": [{
+                        "source_id": "AI-USER-ACTOR",
+                        "source": "explicit assistant command",
+                        "status": "user-edited",
+                        "excerpt": request.message,
+                    }],
+                },
+                rationale="The actor name is explicitly supplied; responsibilities remain unknown.",
+            )
+            summary = f"Add actor {name} without inventing responsibilities."
+
+        entity_add = re.fullmatch(
+            r"(?:please\s+)?(?:add|create)\s+(?:an?\s+)?entity(?:\s+(?:for|called|named))?\s+(?P<name>.+)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and entity_add:
+            name = entity_add.group("name").strip(" .!?")
+            if any(entity.name.casefold() == name.casefold() for entity in workspace.requirements.domain_entities):
+                return ArchitectureChatResponse(type="question", answer=f"Entity {name} already exists.")
+            action = ProjectAction(
+                action="add_entity",
+                value={
+                    "id": f"ENT-{len(workspace.requirements.domain_entities) + 1:03d}",
+                    "name": name,
+                    "description": "User-requested domain entity; attributes require confirmation.",
+                    "attributes": [],
+                    "lifecycle_fields": [],
+                    "source_evidence": [{
+                        "source_id": "AI-USER-ENTITY",
+                        "source": "explicit assistant command",
+                        "status": "user-edited",
+                        "excerpt": request.message,
+                    }],
+                },
+                rationale="The entity is explicit; no fields or lifecycle facts were inferred.",
+            )
+            summary = f"Add domain entity {name} with unknown attributes."
+
+        screen_remove = re.fullmatch(
+            r"(?:please\s+)?(?:remove|delete)\s+(?:the\s+)?(?:prototype\s+)?(?:screen|page)\s+(?P<name>.+)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and screen_remove:
+            name = screen_remove.group("name").strip(" .!?")
+            screen = next(
+                (item for item in workspace.prototype.screens if item.name.casefold() == name.casefold()),
+                None,
+            )
+            if screen is None:
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer=f"No prototype screen named {name} exists in the current workspace.",
+                )
+            action = ProjectAction(
+                action="remove_prototype_screen",
+                target_id=screen.id,
+                rationale="The user explicitly requested a prototype-only screen removal.",
+            )
+            summary = f"Remove prototype screen {screen.name}."
+            auto_apply = False
+
+        screen_add = re.fullmatch(
+            r"(?:please\s+)?add\s+(?:another\s+|a\s+)?(?:prototype\s+)?(?:screen|page)\s+(?:for\s+)?(?P<name>.+)",
+            message,
+            re.IGNORECASE,
+        )
+        if action is None and screen_add:
+            name = screen_add.group("name").strip(" .!?")
+            action = ProjectAction(
+                action="regenerate_affected",
+                rationale="Generate the screen only after its product behavior is accepted as a canonical requirement.",
+            )
+            requirement_text = f"Users can access {name}."
+            requirement_additions = [ArchitectureRequirementAddition(
+                target_type="functional_requirement",
+                text=requirement_text,
+            )]
+            summary = f"Add {name} as a functional requirement and prototype screen."
+            risk = "medium"
+            auto_apply = False
+
+        if action is None:
+            return None
+        proposal = ArchitectureChangeProposal(
+            proposal_id=str(uuid.uuid4()),
+            architecture_id=architecture.id,
+            base_updated_at=workspace.updated_at,
+            request=request.message,
+            summary=summary,
+            reasoning=action.rationale,
+            requirement_additions=requirement_additions,
+            project_actions=[action],
+            affected_components=[],
+            tradeoffs=(
+                ["Dependent requirements, prototype screens, APIs, diagrams, and traceability will be revalidated."]
+                if risk != "low" else []
+            ),
+            risk_level=risk,
+            auto_apply_safe=auto_apply,
+        )
+        return ArchitectureChatResponse(
+            type="architecture_change",
+            answer=f"I prepared a structured project action: {summary}",
+            proposal=proposal,
+        )
+
+    def _selected_delete_action(
+        self,
+        workspace: WorkspaceResponse,
+        architecture: ArchitectureOption,
+        request: ArchitectureChatRequest,
+    ) -> tuple[ProjectAction, str] | None:
+        selection = request.selection
+        if selection is None:
+            return None
+        if selection.object_type == "requirement":
+            match = re.fullmatch(r"(FR|NFR)-(\d{3})", selection.object_id, re.IGNORECASE)
+            if not match:
+                return None
+            kind = match.group(1).upper()
+            return ProjectAction(
+                action="delete_requirement",
+                target_id=f"{kind}-{match.group(2)}",
+                requirement_type="functional_requirement" if kind == "FR" else "non_functional_requirement",
+                rationale="The user explicitly requested removal of the selected requirement.",
+            ), selection.name or selection.object_id
+        if selection.object_type == "actor":
+            index = next((index for index, actor in enumerate(workspace.requirements.actors) if selection.object_id in {actor.id, f"ACTOR-{index + 1:03d}"}), None)
+            if index is not None:
+                return ProjectAction(action="delete_actor", target_id=f"ACTOR-{index + 1:03d}", rationale="The user explicitly requested removal of the selected actor."), selection.name or workspace.requirements.actors[index].name
+        if selection.object_type == "entity":
+            index = next((index for index, entity in enumerate(workspace.requirements.domain_entities) if selection.object_id in {entity.id, f"ENTITY-HINT-{index + 1:03d}"}), None)
+            if index is not None:
+                return ProjectAction(action="delete_entity", target_id=f"ENTITY-HINT-{index + 1:03d}", rationale="The user explicitly requested removal of the selected domain entity."), selection.name or workspace.requirements.domain_entities[index].name
+        if selection.object_type == "architecture_component":
+            match = re.fullmatch(r"COMPONENT-(\d{3})", selection.object_id)
+            if match and int(match.group(1)) <= len(architecture.components):
+                return ProjectAction(action="delete_architecture_component", target_id=selection.object_id, parent_id=architecture.id, rationale="The user explicitly requested removal of the selected architecture component."), selection.name or selection.object_id
+        if selection.object_type == "database_entity":
+            match = re.fullmatch(r"ENTITY-(\d{3})", selection.object_id)
+            if match and int(match.group(1)) <= len(workspace.database_design.entities):
+                return ProjectAction(action="delete_database_entity", target_id=selection.object_id, rationale="The user explicitly requested removal of the selected database entity."), selection.name or selection.object_id
+        if selection.object_type == "api_endpoint":
+            match = re.fullmatch(r"API-GROUP-(\d+)-ENDPOINT-(\d+)", selection.object_id)
+            if match:
+                group_index, endpoint_index = int(match.group(1)), int(match.group(2))
+                if group_index < len(workspace.api_design.groups) and endpoint_index < len(workspace.api_design.groups[group_index].endpoints):
+                    return ProjectAction(action="delete_api_endpoint", target_id=f"ENDPOINT-{endpoint_index + 1:03d}", parent_id=str(group_index), rationale="The user explicitly requested removal of the selected API endpoint."), selection.name or selection.object_id
+        if selection.object_type == "prototype_screen" and any(screen.id == selection.object_id for screen in workspace.prototype.screens):
+            return ProjectAction(action="remove_prototype_screen", target_id=selection.object_id, rationale="The user explicitly requested removal of the selected prototype screen."), selection.name or selection.object_id
+        return None
+
+    def _project_question_response(
+        self,
+        workspace: WorkspaceResponse,
+        architecture: ArchitectureOption,
+        request: ArchitectureChatRequest,
+    ) -> ArchitectureChatResponse | None:
+        message = request.message.casefold()
+        if request.selection and any(marker in message for marker in ("this", "selected", "why is")):
+            selection = request.selection
+            if selection.object_type == "prototype_screen":
+                screen = next((item for item in workspace.prototype.screens if item.id == selection.object_id), None)
+                if screen:
+                    evidence = ", ".join(screen.source_requirement_ids) or "no validated requirement"
+                    return ArchitectureChatResponse(
+                        type="question",
+                        answer=(
+                            f"Confirmed: {screen.name} exists to {screen.purpose} "
+                            f"Traceability: {evidence}. "
+                            + ("This is a prototype-only screen and should be validated." if not screen.source_requirement_ids else "")
+                        ),
+                    )
+            if selection.object_type == "requirement":
+                match = re.fullmatch(r"(FR|NFR)-(\d{3})", selection.object_id, re.IGNORECASE)
+                if match:
+                    values = (
+                        workspace.requirements.functional_requirements
+                        if match.group(1).upper() == "FR"
+                        else workspace.requirements.non_functional_requirements
+                    )
+                    index = int(match.group(2)) - 1
+                    if 0 <= index < len(values):
+                        downstream = []
+                        if workspace.causal_graph:
+                            linked = {
+                                edge.target_node_id
+                                for edge in workspace.causal_graph.edges
+                                if edge.source_node_id == selection.object_id.upper()
+                            }
+                            downstream = [node.name for node in workspace.causal_graph.nodes if node.id in linked]
+                        return ArchitectureChatResponse(
+                            type="question",
+                            answer=(
+                                f"Confirmed: {selection.object_id.upper()} states '{values[index]}'. "
+                                f"Its direct implementation path includes: {', '.join(downstream[:8]) or 'no validated downstream artifact yet'}."
+                            ),
+                        )
+            if selection.object_type == "actor":
+                actor = next(
+                    (item for index, item in enumerate(workspace.requirements.actors) if selection.object_id in {item.id, f"ACTOR-{index + 1:03d}"}),
+                    None,
+                )
+                if actor:
+                    responsibilities = ", ".join(actor.responsibilities) or "responsibilities are not yet confirmed"
+                    return ArchitectureChatResponse(
+                        type="question",
+                        answer=f"Confirmed actor: {actor.name}. {actor.description} Responsibilities: {responsibilities}.",
+                    )
+            if selection.object_type == "entity":
+                entity = next(
+                    (item for index, item in enumerate(workspace.requirements.domain_entities) if selection.object_id in {item.id, f"ENTITY-HINT-{index + 1:03d}"}),
+                    None,
+                )
+                if entity:
+                    attributes = ", ".join(entity.attributes) or "attributes remain unknown"
+                    return ArchitectureChatResponse(
+                        type="question",
+                        answer=f"Confirmed domain entity: {entity.name}. {entity.description} Known attributes: {attributes}.",
+                    )
+            if selection.object_type == "architecture_component":
+                match = re.fullmatch(r"COMPONENT-(\d{3})", selection.object_id)
+                index = int(match.group(1)) - 1 if match else -1
+                if 0 <= index < len(architecture.components):
+                    component = architecture.components[index]
+                    return ArchitectureChatResponse(
+                        type="question",
+                        answer=(
+                            f"Confirmed component: {component.name}. {component.responsibility} "
+                            f"Dependencies: {', '.join(component.dependencies) or 'none recorded'}."
+                        ),
+                        affected_components=[component.name],
+                    )
+            if selection.object_type == "api_endpoint":
+                match = re.fullmatch(r"API-GROUP-(\d+)-ENDPOINT-(\d+)", selection.object_id)
+                if match:
+                    group_index, endpoint_index = int(match.group(1)), int(match.group(2))
+                    if group_index < len(workspace.api_design.groups) and endpoint_index < len(workspace.api_design.groups[group_index].endpoints):
+                        endpoint = workspace.api_design.groups[group_index].endpoints[endpoint_index]
+                        return ArchitectureChatResponse(
+                            type="question",
+                            answer=(
+                                f"Confirmed API: {endpoint.method} {endpoint.path}. {endpoint.purpose} "
+                                f"Owner: {endpoint.owner or endpoint.service or 'unknown'}. Requirement trace: "
+                                f"{', '.join(endpoint.requirement_ids) or 'none recorded'}."
+                            ),
+                            affected_components=[endpoint.owner or endpoint.service] if endpoint.owner or endpoint.service else [],
+                        )
+            if selection.object_type == "database_entity":
+                match = re.fullmatch(r"ENTITY-(\d{3})", selection.object_id)
+                index = int(match.group(1)) - 1 if match else -1
+                if 0 <= index < len(workspace.database_design.entities):
+                    entity = workspace.database_design.entities[index]
+                    return ArchitectureChatResponse(
+                        type="question",
+                        answer=(
+                            f"Confirmed database entity: {entity.name}. {entity.description} "
+                            f"Fields: {', '.join(field.name for field in entity.fields) or 'none defined'}."
+                        ),
+                    )
+
+        if "actor" in message and any(marker in message for marker in ("no actor", "missing actor", "suggest", "who should")):
+            if workspace.requirements.actors:
+                facts = "; ".join(
+                    f"{actor.name}: {actor.description}" for actor in workspace.requirements.actors
+                )
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer=f"Confirmed actors in the canonical model: {facts}",
+                )
+            candidates: dict[str, list[str]] = {}
+            for index, requirement in enumerate(workspace.requirements.functional_requirements, start=1):
+                match = re.match(r"(?:the\s+)?([A-Za-z][A-Za-z -]{1,40}?)\s+(?:can|must|should)\b", requirement)
+                if match:
+                    name = match.group(1).strip().title()
+                    candidates.setdefault(name, []).append(f"FR-{index:03d}")
+            for workflow in workspace.requirements.domain_workflows:
+                actor = workflow.primary_actor.strip()
+                if actor and "clarif" not in actor.casefold() and actor.casefold() != "unknown":
+                    candidates.setdefault(actor, []).append(workflow.name)
+            if not candidates:
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer=(
+                        "Confirmed: the canonical model has no validated actors. Inference: the current "
+                        "requirements do not name a participant clearly enough to propose one safely. "
+                        "Clarify who initiates the main workflow and who administers it."
+                    ),
+                )
+            suggestions = [
+                f"Inference: {name}, supported by {', '.join(evidence)} (high confidence from explicit wording)."
+                for name, evidence in candidates.items()
+            ]
+            return ArchitectureChatResponse(
+                type="question",
+                answer=(
+                    "Confirmed: no actors are currently validated. " + " ".join(suggestions)
+                    + " Recommendation: review these candidates before adding them."
+                ),
+                recommendations=[f"Add actor {name}" for name in candidates],
+            )
+
+        requirement_match = re.search(r"\b(fr|nfr)-(\d{1,3})\b", message)
+        if requirement_match and any(marker in message for marker in ("delete", "remove", "what happens", "depend")):
+            requirement_id = f"{requirement_match.group(1).upper()}-{int(requirement_match.group(2)):03d}"
+            graph = workspace.causal_graph
+            if graph and any(node.id == requirement_id for node in graph.nodes):
+                trace = next((node for node in graph.nodes if node.id == requirement_id), None)
+                downstream = [
+                    edge.target_node_id for edge in graph.edges if edge.source_node_id == requirement_id
+                ]
+                names = [node.name for node in graph.nodes if node.id in downstream]
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer=(
+                        f"Confirmed: {requirement_id} is '{trace.description if trace else ''}'. "
+                        f"Deleting it would require revalidation of: {', '.join(names[:10]) or 'no linked artifacts'}. "
+                        "Recommendation: preview the deletion before applying it."
+                    ),
+                )
+
+        if "api" in message and any(marker in message for marker in ("which", "handles", "where", "why")):
+            query = self._meaningful_tokens(request.message) - {"api", "which", "handles", "where", "why"}
+            matches = []
+            for group in workspace.api_design.groups:
+                for endpoint in group.endpoints:
+                    represented = " ".join([endpoint.path, endpoint.purpose, endpoint.resource or ""])
+                    score = len(query & self._meaningful_tokens(represented))
+                    if score:
+                        matches.append((score, endpoint, group.name))
+            if matches:
+                matches.sort(key=lambda item: item[0], reverse=True)
+                _, endpoint, group = matches[0]
+                requirements = ", ".join(endpoint.requirement_ids) or "no requirement trace"
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer=(
+                        f"Confirmed: {endpoint.method.upper()} {endpoint.path} in {group} handles the strongest "
+                        f"matching operation. Its purpose is '{endpoint.purpose}'. Traceability: {requirements}."
+                    ),
+                )
+
+        if any(marker in message for marker in ("why did", "why choose", "why this architecture", "do we need microservices")):
+            reasons = " ".join(workspace.recommendation.why[:4])
+            alternatives = ", ".join(workspace.recommendation.why_not.keys()) or "none recorded"
+            return ArchitectureChatResponse(
+                type="question",
+                answer=(
+                    f"Confirmed: ArchAI recommends {workspace.recommendation.recommended_architecture_name}. "
+                    f"Recorded rationale: {reasons} Alternatives evaluated: {alternatives}."
+                ),
+                affected_components=[component.name for component in architecture.components[:4]],
+            )
+
+        if any(marker in message for marker in ("what is missing", "what's missing", "wrong here")):
+            findings = [issue.message for issue in workspace.consistency_issues[:5]]
+            questions = workspace.requirements.open_questions[:4]
+            if findings or questions:
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer=(
+                        "Confirmed validation findings: "
+                        + ("; ".join(findings) if findings else "none")
+                        + ". Unknowns requiring clarification: "
+                        + ("; ".join(questions) if questions else "none")
+                        + "."
+                    ),
+                )
+
+        if any(marker in message for marker in ("balance", "tradeoff", "trade-off", "versus", " vs ", "against")):
+            query = self._meaningful_tokens(request.message)
+            candidates = [
+                (len(query & self._meaningful_tokens(text)), f"FR-{index:03d}", text)
+                for index, text in enumerate(workspace.requirements.functional_requirements, start=1)
+            ] + [
+                (len(query & self._meaningful_tokens(text)), f"NFR-{index:03d}", text)
+                for index, text in enumerate(workspace.requirements.non_functional_requirements, start=1)
+            ]
+            evidence = sorted(
+                (item for item in candidates if item[0] > 0),
+                key=lambda item: item[0],
+                reverse=True,
+            )[:4]
+            if evidence:
+                evidence_text = "; ".join(f"{item_id}: {text}" for _, item_id, text in evidence)
+                transactional = any(
+                    marker in message
+                    for marker in ("book", "reserv", "order", "payment", "transfer", "transaction")
+                )
+                freshness = any(
+                    marker in message
+                    for marker in ("availability", "current", "fresh", "live", "realtime", "real-time")
+                )
+                if transactional and freshness:
+                    recommendation = (
+                        "Recommendation: treat the confirmed transaction as the authoritative write, "
+                        "recheck the current resource state before committing it, and publish the updated "
+                        "read state only after that commit."
+                    )
+                else:
+                    recommendation = (
+                        "Recommendation: preserve both confirmed outcomes, define which one is authoritative "
+                        "during a conflict, and validate the decision against the linked architecture path."
+                    )
+                return ArchitectureChatResponse(
+                    type="question",
+                    answer=(
+                        f"Confirmed project evidence: {evidence_text} {recommendation} "
+                        "Unknown: the acceptable staleness, conflict policy, and failure behavior are not "
+                        "specified unless they appear above; clarify them before treating this advice as a requirement."
+                    ),
+                )
+        return None
+
+    def _evidence_fallback_response(
+        self,
+        workspace: WorkspaceResponse,
+        architecture: ArchitectureOption,
+        request: ArchitectureChatRequest,
+    ) -> ArchitectureChatResponse:
+        """Return current canonical evidence when optional model reasoning times out."""
+        query = self._meaningful_tokens(request.message) - {
+            "current", "design", "discuss", "evidence", "least", "obvious", "project", "using",
+        }
+        candidates = [
+            (len(query & self._meaningful_tokens(text)), f"FR-{index:03d}", text)
+            for index, text in enumerate(workspace.requirements.functional_requirements, start=1)
+        ] + [
+            (len(query & self._meaningful_tokens(text)), f"NFR-{index:03d}", text)
+            for index, text in enumerate(workspace.requirements.non_functional_requirements, start=1)
+        ]
+        evidence = sorted(
+            (item for item in candidates if item[0] > 0),
+            key=lambda item: item[0],
+            reverse=True,
+        )[:4]
+        confirmed = "; ".join(f"{item_id}: {text}" for _, item_id, text in evidence)
+        if not confirmed:
+            confirmed = (
+                f"the active project is {workspace.title} in the {workspace.requirements.domain} domain, "
+                f"using the {architecture.name} option"
+            )
+        return ArchitectureChatResponse(
+            type="question",
+            answer=(
+                "The deeper Ollama analysis did not finish within the response budget, so no change was "
+                f"applied. Confirmed from the current workspace: {confirmed}. "
+                "Unknown: a reliable project-specific conclusion needs either a narrower question or another AI attempt."
+            ),
+            affected_components=[],
+            recommendations=["Ask about one requirement, component, API, entity, or prototype screen at a time."],
+        )
+
+    @staticmethod
+    def _is_informational_request(message: str) -> bool:
+        lowered = " ".join(message.casefold().split())
+        mutation = re.search(
+            r"\b(?:add|change|create|delete|migrate|modify|remove|rename|replace|set|switch|update)\b",
+            lowered,
+        )
+        if mutation:
+            return False
+        return "?" in lowered or bool(re.match(
+            r"^(?:analyze|assess|compare|discuss|do|does|explain|how|is|are|summarize|tell|what|when|where|which|who|why|would|could|can|should)\b",
+            lowered,
+        ))
+
+    def _retrieve_project_context(
+        self,
+        workspace: WorkspaceResponse,
+        request: ArchitectureChatRequest,
+    ) -> dict[str, Any]:
+        """Retrieve compact current-state evidence relevant to one assistant turn."""
+        query = self._meaningful_tokens(
+            " ".join(filter(None, [request.message, request.page_context]))
+        )
+
+        def ranked(values: list[str], limit: int) -> list[dict[str, str]]:
+            scored = [
+                (len(query & self._meaningful_tokens(value)), index, value)
+                for index, value in enumerate(values, start=1)
+            ]
+            scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+            return [
+                {"id": f"{prefix}-{index:03d}", "text": value}
+                for _score, index, value in scored[:limit]
+                for prefix in ["FR" if values is workspace.requirements.functional_requirements else "NFR"]
+            ]
+
+        context: dict[str, Any] = {
+            "title": workspace.title,
+            "domain": workspace.requirements.domain,
+            "page_context": request.page_context or "unknown",
+            "selection": request.selection.model_dump() if request.selection else None,
+            "functional_requirements": ranked(
+                workspace.requirements.functional_requirements, 8
+            ),
+            "non_functional_requirements": ranked(
+                workspace.requirements.non_functional_requirements, 5
+            ),
+            "constraints": workspace.requirements.constraints[:5],
+            "assumptions": workspace.requirements.assumptions[:4],
+            "open_questions": workspace.requirements.open_questions[:4],
+            "consistency_issues": [
+                issue.model_dump() for issue in workspace.consistency_issues[:4]
+            ],
+        }
+        if query & {"actor", "actors", "role", "roles", "who", "permission"}:
+            context["actors"] = [
+                self._known_values(actor.model_dump())
+                for actor in workspace.requirements.actors[:8]
+            ]
+            context["workflows"] = [
+                workflow.model_dump() for workflow in workspace.requirements.domain_workflows[:8]
+            ]
+        if query & {"entity", "entities", "database", "data", "record", "table"}:
+            context["entities"] = [
+                self._known_values(entity.model_dump())
+                for entity in workspace.requirements.domain_entities[:8]
+            ]
+            context["database_entities"] = [
+                {"name": entity.name, "description": entity.description}
+                for entity in workspace.database_design.entities[:8]
+            ]
+        if query & {"api", "endpoint", "interface", "request", "route"}:
+            context["api_endpoints"] = [
+                {
+                    "method": endpoint.method,
+                    "path": endpoint.path,
+                    "purpose": endpoint.purpose,
+                    "requirement_ids": endpoint.requirement_ids,
+                }
+                for group in workspace.api_design.groups
+                for endpoint in group.endpoints
+                if query & self._meaningful_tokens(
+                    " ".join([endpoint.path, endpoint.purpose, endpoint.resource or ""])
+                )
+            ][:10]
+        if query & {"prototype", "screen", "page", "ui", "view"} or request.page_context == "/prototype":
+            context["prototype_screens"] = [
+                {
+                    "id": screen.id,
+                    "name": screen.name,
+                    "purpose": screen.purpose,
+                    "source_requirement_ids": screen.source_requirement_ids,
+                    "actor_ids": screen.actor_ids,
+                }
+                for screen in workspace.prototype.screens[:12]
+            ]
+        return context
 
     def _grounded_component_answer(
         self,
@@ -1209,8 +2002,10 @@ class ArchitectureAssistantService:
     @staticmethod
     def _meaningful_tokens(value: str) -> set[str]:
         ignored = {
-            "about", "after", "architecture", "change", "from", "into", "make",
-            "should", "system", "that", "this", "with", "would", "your",
+            "about", "after", "and", "architecture", "are", "change", "current",
+            "design", "does", "evidence", "for", "from", "how", "into", "make",
+            "only", "project", "should", "system", "that", "the", "this", "using",
+            "what", "where", "which", "who", "why", "with", "would", "your",
         }
         return {
             token

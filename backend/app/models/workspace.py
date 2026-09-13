@@ -30,6 +30,7 @@ class Workspace(Base):
     database_design_json: Mapped[dict] = mapped_column(JSON, default=dict)
     api_design_json: Mapped[dict] = mapped_column(JSON, default=dict)
     deployment_plan_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    prototype_json: Mapped[dict] = mapped_column(JSON, default=dict)
     causal_graph_json: Mapped[dict] = mapped_column(JSON, default=dict)
     adrs_json: Mapped[list] = mapped_column(JSON, default=list)
     diagram_layouts_json: Mapped[dict] = mapped_column(JSON, default=dict)

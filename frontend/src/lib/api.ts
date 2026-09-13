@@ -2,7 +2,7 @@ import type { Workspace, WorkspaceCreatePayload, ProjectDescriptionAnalyzePayloa
 import type { ArchitectureScorecard, BlastRadiusResult } from '../types/api'
 import type { ResilienceRecommendationsRequest, ApplyMitigationsRequest, ResilienceRecommendation } from '../types/api'
 import type { ConwayFitRequest, ConwayFitResult, TwinMatch, TwinMatchRequest } from '../types/api'
-import type { ArchitectureChangeProposal, ArchitectureChatRequest, ArchitectureChatResponse, ArchitectureRiskAnalysis } from '../types/api'
+import type { ArchitectureChangeProposal, ArchitectureChatRequest, ArchitectureChatResponse, ArchitectureRiskAnalysis, ProjectAction } from '../types/api'
 import type { HealthStatus } from '../types/client'
 import type { CounterfactualSimulationRequest, CounterfactualSimulationResult } from '../types/api'
 import type {
@@ -24,10 +24,10 @@ function resolveDefaultApiBaseUrl() {
   }
 
   if (typeof window !== 'undefined') {
-    return `${window.location.protocol}//${window.location.hostname}:8010/api/v1`
+    return `${window.location.protocol}//${window.location.hostname}:8011/api/v1`
   }
 
-  return 'http://127.0.0.1:8010/api/v1'
+  return 'http://127.0.0.1:8011/api/v1'
 }
 
 const DEFAULT_API_BASE_URL = resolveDefaultApiBaseUrl()
@@ -153,6 +153,7 @@ function requireArchitectureChatResponse(value: unknown): ArchitectureChatRespon
         typeof proposal.auto_apply_safe !== 'boolean' ||
         !Array.isArray(proposal.architecture_changes) ||
         !Array.isArray(proposal.requirement_additions) ||
+        !Array.isArray(proposal.project_actions) ||
         !isStringArray(proposal.affected_components) ||
         !isStringArray(proposal.tradeoffs)) {
       throw new Error('AI Assistant returned an invalid change proposal.')
@@ -341,6 +342,34 @@ export function applyArchitectureChatProposal(
   return request<WorkspaceMutationResponse>(
     `/workspaces/${workspaceId}/architecture-chat/apply`,
     { method: 'POST', body: JSON.stringify({ proposal }) },
+  )
+}
+
+export function previewProjectAction(
+  workspaceId: string,
+  action: ProjectAction,
+  expectedUpdatedAt: string,
+) {
+  return request<import('../types/api').ProjectActionPreview>(
+    `/workspaces/${workspaceId}/project-actions/preview`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ action, expected_updated_at: expectedUpdatedAt }),
+    },
+  )
+}
+
+export function applyProjectAction(
+  workspaceId: string,
+  action: ProjectAction,
+  expectedUpdatedAt: string,
+) {
+  return request<WorkspaceMutationResponse>(
+    `/workspaces/${workspaceId}/project-actions`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ action, expected_updated_at: expectedUpdatedAt }),
+    },
   )
 }
 

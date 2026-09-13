@@ -15,6 +15,8 @@ from app.schemas.domain import (
     ArchitectureOption,
     ArchitectureRiskAnalysis,
     CausalGraph,
+    CausalGraphEdge,
+    CausalGraphNode,
     CausalGraphTrace,
     ClarificationPlan,
     ComparisonResult,
@@ -22,6 +24,9 @@ from app.schemas.domain import (
     DeploymentPlan,
     DiagramArtifact,
     ImpactAssessment,
+    ProjectActionPreview,
+    ProjectActionRequest,
+    PrototypeSpec,
     RecommendationResult,
     RequirementModel,
     WorkspaceEditImpact,
@@ -49,6 +54,8 @@ from app.services.requirement_analyzer import RequirementAnalyzer
 from app.services.workspace_editor import WorkspaceEditService
 from app.services.architecture_assistant import ArchitectureAssistantService
 from app.services.project_signals import clarification_category, hydrate_project_signals
+from app.services.project_action_service import ProjectActionService
+from app.services.prototype_generator import PrototypeGenerator
 from app.services.generation_runtime import (
     GENERATION_TELEMETRY,
     PROJECT_GENERATION_CACHE,
@@ -75,6 +82,8 @@ class WorkspaceOrchestrator:
         self.impact_analyzer = ImpactAnalyzer()
         self.workspace_editor = WorkspaceEditService()
         self.architecture_assistant = ArchitectureAssistantService()
+        self.prototype_generator = PrototypeGenerator()
+        self.project_action_service = ProjectActionService()
 
     def list_workspaces(
         self, active_workspace_id: str | None = None
@@ -128,9 +137,95 @@ class WorkspaceOrchestrator:
             include_ai=include_ai,
         )
 
+    def preview_project_action(
+        self, workspace_id: str, request: ProjectActionRequest
+    ) -> ProjectActionPreview | None:
+        workspace = self.repository.get(workspace_id)
+        if workspace is None:
+            return None
+        self._check_expected_updated_at(workspace, request.expected_updated_at)
+        if request.action.action in {"undo", "redo", "regenerate_affected"}:
+            impact = WorkspaceEditImpact(
+                items=[WorkspaceImpactItem(
+                    area="Workspace" if request.action.action in {"undo", "redo"} else "Prototype",
+                    level="major" if request.action.action in {"undo", "redo"} else "moderate",
+                    summary=(
+                        f"The canonical workspace will {request.action.action} one validated revision."
+                        if request.action.action in {"undo", "redo"}
+                        else "Prototype screens will be regenerated from current canonical requirements."
+                    ),
+                )],
+                affected_artifacts=["workspace" if request.action.action in {"undo", "redo"} else "prototype"],
+                requires_confirmation=request.action.action in {"undo", "redo"},
+            )
+            return ProjectActionPreview(action=request.action, impact=impact)
+        edit = self.project_action_service.to_workspace_edit(
+            request.action,
+            expected_updated_at=request.expected_updated_at,
+        )
+        if edit is None:
+            raise ValueError("This project action cannot be previewed.")
+        preview = self.workspace_editor.preview(self._to_response(workspace), edit)
+        return ProjectActionPreview(
+            action=request.action,
+            workspace_edit=preview.edit,
+            impact=preview.impact,
+            warnings=preview.warnings,
+        )
+
+    def apply_project_action(
+        self, workspace_id: str, request: ProjectActionRequest
+    ) -> WorkspaceMutationResponse | None:
+        action = request.action
+        if action.action == "undo":
+            return self.undo_workspace_edit(workspace_id)
+        if action.action == "redo":
+            return self.redo_workspace_edit(workspace_id)
+        if action.action == "regenerate_affected":
+            workspace = self.repository.get(workspace_id)
+            if workspace is None:
+                return None
+            self._check_expected_updated_at(workspace, request.expected_updated_at)
+            self._record_revision(workspace, "Regenerate prototype from canonical requirements")
+            self._regenerate_sections(workspace, ["prototype"])
+            self._rebuild_graph_and_documentation(workspace)
+            response = self._to_response(self.repository.save(workspace))
+            impact = WorkspaceEditImpact(
+                items=[WorkspaceImpactItem(
+                    area="Prototype",
+                    level="moderate",
+                    summary="Prototype screens were synchronized with current project requirements.",
+                )],
+                affected_artifacts=["prototype", "causal_graph", "documentation"],
+            )
+            return WorkspaceMutationResponse(
+                workspace=response,
+                impact=impact,
+                consistency_issues=response.consistency_issues,
+                message="Prototype regenerated from canonical requirements.",
+            )
+        edit = self.project_action_service.to_workspace_edit(
+            action,
+            expected_updated_at=request.expected_updated_at,
+        )
+        if edit is None:
+            raise ValueError("This project action cannot be applied.")
+        return self.apply_workspace_edit(workspace_id, edit)
+
     def apply_architecture_proposal(
         self, workspace_id: str, proposal: ArchitectureChangeProposal
     ) -> WorkspaceMutationResponse | None:
+        if proposal.project_actions:
+            history_actions = [
+                action for action in proposal.project_actions if action.action in {"undo", "redo"}
+            ]
+            if history_actions:
+                if len(proposal.project_actions) != 1 or proposal.architecture_changes or proposal.requirement_additions:
+                    raise ValueError("Undo and redo cannot be combined with other project actions.")
+                return self._restore_revision(
+                    workspace_id,
+                    direction=history_actions[0].action,
+                )
         workspace = self.repository.get(workspace_id)
         if workspace is None:
             return None
@@ -157,6 +252,25 @@ class WorkspaceOrchestrator:
                 operation="add",
                 value=addition.text,
             )
+            applied = self.workspace_editor.apply(current, edit)
+            current = applied.workspace
+            requirement_sections.extend(applied.regenerated_sections)
+            impact_items.extend(applied.impact.items)
+            changed = True
+
+        for action in proposal.project_actions:
+            if action.action == "regenerate_affected":
+                requirement_sections.append("prototype")
+                impact_items.append(WorkspaceImpactItem(
+                    area="Prototype",
+                    level="moderate",
+                    summary="Affected prototype screens will be regenerated from canonical requirements.",
+                ))
+                changed = True
+                continue
+            edit = self.project_action_service.to_workspace_edit(action)
+            if edit is None:
+                raise ValueError(f"Unsupported proposal action: {action.action}")
             applied = self.workspace_editor.apply(current, edit)
             current = applied.workspace
             requirement_sections.extend(applied.regenerated_sections)
@@ -295,6 +409,7 @@ class WorkspaceOrchestrator:
             database_design_json=generated["database_design"].model_dump(),
             api_design_json=generated["api_design"].model_dump(),
             deployment_plan_json=generated["deployment_plan"].model_dump(),
+            prototype_json=generated["prototype"].model_dump(mode="json"),
             causal_graph_json=generated["causal_graph"].model_dump(),
             adrs_json=[item.model_dump() for item in generated["adrs"]],
             diagram_layouts_json={},
@@ -764,6 +879,14 @@ class WorkspaceOrchestrator:
             ),
         )
         self._emit_progress(on_progress, "diagrams", diagrams)
+        prototype = self.prototype_generator.generate(
+            project_id=project_id,
+            title=title,
+            requirements=requirements,
+            api_design=api_design,
+            database_design=database_design,
+        )
+        self._emit_progress(on_progress, "prototype", prototype)
 
         adr = None
         if existing_adrs is None:
@@ -778,7 +901,7 @@ class WorkspaceOrchestrator:
         else:
             adrs = list(existing_adrs)
 
-        causal_graph = self.causal_graph_service.build(
+        causal_graph = self._augment_graph_with_prototype(self.causal_graph_service.build(
             original_prompt=description,
             requirements=requirements,
             architectures=architectures,
@@ -788,7 +911,7 @@ class WorkspaceOrchestrator:
             deployment_plan=deployment_plan,
             diagrams=diagrams,
             adrs=adrs,
-        )
+        ), prototype)
 
         response = WorkspaceResponse(
             id="preview",
@@ -805,6 +928,7 @@ class WorkspaceOrchestrator:
             database_design=database_design,
             api_design=api_design,
             deployment_plan=deployment_plan,
+            prototype=prototype,
             documentation_markdown="",
             impact_history=[],
             adr=adr,
@@ -827,6 +951,7 @@ class WorkspaceOrchestrator:
             "api_design": api_design,
             "deployment_plan": deployment_plan,
             "diagrams": diagrams,
+            "prototype": prototype,
             "documentation_markdown": documentation_markdown,
             "adr": adr,
             "adrs": adrs,
@@ -862,7 +987,23 @@ class WorkspaceOrchestrator:
             and current_decision_model
             and current_requirement_model
         ):
-            return workspace
+            try:
+                PrototypeSpec.model_validate(
+                    getattr(workspace, "prototype_json", None) or {}
+                )
+                return workspace
+            except ValueError:
+                requirements = RequirementModel.model_validate(raw)
+                workspace.prototype_json = self.prototype_generator.generate(
+                    project_id=workspace.id,
+                    title=workspace.title,
+                    requirements=requirements,
+                    api_design=ApiDesign.model_validate(workspace.api_design_json),
+                    database_design=DatabaseDesign.model_validate(
+                        workspace.database_design_json
+                    ),
+                ).model_dump(mode="json")
+                return self.repository.save(workspace)
         GENERATION_TELEMETRY.start(workspace.id)
         if not current_decision_model or not current_requirement_model:
             # Semantic model upgrades must re-run extraction from this
@@ -908,6 +1049,7 @@ class WorkspaceOrchestrator:
         workspace.database_design_json = generated["database_design"].model_dump()
         workspace.api_design_json = generated["api_design"].model_dump()
         workspace.deployment_plan_json = generated["deployment_plan"].model_dump()
+        workspace.prototype_json = generated["prototype"].model_dump(mode="json")
         workspace.causal_graph_json = generated["causal_graph"].model_dump()
         workspace.adrs_json = [item.model_dump() for item in generated["adrs"]]
         workspace.documentation_markdown = generated["documentation_markdown"]
@@ -925,6 +1067,7 @@ class WorkspaceOrchestrator:
         workspace.database_design_json = response.database_design.model_dump()
         workspace.api_design_json = response.api_design.model_dump()
         workspace.deployment_plan_json = response.deployment_plan.model_dump()
+        workspace.prototype_json = response.prototype.model_dump(mode="json")
         workspace.diagram_layouts_json = copy.deepcopy(response.diagram_layouts)
         # Source traceability: causal graph and ADRs are downstream artifacts
         # and must travel with the response state, otherwise edits leave stale
@@ -958,6 +1101,7 @@ class WorkspaceOrchestrator:
             "database",
             "comparison",
             "api",
+            "prototype",
             "recommendation",
             "deployment",
             "diagrams",
@@ -981,6 +1125,7 @@ class WorkspaceOrchestrator:
         database_design = DatabaseDesign.model_validate(workspace.database_design_json)
         api_design = ApiDesign.model_validate(workspace.api_design_json)
         deployment_plan = DeploymentPlan.model_validate(workspace.deployment_plan_json)
+        existing_prototype = self._load_prototype(workspace, requirements, api_design, database_design)
 
         GENERATION_TELEMETRY.start(workspace.id)
         try:
@@ -1109,6 +1254,15 @@ class WorkspaceOrchestrator:
                 workspace.diagrams_json = {
                     key: value.model_dump() for key, value in diagrams.items()
                 }
+            if "prototype" in section_set:
+                workspace.prototype_json = self.prototype_generator.generate(
+                    project_id=workspace.id,
+                    title=workspace.title,
+                    requirements=requirements,
+                    api_design=api_design,
+                    database_design=database_design,
+                    existing=existing_prototype,
+                ).model_dump(mode="json")
         finally:
             GENERATION_TELEMETRY.finish(workspace.id)
 
@@ -1129,7 +1283,13 @@ class WorkspaceOrchestrator:
             key: DiagramArtifact.model_validate(value)
             for key, value in (workspace.diagrams_json or {}).items()
         }
-        graph = self.causal_graph_service.build(
+        prototype = self._load_prototype(
+            workspace,
+            requirements,
+            ApiDesign.model_validate(workspace.api_design_json),
+            DatabaseDesign.model_validate(workspace.database_design_json),
+        )
+        graph = self._augment_graph_with_prototype(self.causal_graph_service.build(
             original_prompt=workspace.original_prompt,
             requirements=requirements,
             architectures=architectures,
@@ -1139,7 +1299,7 @@ class WorkspaceOrchestrator:
             deployment_plan=DeploymentPlan.model_validate(workspace.deployment_plan_json),
             diagrams=diagrams,
             adrs=self._load_adrs(workspace),
-        )
+        ), prototype)
         workspace.causal_graph_json = graph.model_dump()
         response = self._workspace_response_from_parts(workspace)
         response.consistency_issues = self.workspace_editor.consistency_issues(response)
@@ -1227,7 +1387,7 @@ class WorkspaceOrchestrator:
             "architectures_json", "comparison_json", "recommendation_json",
             "diagrams_json", "database_design_json", "api_design_json",
             "deployment_plan_json", "causal_graph_json", "adrs_json",
-            "diagram_layouts_json", "impact_history_json",
+            "diagram_layouts_json", "prototype_json", "impact_history_json",
         )
         return {
             "description": description,
@@ -1258,6 +1418,9 @@ class WorkspaceOrchestrator:
         database_design = DatabaseDesign.model_validate(workspace.database_design_json)
         api_design = ApiDesign.model_validate(workspace.api_design_json)
         deployment_plan = DeploymentPlan.model_validate(workspace.deployment_plan_json)
+        prototype = self._load_prototype(
+            workspace, requirements, api_design, database_design
+        )
         adrs = self._load_adrs(workspace)
         stored_graph = getattr(workspace, "causal_graph_json", None) or {}
         causal_graph = (
@@ -1275,6 +1438,8 @@ class WorkspaceOrchestrator:
                 adrs=adrs,
             )
         )
+        if not any(node.type == "prototype_screen" for node in causal_graph.nodes):
+            causal_graph = self._augment_graph_with_prototype(causal_graph, prototype)
         return WorkspaceResponse(
             id=workspace.id,
             title=workspace.title,
@@ -1290,6 +1455,7 @@ class WorkspaceOrchestrator:
             database_design=database_design,
             api_design=api_design,
             deployment_plan=deployment_plan,
+            prototype=prototype,
             documentation_markdown=workspace.documentation_markdown,
             impact_history=[
                 ImpactAssessment.model_validate(item) for item in (workspace.impact_history_json or [])
@@ -1310,6 +1476,69 @@ class WorkspaceOrchestrator:
             created_at=workspace.created_at,
             updated_at=workspace.updated_at,
         )
+
+    def _load_prototype(
+        self,
+        workspace: Workspace,
+        requirements: RequirementModel,
+        api_design: ApiDesign,
+        database_design: DatabaseDesign,
+    ) -> PrototypeSpec:
+        raw = getattr(workspace, "prototype_json", None) or {}
+        try:
+            return PrototypeSpec.model_validate(raw)
+        except ValueError:
+            prototype = self.prototype_generator.generate(
+                project_id=workspace.id,
+                title=workspace.title,
+                requirements=requirements,
+                api_design=api_design,
+                database_design=database_design,
+            )
+            workspace.prototype_json = prototype.model_dump(mode="json")
+            return prototype
+
+    @staticmethod
+    def _augment_graph_with_prototype(
+        graph: CausalGraph, prototype: PrototypeSpec
+    ) -> CausalGraph:
+        updated = graph.model_copy(deep=True)
+        known = {node.id for node in updated.nodes}
+        edge_keys = {
+            (edge.source_node_id, edge.target_node_id, edge.relationship)
+            for edge in updated.edges
+        }
+        for screen in prototype.screens:
+            if screen.id not in known:
+                updated.nodes.append(CausalGraphNode(
+                    id=screen.id,
+                    type="prototype_screen",
+                    name=screen.name,
+                    description=screen.purpose,
+                    source="prototype-generator",
+                    confidence=1.0 if screen.source_requirement_ids else 0.5,
+                    metadata={"artifact": "prototype", "route": screen.route},
+                ))
+                known.add(screen.id)
+            linked = False
+            for requirement_id in screen.source_requirement_ids:
+                key = (requirement_id, screen.id, "affects")
+                if requirement_id not in known or key in edge_keys:
+                    continue
+                digest = uuid.uuid5(uuid.NAMESPACE_URL, "|".join(key)).hex[:12]
+                updated.edges.append(CausalGraphEdge(
+                    id=f"EDGE-{digest}",
+                    source_node_id=requirement_id,
+                    target_node_id=screen.id,
+                    relationship="affects",
+                    reason=f"{screen.name} represents behavior from {requirement_id}.",
+                    confidence=1.0,
+                ))
+                edge_keys.add(key)
+                linked = True
+            if not linked and screen.id not in updated.orphan_node_ids:
+                updated.orphan_node_ids.append(screen.id)
+        return CausalGraph.model_validate(updated.model_dump())
 
     def _to_response(self, workspace: Workspace) -> WorkspaceResponse:
         response = self._workspace_response_from_parts(workspace)
