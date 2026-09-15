@@ -25,6 +25,7 @@ export const causalTypeLabels: Record<CausalNodeType, string> = {
   cost: 'Cost',
   adr: 'ADR',
   diagram: 'Diagram',
+  prototype_screen: 'Prototype screen',
 }
 
 export const causalTypeColors: Record<CausalNodeType, string> = {
@@ -45,6 +46,7 @@ export const causalTypeColors: Record<CausalNodeType, string> = {
   cost: '#f59e0b',
   adr: '#c084fc',
   diagram: '#64748b',
+  prototype_screen: '#a78bfa',
 }
 
 export const causalRelationshipLabels: Record<CausalRelationshipType, string> = {
@@ -91,6 +93,11 @@ const stageByType: Record<CausalNodeType, number> = {
   cost: 8,
   adr: 8,
   diagram: 8,
+  // Shares the trailing column with the other derived artifacts. Measured
+  // alternatives (its own column, or splitting the derived types across
+  // several) both fit at a *lower* zoom, because the graph panel is narrower
+  // than it is tall — width costs more than height here.
+  prototype_screen: 8,
 }
 
 export function filterCausalGraph(
@@ -262,8 +269,13 @@ export function buildFocusedCausalGraph(
 
 export function layoutCausalNodes(nodes: CausalGraphNode[]) {
   const stageOffsets = new Map<number, number>()
+  const lastStage = Math.max(...Object.values(stageByType))
   return nodes.map((node) => {
-    const stage = stageByType[node.type]
+    // A node type the frontend does not know about must not become NaN: an
+    // undefined stage would make x NaN, which makes the graph's bounding box
+    // NaN, which leaves the viewport stuck at its identity transform for the
+    // life of the page. Unknown types go in a trailing column instead.
+    const stage = stageByType[node.type] ?? lastStage
     const y = stageOffsets.get(stage) ?? 0
     const estimatedLines = Math.max(1, Math.ceil(node.name.length / 32))
     const estimatedHeight = Math.max(76, 48 + estimatedLines * 15)

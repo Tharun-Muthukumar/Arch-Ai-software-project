@@ -578,6 +578,7 @@ export type CausalNodeType =
   | 'cost'
   | 'adr'
   | 'diagram'
+  | 'prototype_screen'
 
 export type CausalRelationshipType =
   | 'requires'

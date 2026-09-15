@@ -3,7 +3,6 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   Check,
-  ImagePlus,
   LoaderCircle,
   Send,
   Sparkles,
@@ -142,7 +141,6 @@ export function ArchitectureChatPanel({
   const { showToast } = useToast()
   const [entries, setEntries] = useState<ChatEntry[]>(() => loadEntries(workspace.id))
   const [message, setMessage] = useState('')
-  const [attachment, setAttachment] = useState<ArchitectureChatImage | null>(null)
   const [error, setError] = useState<string | null>(null)
   const seededMessage = useRef<string | null>(null)
   const autoApplyAttempted = useRef<string | null>(null)
@@ -150,7 +148,6 @@ export function ArchitectureChatPanel({
 
   useEffect(() => {
     setEntries(loadEntries(workspace.id))
-    setAttachment(null)
     setError(null)
     seededMessage.current = null
   }, [workspace.id])
@@ -237,46 +234,15 @@ export function ArchitectureChatPanel({
   }, [applyMutation, entries])
 
   function submitMessage() {
-    const content = message.trim() || 'Analyze the attached image and explain the relevant project or architecture implications.'
-    if ((!message.trim() && !attachment) || sendMutation.isPending || applyMutation.isPending) return
+    const content = message.trim()
+    if (!content || sendMutation.isPending || applyMutation.isPending) return
     setError(null)
     setEntries((current) => [
       ...current,
       { id: crypto.randomUUID(), role: 'user', content },
     ])
     setMessage('')
-    const images = attachment ? [attachment] : []
-    setAttachment(null)
-    sendMutation.mutate({ content, images })
-  }
-
-  function attachImage(file: File | undefined) {
-    if (!file) return
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-      setError('Choose a PNG, JPEG, or WebP image.')
-      return
-    }
-    if (file.size > 4 * 1024 * 1024) {
-      setError('Images must be 4 MB or smaller.')
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : ''
-      const data = result.split(',', 2)[1]
-      if (!data) {
-        setError('The image could not be read.')
-        return
-      }
-      setAttachment({
-        name: file.name,
-        media_type: file.type as ArchitectureChatImage['media_type'],
-        data,
-      })
-      setError(null)
-    }
-    reader.onerror = () => setError('The image could not be read.')
-    reader.readAsDataURL(file)
+    sendMutation.mutate({ content, images: [] })
   }
 
   function rejectProposal(proposalId: string) {
@@ -411,7 +377,7 @@ export function ArchitectureChatPanel({
             <div className="chat-row-assistant">
               <div className="chat-bubble flex items-center gap-2 text-sm text-muted" role="status">
                 <LoaderCircle className="h-4 w-4 animate-spin" />
-                {sendMutation.variables?.images.length ? 'Analyzing the image with the vision model...' : 'Reasoning with the current project context...'}
+                Reasoning with the current project context...
               </div>
             </div>
           ) : null}
@@ -426,13 +392,6 @@ export function ArchitectureChatPanel({
             </div>
           ) : null}
           {error ? <div className="mb-2 text-xs text-red-300" role="alert">{error}</div> : null}
-          {attachment ? (
-            <div className="assistant-attachment">
-              <ImagePlus className="h-4 w-4" />
-              <span>{attachment.name}</span>
-              <button type="button" aria-label="Remove attached image" onClick={() => setAttachment(null)}><X className="h-3.5 w-3.5" /></button>
-            </div>
-          ) : null}
           <label htmlFor="architecture-chat-message" className="sr-only">Message AI Assistant</label>
           <div className="flex items-end gap-2">
             <textarea
@@ -449,20 +408,7 @@ export function ArchitectureChatPanel({
                 }
               }}
             />
-            <label className="icon-button h-10 w-10 shrink-0 cursor-pointer" title="Attach image" aria-label="Attach image">
-              <ImagePlus className="h-4 w-4" />
-              <input
-                type="file"
-                className="sr-only"
-                accept="image/png,image/jpeg,image/webp"
-                disabled={sendMutation.isPending || applyMutation.isPending}
-                onChange={(event) => {
-                  attachImage(event.target.files?.[0])
-                  event.currentTarget.value = ''
-                }}
-              />
-            </label>
-            <button type="button" className="button-brand h-10 w-10 shrink-0 px-0" aria-label="Send message" disabled={(!message.trim() && !attachment) || sendMutation.isPending || applyMutation.isPending} onClick={submitMessage}>
+            <button type="button" className="button-brand h-10 w-10 shrink-0 px-0" aria-label="Send message" disabled={!message.trim() || sendMutation.isPending || applyMutation.isPending} onClick={submitMessage}>
               <Send className="h-4 w-4" />
             </button>
           </div>

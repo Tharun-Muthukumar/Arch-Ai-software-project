@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, ArrowRight, Link2, Search, X } from 'lucide-react'
 import ReactFlow, {
@@ -11,7 +11,8 @@ import ReactFlow, {
   type Edge,
   type Node,
   type NodeMouseHandler,
-  useStoreApi,
+  useReactFlow,
+  useStore,
 } from 'reactflow'
 import { useSearchParams } from 'react-router-dom'
 import { StatePanel } from '../components/workspace/StatePanel'
@@ -49,6 +50,7 @@ const filterTypes: Array<CausalNodeType | 'all'> = [
   'risk',
   'adr',
   'diagram',
+  'prototype_screen',
 ]
 const compactRelationshipLabels: Record<CausalGraphEdge['relationship'], string> = {
   requires: 'requires',
@@ -171,6 +173,12 @@ export function CausalGraphPage() {
         return {
           id: node.id,
           position,
+          // Declared so the graph's bounding box is computable on the first
+          // commit. Without these React Flow measures asynchronously, and
+          // anything that needs bounds before the first measurement (its own
+          // mount-time fit, the minimap, the background pattern) computes NaN.
+          width: 220,
+          height: estimatedHeight,
           sourcePosition: Position.Right,
           targetPosition: Position.Left,
           data: {
@@ -204,6 +212,14 @@ export function CausalGraphPage() {
         }
       }),
     [focused.focusNodeIds, focused.nodes, selectedNodeId],
+  )
+  // Identifies the visible node set. The viewport is refitted whenever this
+  // changes — a different architecture, type filter, search, or a selection
+  // that narrows the graph to a focus subgraph — and left alone for hover and
+  // for any pan or zoom the user performs themselves.
+  const viewSignature = useMemo(
+    () => `${architectureId}|${typeFilter}|${focused.nodes.map((node) => node.id).join(',')}`,
+    [architectureId, focused.nodes, typeFilter],
   )
   const flowEdges = useMemo<Edge[]>(
     () => {
@@ -358,9 +374,7 @@ export function CausalGraphPage() {
         <div className="panel min-w-0 overflow-hidden p-0" style={{ height: '72vh', minHeight: 560 }}>
           {flowNodes.length > 0 ? (
             <ReactFlowProvider>
-              <ReactFlowErrorBoundary>
                 <ReactFlow
-                  key={`${architectureId}-${typeFilter}-${search}-${selectedNodeId}`}
                   nodes={flowNodes}
                   edges={flowEdges}
                   onError={handleReactFlowError}
@@ -371,8 +385,12 @@ export function CausalGraphPage() {
                     setHoveredNodeId('')
                     setSelectedNodeId('')
                   }}
-                  fitView
-                  fitViewOptions={{ padding: 0.15 }}
+                  // No `fitView` prop on purpose. React Flow's mount-time fit
+                  // runs before the nodes are measured, derives a NaN bounding
+                  // box, writes a NaN d3 transform and marks the initial fit
+                  // done — which left the viewport stuck at translate(0,0)
+                  // scale(1) for the life of the page. FitViewOnGraphChange
+                  // below fits once the dimensions are real.
                   minZoom={0.15}
                   maxZoom={1.8}
                 >
@@ -385,8 +403,8 @@ export function CausalGraphPage() {
                     }}
                     maskColor="rgba(11, 17, 32, 0.72)"
                   />
+                  <FitViewOnGraphChange signature={viewSignature} />
                 </ReactFlow>
-              </ReactFlowErrorBoundary>
             </ReactFlowProvider>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted">
@@ -409,14 +427,40 @@ export function CausalGraphPage() {
   )
 }
 
-function ReactFlowErrorBoundary({ children }: { children: ReactNode }) {
-  const store = useStoreApi()
-  const [ready, setReady] = useState(false)
-  useLayoutEffect(() => {
-    store.setState({ onError: handleReactFlowError })
-    setReady(true)
-  }, [store])
-  return ready ? children : null
+/** Fits the viewport to whatever is currently visible.
+ *
+ * React Flow only performs its own initial fit once per store, and the store
+ * lives on the surrounding provider. The page used to remount `<ReactFlow>`
+ * through a `key` whenever the filters changed, which meant that single fit
+ * was spent on the first render — before the nodes had been measured and
+ * before the architecture filter had resolved — and the viewport then stayed
+ * at translate(0,0) scale(1) forever. Fitting explicitly, once the nodes
+ * report their dimensions and again whenever the visible set changes, is both
+ * correct on first paint and correct after every filter change.
+ */
+function FitViewOnGraphChange({ signature }: { signature: string }) {
+  // `useNodesInitialized` is not usable here: it additionally waits for every
+  // node to report handle bounds, and these nodes render no handles, so it
+  // stays false forever and the fit never runs. Reading the measured width
+  // straight off the store asks the only question that actually matters —
+  // whether React Flow knows how big the nodes are — and it is answered on the
+  // commit after the first paint.
+  const measured = useStore((state) => {
+    if (!state.width || !state.height) return false
+    const nodes = Array.from(state.nodeInternals.values())
+    return (
+      nodes.length > 0 &&
+      nodes.every((node) => Boolean(node.width) && Boolean(node.height))
+    )
+  })
+  const { fitView } = useReactFlow()
+  const lastFitted = useRef<string | null>(null)
+  useEffect(() => {
+    if (!measured || lastFitted.current === signature) return
+    lastFitted.current = signature
+    fitView({ padding: 0.15, duration: 0 })
+  }, [fitView, measured, signature])
+  return null
 }
 
 function CausalDetailPanel({
