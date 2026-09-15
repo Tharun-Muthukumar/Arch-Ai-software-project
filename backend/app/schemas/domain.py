@@ -622,6 +622,17 @@ class ArchitectureChatRequest(BaseModel):
         return message
 
 
+AssistantCategory = Literal[
+    "QUESTION",
+    "ANALYSIS",
+    "SUGGESTION",
+    "ACTION",
+    "SIMULATION",
+    "EXPLANATION",
+    "CLARIFICATION",
+]
+
+
 class ArchitectureChatResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -630,6 +641,13 @@ class ArchitectureChatResponse(BaseModel):
     affected_components: list[str] = Field(default_factory=list, max_length=12)
     recommendations: list[str] = Field(default_factory=list, max_length=8)
     proposal: ArchitectureChangeProposal | None = None
+    # How the turn was understood and how it was answered. These are additive
+    # and optional so existing clients keep working unchanged.
+    category: AssistantCategory = "QUESTION"
+    confidence: Literal["high", "medium", "low"] = "high"
+    evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+    resolved_by: Literal["deterministic", "model", "fallback"] = "deterministic"
+    elapsed_ms: float = Field(default=0.0, ge=0)
 
     @model_validator(mode="after")
     def validate_response_shape(self):

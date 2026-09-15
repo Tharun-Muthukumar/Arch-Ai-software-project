@@ -328,6 +328,62 @@ npm run smoke
 
 ---
 
+## AI Assistant Resolution Order
+
+The assistant resolves a turn in four stages and only reaches Ollama when the
+earlier stages genuinely cannot answer.
+
+1. **Exact commands** (`_direct_command_response`) — undo/redo, `delete FR-002`,
+   actor rename and removal, entity and component removal, API endpoint removal,
+   availability targets, prototype screens, `Add a constraint: …`.
+2. **Deterministic resolution** (`assistant_intel.DeterministicAssistant`) —
+   listing and counting a collection, project overview, "why does FR-004 exist",
+   grounded gap analysis, rewording a requirement, deleting one by description,
+   and requirements stated as a need ("we need doctors to be able to add notes").
+3. **Grounded lookups** (`_project_question_response`, `_grounded_component_answer`)
+   — selection-aware answers, API ownership, recommendation rationale, tradeoffs.
+4. **Ollama** — only open architecture reasoning, such as "where is the most
+   concentrated request path?". Bounded by
+   `ARCHAI_ASSISTANT_QUESTION_TIMEOUT_SECONDS` and
+   `ARCHAI_ASSISTANT_CHANGE_TIMEOUT_SECONDS`; past the deadline the assistant
+   returns canonical evidence rather than blocking.
+
+Stage 2 is the reason the assistant feels fast. Before it existed, listing
+requirements, counting them, asking why one exists, asking what was missing,
+deleting by description and rewording all reached the model — eight of fourteen
+representative turns in a measured sweep. Now one does, and the deterministic
+turns land in roughly 10 ms.
+
+### Grounding rules
+
+- Suggested actors, entities and integrations are extracted from requirement
+  text or the project brief, and every suggestion cites the ids that evidence
+  it. Recording an actor stops it being suggested again.
+- Missing quality coverage is raised as a question. No latency, availability,
+  retention or volume target is ever invented.
+- A reference that matches more than one item returns the candidate ids and
+  changes nothing.
+- A reference that matches nothing says so rather than guessing.
+- Requirement text is stored as the user phrased it. The only reshaping is
+  "X to be able to Y" into "X can Y" and capitalising the first letter.
+
+### Changes stay validated
+
+Everything stage 2 proposes is a typed `ProjectAction` inside an
+`ArchitectureChangeProposal`, applied through `ProjectActionService` and the
+canonical workspace edit pipeline. Deletions and rewordings are never
+auto-applied: they come back with `auto_apply_safe: false` for review, and undo
+remains available afterwards.
+
+### Tests
+
+`backend/tests/test_assistant_intel.py` covers these behaviours, and guards each
+one with a patch that fails the test if the turn reaches Ollama — a regression
+that pushes a deterministic turn back to the model shows up as a failure rather
+than as a slow pass.
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -339,5 +395,8 @@ npm run smoke
 | `ARCHAI_OLLAMA_ENABLED` | true | Enable raw-input unseen-domain extraction and known-domain narrative refinement |
 | `ARCHAI_OLLAMA_BASE_URL` | http://localhost:11434 | Ollama server URL |
 | `ARCHAI_OLLAMA_MODEL` | qwen3:8b | Model to use for structured extraction |
+| `ARCHAI_OLLAMA_KEEP_ALIVE` | 30m | How long Ollama keeps the model resident; short values make every call pay the reload cost |
+| `ARCHAI_ASSISTANT_QUESTION_TIMEOUT_SECONDS` | 20 | Deadline for an assistant question turn before it falls back to canonical evidence |
+| `ARCHAI_ASSISTANT_CHANGE_TIMEOUT_SECONDS` | 30 | Deadline for an assistant change turn |
 | `ARCHAI_AUTH_SESSION_HOURS` | 8 | Lifetime of a revocable login session |
 | `ARCHAI_LOG_LEVEL` | INFO | Logging level |

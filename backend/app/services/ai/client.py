@@ -86,7 +86,7 @@ class OllamaStructuredClient:
             "stream": False,
             "format": response_schema or "json",
             "think": False,
-            "keep_alive": "5m",
+            "keep_alive": self.settings.ollama_keep_alive,
             "options": {
                 "temperature": 0,
                 "seed": 42,

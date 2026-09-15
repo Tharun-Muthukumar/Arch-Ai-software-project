@@ -1,5 +1,7 @@
+import logging
 import re
 import uuid
+from time import perf_counter
 from collections import Counter
 from typing import Any, Literal
 
@@ -21,6 +23,16 @@ from app.schemas.domain import (
     WorkspaceResponse,
 )
 from app.services.ai.client import OllamaStructuredClient
+from app.services.assistant_intel import (
+    DeterministicAssistant,
+    normalize_requirement_text,
+    strip_politeness,
+    strip_query_noise,
+    truncate,
+)
+
+logger = logging.getLogger(__name__)
+
 
 
 class ArchitectureAssistantUnavailableError(RuntimeError):
@@ -134,16 +146,140 @@ class ArchitectureAssistantService:
 
     def __init__(self) -> None:
         self.ai_client = OllamaStructuredClient()
+        self.deterministic = DeterministicAssistant()
+
+    # A model attempt shorter than this is not worth starting.
+    _MIN_ATTEMPT_SECONDS = 3.0
+
+    def _generate_resilient(
+        self,
+        stage: str,
+        input_data: dict[str, Any],
+        *,
+        response_schema: dict[str, Any] | None,
+        num_predict: int,
+        num_ctx: int,
+        timeout_seconds: int,
+        budget_seconds: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Ask the model within a hard total budget.
+
+        The turn gets ``budget_seconds`` in total, not per attempt. Inside it:
+
+        1. the assistant model, bounded by ``timeout_seconds``;
+        2. the same model again ONLY if the first attempt failed fast — a
+           timeout will time out again, whereas malformed output or a dropped
+           connection usually will not;
+        3. the smaller fallback model, which is cheaper and often enough.
+
+        Whatever happens, this returns within the budget and the caller still
+        has a grounded deterministic answer to fall back on.
+        """
+        settings = self.ai_client.settings
+        budget = float(
+            budget_seconds
+            if budget_seconds is not None
+            else settings.assistant_total_budget_seconds
+        )
+        started_at = perf_counter()
+
+        def remaining() -> float:
+            return budget - (perf_counter() - started_at)
+
+        def attempt(model: str, deadline: float, context_window: int):
+            window = max(self._MIN_ATTEMPT_SECONDS, min(deadline, remaining()))
+            began = perf_counter()
+            result = self.ai_client.generate(
+                stage,
+                input_data,
+                response_schema=response_schema,
+                num_predict=num_predict,
+                num_ctx=context_window,
+                timeout_seconds=int(window),
+                model=model,
+            )
+            return result, (perf_counter() - began) >= window * 0.9
+
+        primary = settings.ollama_assistant_model
+        result, timed_out = attempt(primary, timeout_seconds, num_ctx)
+        if result is not None:
+            return result
+
+        if (
+            settings.assistant_retry_once
+            and not timed_out
+            and remaining() >= self._MIN_ATTEMPT_SECONDS
+        ):
+            result, _ = attempt(primary, timeout_seconds, num_ctx)
+            if result is not None:
+                logger.info("Assistant stage %s succeeded on retry", stage)
+                return result
+
+        fallback = (settings.assistant_fallback_model or "").strip()
+        if (
+            fallback
+            and fallback != primary
+            and remaining() >= self._MIN_ATTEMPT_SECONDS
+        ):
+            result, _ = attempt(
+                fallback,
+                settings.assistant_fallback_timeout_seconds,
+                min(num_ctx, 1536),
+            )
+            if result is not None:
+                logger.info("Assistant stage %s answered by fallback model %s", stage, fallback)
+                return result
+
+        logger.info(
+            "Assistant stage %s produced nothing within %.0fs; answering deterministically",
+            stage,
+            budget,
+        )
+        return None
 
     def chat(
+        self, workspace: WorkspaceResponse, request: ArchitectureChatRequest
+    ) -> ArchitectureChatResponse:
+        """Answer one turn, always within a bounded amount of work."""
+        started_at = perf_counter()
+        response = self._chat(workspace, request)
+        category = response.category
+        if response.proposal is not None and category == "QUESTION":
+            # The exact-command layer predates the taxonomy and does not label
+            # itself; a proposal is an action whichever layer produced it.
+            category = "ACTION"
+        return response.model_copy(
+            update={
+                "category": category,
+                "elapsed_ms": round((perf_counter() - started_at) * 1000, 2),
+            }
+        )
+
+    def _chat(
         self, workspace: WorkspaceResponse, request: ArchitectureChatRequest
     ) -> ArchitectureChatResponse:
         architecture = self._select_architecture(workspace, request.architecture_id)
         if request.images:
             return self._chat_with_image(workspace, architecture, request)
+
+        # Match commands against the de-politened text. Every pattern anchors at
+        # the start of the message, so a "can you …" wrapper used to defeat all
+        # of them and push a simple edit onto the slowest path there is.
+        command_text = strip_politeness(request.message)
+        request = (
+            request
+            if command_text == request.message
+            else request.model_copy(update={"message": command_text})
+        )
         direct_response = self._direct_command_response(workspace, architecture, request)
         if direct_response is not None:
             return direct_response
+        # Resolve the common turns — list, count, overview, explain, suggest,
+        # reword, delete-by-description — from the canonical model. These used
+        # to fall through to Ollama, which is where the seconds went.
+        deterministic = self.deterministic.respond(workspace, architecture, request)
+        if deterministic is not None:
+            return deterministic
         project_answer = self._project_question_response(workspace, architecture, request)
         if project_answer is not None:
             return project_answer
@@ -163,14 +299,13 @@ class ArchitectureAssistantService:
             "attached_images": [image.name for image in request.images],
         }
         if self._is_informational_request(request.message):
-            raw_question = self.ai_client.generate(
+            raw_question = self._generate_resilient(
                 "architecture-chat-question",
                 input_data,
                 response_schema=_ArchitectureQuestionAIResult.model_json_schema(),
                 num_predict=160,
-                num_ctx=2048,
-                timeout_seconds=30,
-                model=self.ai_client.settings.ollama_assistant_model,
+                num_ctx=1536,
+                timeout_seconds=self.ai_client.settings.assistant_question_timeout_seconds,
             )
             if raw_question is None:
                 return self._evidence_fallback_response(workspace, architecture, request)
@@ -187,16 +322,18 @@ class ArchitectureAssistantService:
                 answer=result.answer,
                 affected_components=affected,
                 recommendations=self._dedupe(result.recommendations),
+                category="ANALYSIS",
+                resolved_by="model",
+                confidence="medium",
             )
 
-        raw = self.ai_client.generate(
+        raw = self._generate_resilient(
             "architecture-chat",
             input_data,
             response_schema=_ArchitectureChatAIResult.model_json_schema(),
             num_predict=220,
             num_ctx=2048,
-            timeout_seconds=40,
-            model=self.ai_client.settings.ollama_assistant_model,
+            timeout_seconds=self.ai_client.settings.assistant_change_timeout_seconds,
         )
         if raw is None:
             if request.images:
@@ -412,13 +549,18 @@ class ArchitectureAssistantService:
         }
         raw = None
         if include_ai:
-            raw = self.ai_client.generate(
+            # This used to run with no explicit deadline, which resolved to the
+            # global 180s request timeout and left the Risk view spinning for
+            # three minutes. It is now bounded like every other assistant call,
+            # and the deterministic findings are already computed either way.
+            raw = self._generate_resilient(
                 "architecture-risk-analysis",
                 input_data,
                 response_schema=_ArchitectureRiskAIResult.model_json_schema(),
-                num_predict=900,
-                num_ctx=3072,
-                minimum_timeout_seconds=90,
+                num_predict=700,
+                num_ctx=2560,
+                timeout_seconds=self.ai_client.settings.assistant_risk_timeout_seconds,
+                budget_seconds=self.ai_client.settings.assistant_risk_budget_seconds,
             )
         ai_overview = (
             "Fast structured checks completed. Run the deeper AI review for broader analysis."
@@ -435,7 +577,10 @@ class ArchitectureAssistantService:
                 )
         elif include_ai:
             ai_overview = (
-                "Deterministic checks completed; AI review was unavailable for this run."
+                "Deterministic checks completed. The deeper AI review did not return within "
+                f"{self.ai_client.settings.assistant_risk_budget_seconds}s, so these findings "
+                "come from the structured checks alone — they are complete in their own right, "
+                "not a partial result."
             )
 
         risks = self._merge_risks([*deterministic, *ai_risks])
@@ -541,6 +686,8 @@ class ArchitectureAssistantService:
                     )
                 )
 
+        risks.extend(self._critique_risks(workspace, architecture, graph_nodes))
+
         if not self._contains_marker(represented_text, self._OBSERVABILITY_MARKERS):
             risks.append(
                 ArchitectureRisk(
@@ -564,6 +711,61 @@ class ArchitectureAssistantService:
                 )
             )
         return risks
+
+    def _critique_risks(
+        self,
+        workspace: WorkspaceResponse,
+        architecture: ArchitectureOption,
+        graph_nodes: dict[str, str],
+    ) -> list[ArchitectureRisk]:
+        """Reuse the architecture critic so the risk view is never empty.
+
+        The three original rules only fire on larger architectures, so a small
+        project produced zero risks and looked broken. The critic finds
+        uncovered requirements, untraceable components, single points of
+        failure and unmotivated technology from the same recorded facts.
+        """
+        from app.services.assistant_intel import ProjectIndex
+
+        index = ProjectIndex(workspace)
+        findings = self.deterministic.analysis.critique(workspace, architecture, index)
+        converted: list[ArchitectureRisk] = []
+        for position, finding in enumerate(findings, start=1):
+            components = [
+                name for name in finding.components if name in {
+                    component.name for component in architecture.components
+                }
+            ]
+            converted.append(
+                ArchitectureRisk(
+                    id=f"risk-critique-{position:03d}",
+                    title=finding.title[:140],
+                    category=finding.category,  # type: ignore[arg-type]
+                    severity=finding.severity,  # type: ignore[arg-type]
+                    description=f"{finding.label}: {finding.detail}"[:1000],
+                    evidence=(
+                        f"Derived from the recorded project model. Related items: "
+                        f"{', '.join(finding.evidence)}."
+                        if finding.evidence
+                        else "Derived from the recorded project model."
+                    )[:1000],
+                    affected_components=components[:12],
+                    impact=(
+                        "Left as-is, this weakens traceability between the requirements and "
+                        "the implemented design."
+                    ),
+                    recommendation=(
+                        finding.recommendation
+                        or "Review this against the requirement model before building."
+                    )[:1000],
+                    confidence=0.9 if finding.label == "Confirmed issue" else 0.7,
+                    needs_verification=finding.needs_verification,
+                    related_node_ids=[
+                        graph_nodes[name] for name in components if name in graph_nodes
+                    ][:20],
+                )
+            )
+        return converted
 
     @staticmethod
     def _compact_architecture(architecture: ArchitectureOption) -> dict[str, Any]:
@@ -732,6 +934,7 @@ class ArchitectureAssistantService:
             return None
 
         if addition is not None:
+            addition = self._normalized_addition(addition)
             requirement_collections = {
                 "functional_requirement": workspace.requirements.functional_requirements,
                 "non_functional_requirement": workspace.requirements.non_functional_requirements,
@@ -761,9 +964,13 @@ class ArchitectureAssistantService:
                 risk_level="low",
                 auto_apply_safe=True,
             )
+            answer = f"Adding this {label} and refreshing its dependent project views."
+            note = self._wording_note(addition.target_type, addition.text)
+            if note:
+                answer = f"{answer} {note}"
             return ArchitectureChatResponse(
                 type="architecture_change",
-                answer=f"Adding this {label} and refreshing its dependent project views.",
+                answer=answer,
                 proposal=proposal,
             )
 
@@ -880,9 +1087,17 @@ class ArchitectureAssistantService:
                 None,
             )
             if index is None:
+                # Let the deterministic rename resolver handle it: it matches a
+                # differently-cased or near-miss name and, failing that, reports
+                # which actors do exist instead of a bare "does not exist".
+                return None
+            if workspace.requirements.actors[index].name.casefold() == new_name.casefold():
                 return ArchitectureChatResponse(
                     type="question",
-                    answer=f"Actor {old_name} does not exist in the current project.",
+                    answer=(
+                        f"Confirmed: ACTOR-{index + 1:03d} is already named "
+                        f"'{workspace.requirements.actors[index].name}', so no change was prepared."
+                    ),
                 )
             if not new_name:
                 return ArchitectureChatResponse(
@@ -1509,37 +1724,105 @@ class ArchitectureAssistantService:
         architecture: ArchitectureOption,
         request: ArchitectureChatRequest,
     ) -> ArchitectureChatResponse:
-        """Return current canonical evidence when optional model reasoning times out."""
-        query = self._meaningful_tokens(request.message) - {
-            "current", "design", "discuss", "evidence", "least", "obvious", "project", "using",
-        }
-        candidates = [
-            (len(query & self._meaningful_tokens(text)), f"FR-{index:03d}", text)
-            for index, text in enumerate(workspace.requirements.functional_requirements, start=1)
-        ] + [
-            (len(query & self._meaningful_tokens(text)), f"NFR-{index:03d}", text)
-            for index, text in enumerate(workspace.requirements.non_functional_requirements, start=1)
-        ]
-        evidence = sorted(
-            (item for item in candidates if item[0] > 0),
-            key=lambda item: item[0],
-            reverse=True,
-        )[:4]
-        confirmed = "; ".join(f"{item_id}: {text}" for _, item_id, text in evidence)
-        if not confirmed:
-            confirmed = (
-                f"the active project is {workspace.title} in the {workspace.requirements.domain} domain, "
-                f"using the {architecture.name} option"
+        """Answer from the project itself when nothing else could.
+
+        This is the last thing that runs, and it used to be an apology. It now
+        searches every recorded artifact for what the question is about and
+        reports what it found, so an unrecognised turn still ends in something
+        the user can act on.
+        """
+        from app.services.assistant_intel import ProjectIndex
+
+        index = ProjectIndex(workspace)
+        matches = self.deterministic.analysis.search_project(
+            workspace, architecture, index, request.message
+        )
+
+        if not self.ai_client.settings.ollama_enabled:
+            reason = (
+                "The local AI model is turned off, so no change was applied and I answered "
+                "from the recorded project instead."
+            )
+        else:
+            reason = (
+                "I could not match that to a project action and the local AI model did not "
+                "answer in time, so no change was applied and I answered from the recorded "
+                "project instead."
+            )
+
+        if matches:
+            found = "\n".join(
+                f"  {label}  {truncate(text, 130)}" for _, label, text in matches
+            )
+            return ArchitectureChatResponse(
+                type="question",
+                category="QUESTION",
+                confidence="medium",
+                resolved_by="fallback",
+                answer=(
+                    f"{reason}\n\n"
+                    f"RELATED ITEMS IN {workspace.title.upper()}\n{found}\n\n"
+                    "Unknown: I have not interpreted these for you — they are the recorded "
+                    "items closest to your wording. Ask about one of them by identifier and "
+                    "I can explain it, trace what depends on it, or change it."
+                ),
+                evidence_ids=[
+                    label for _, label, _ in matches if not label.startswith(("component:", "api:", "table:", "adr:", "screen:"))
+                ][:20],
+                affected_components=[
+                    label.split(":", 1)[1]
+                    for _, label, _ in matches
+                    if label.startswith("component:")
+                ][:12],
+                recommendations=[
+                    "explain everything",
+                    "find problems with my architecture",
+                    "what am I missing",
+                ],
+            )
+
+        counts = ", ".join(
+            index.count_phrase(target_type)
+            for target_type in ("functional_requirement", "non_functional_requirement", "actor")
+        )
+        # Name the terms that were actually searched for. "There is no record of
+        # 'login'" is a real answer to "explain the login function"; "nothing
+        # matches that wording" is not.
+        subject = strip_query_noise(request.message)
+        searched = [term for term in subject.split() if term][:4]
+        if searched:
+            quoted = ", ".join(f"'{term}'" for term in searched)
+            finding = (
+                f"Confirmed: nothing recorded in {workspace.title} mentions {quoted}. I "
+                f"searched every requirement, actor, entity, component, endpoint, table, "
+                f"decision and prototype screen. The project holds {counts}, on the "
+                f"{architecture.name} option."
+            )
+        else:
+            finding = (
+                f"Unknown: I could not tell what that question is about. {workspace.title} "
+                f"holds {counts}, on the {architecture.name} option."
             )
         return ArchitectureChatResponse(
             type="question",
+            category="CLARIFICATION",
+            confidence="low",
+            resolved_by="fallback",
             answer=(
-                "The deeper Ollama analysis did not finish within the response budget, so no change was "
-                f"applied. Confirmed from the current workspace: {confirmed}. "
-                "Unknown: a reliable project-specific conclusion needs either a narrower question or another AI attempt."
+                f"{reason}\n\n"
+                f"{finding}\n\n"
+                "If it should exist, tell me to add it and I will propose the requirement "
+                "first so it stays traceable. Otherwise name an item directly — an "
+                "identifier such as FR-002, an actor name, or a component name all work."
             ),
-            affected_components=[],
-            recommendations=["Ask about one requirement, component, API, entity, or prototype screen at a time."],
+            recommendations=[
+                "explain everything",
+                "list the functional requirements",
+                "suggest missing actors",
+                "find problems with my architecture",
+                "change the name of actor <old name> to <new name>",
+                "add a functional requirement: <who> can <do what>",
+            ],
         )
 
     @staticmethod
@@ -1803,9 +2086,13 @@ class ArchitectureAssistantService:
         message: str,
     ) -> ArchitectureRequirementAddition | None:
         match = re.fullmatch(
-            r"(?:please\s+)?add\s+(?:a|an)?\s*"
+            r"(?:please\s+)?add\s+(?:an|a)?\s*"
             r"(?P<kind>non[- ]functional requirement|nfr|functional requirement|fr|constraint|assumption)"
-            r"\s*(?::|-|that\s+)?(?P<text>.+)",
+            # Connectors people actually use. Without "for"/"about"/"saying",
+            # "add an NFR for audit logging" stored the preposition as the
+            # requirement text.
+            r"\s*(?::|-|–|—|that\s+|which\s+|for\s+|about\s+|saying\s+|stating\s+|covering\s+|to\s+say\s+)?"
+            r"(?P<text>.+)",
             message.strip(" .!?"),
             flags=re.IGNORECASE,
         )
@@ -1824,6 +2111,40 @@ class ArchitectureAssistantService:
         if len(text) < 3:
             return None
         return ArchitectureRequirementAddition(target_type=target, text=text)
+
+    @staticmethod
+    def _wording_note(target_type: str, text: str) -> str:
+        """Flag a requirement that names a topic instead of a capability.
+
+        The item is still added exactly as asked — this only says what is weak
+        about the wording, without inventing an actor or an action to fix it.
+        """
+        if target_type not in {"functional_requirement", "non_functional_requirement"}:
+            return ""
+        if re.search(
+            r"\b(?:can|must|shall|should|will|is|are|has|have|allows?|enables?|provides?|"
+            r"supports?|sends?|creates?|updates?|deletes?|views?|manages?)\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return ""
+        if len(text.split()) > 8:
+            return ""
+        return (
+            f"Note: '{text}' names a topic rather than a capability, so it is not testable "
+            "as written. A functional requirement usually reads '<who> can <do what>'. Tell "
+            "me who uses it and what they do there and I will reword it — I have not guessed."
+        )
+
+    @staticmethod
+    def _normalized_addition(
+        addition: ArchitectureRequirementAddition,
+    ) -> ArchitectureRequirementAddition:
+        """Store the item the way the collection reads, without adding words."""
+        text = normalize_requirement_text(addition.text)
+        if len(text) < 3:
+            return addition
+        return addition.model_copy(update={"text": text})
 
     def _explicit_replacement_operation(
         self,

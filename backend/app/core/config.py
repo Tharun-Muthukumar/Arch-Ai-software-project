@@ -28,7 +28,29 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:8b"
     ollama_assistant_model: str = "qwen3:8b"
     ollama_vision_model: str = "qwen3-vl:4b-instruct"
+    # Ollama unloads the model after this idle window. At the old hardcoded 5m
+    # every assistant turn after a short pause paid a multi-second reload before
+    # inference even started.
+    ollama_keep_alive: str = "30m"
     request_timeout_seconds: int = 180
+    # Deadlines for the turns that genuinely need the model. Past these the
+    # assistant answers from canonical evidence instead of blocking the UI.
+    # Per-attempt deadlines. These are deliberately short: a local model that
+    # has not answered in this long is not about to.
+    assistant_question_timeout_seconds: int = 10
+    assistant_change_timeout_seconds: int = 14
+    assistant_risk_timeout_seconds: int = 25
+    # Hard ceiling on the WHOLE turn, retries and fallback included. Without
+    # this, adding a retry ladder made the worst case longer rather than more
+    # reliable, and the user just watched a spinner.
+    assistant_total_budget_seconds: int = 22
+    assistant_risk_budget_seconds: int = 40
+    # One controlled retry, then a smaller model that answers faster. Set the
+    # fallback to "" to disable it. Neither can guarantee a response, which is
+    # why every assistant path ends in a grounded deterministic answer.
+    assistant_retry_once: bool = True
+    assistant_fallback_model: str = "qwen3:1.7b"
+    assistant_fallback_timeout_seconds: int = 8
     auth_session_hours: int = 8
     log_level: str = "INFO"
 
