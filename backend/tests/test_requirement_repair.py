@@ -13,7 +13,7 @@ undoable, and it must rebuild everything downstream.
 
 import pytest
 
-from app.schemas.domain import Actor, RequirementModel
+from app.schemas.domain import Actor, RequirementModel, SourceEvidence
 from app.services.requirement_repair import (
     _actor_is_artifact,
     detect_requirement_artifacts,
@@ -84,15 +84,68 @@ def test_a_real_actor_is_not_detected(name):
     assert not _actor_is_artifact(name)
 
 
+def test_an_explicit_user_rename_is_not_silently_removed(client):
+    workspace = client.post("/api/v1/workspaces", json=workspace_payload()).json()
+    requirements = RequirementModel.model_validate(workspace["requirements"])
+    requirements.actors = [
+        Actor(
+            id="ACT-USER",
+            name="USER",
+            description="The user-facing role selected by the project owner.",
+            actor_type="human",
+            source_evidence=[SourceEvidence(
+                source_id="USER-RENAME",
+                source="explicit assistant command",
+                status="user-edited",
+                excerpt="Change the actor name from Driver to USER",
+            )],
+        ),
+        *requirements.actors,
+    ]
+
+    found = detect_requirement_artifacts(requirements, BRIEF)
+    assert "USER" not in found.invalid_actor_names
+    repaired = remove_requirement_artifacts(requirements, found)
+    assert "USER" in {actor.name for actor in repaired.actors}
+
+
 def test_the_briefs_own_title_sentence_is_detected_as_a_requirement(client):
     workspace = client.post("/api/v1/workspaces", json=workspace_payload()).json()
     requirements = RequirementModel.model_validate(workspace["requirements"])
     title = "EV charging station booking platform for fast-growing metro cities in India."
-    requirements.functional_requirements = [title, *requirements.functional_requirements]
+    requirements.functional_requirements = [
+        title,
+        *[
+            requirement
+            for requirement in requirements.functional_requirements
+            if "booking platform for fast-growing" not in requirement.casefold()
+        ],
+    ]
 
     found = detect_requirement_artifacts(requirements, BRIEF)
     assert found.title_requirements == [title]
     assert found.count == 1
+
+
+def test_a_leading_build_command_does_not_hide_the_title_artifact(client):
+    prompt = "Build an " + BRIEF[0].lower() + BRIEF[1:]
+    workspace = client.post(
+        "/api/v1/workspaces",
+        json=workspace_payload(description=prompt),
+    ).json()
+    requirements = RequirementModel.model_validate(workspace["requirements"])
+    title = "EV charging station booking platform for fast-growing metro cities in India."
+    requirements.functional_requirements = [
+        title,
+        *[
+            requirement
+            for requirement in requirements.functional_requirements
+            if "booking platform for fast-growing" not in requirement.casefold()
+        ],
+    ]
+
+    found = detect_requirement_artifacts(requirements, prompt)
+    assert found.title_requirements == [title]
 
 
 def test_a_requirement_the_user_wrote_is_never_detected(client):
@@ -268,6 +321,13 @@ def test_the_repair_removes_the_artifacts_and_rebuilds_downstream(client, damage
     # actors either.
     model = workspace["diagrams"]["use_case"]["use_case_model"]
     assert "Sso Admin" not in {actor["name"] for actor in model["actors"]}
+    assert len(model["use_cases"]) == len(
+        workspace["requirements"]["functional_requirements"]
+    )
+    assert not any(
+        "booking platform for fast-growing" in use_case["label"].casefold()
+        for use_case in model["use_cases"]
+    )
     declared = {actor["id"] for actor in model["actors"]}
     for use_case in model["use_cases"]:
         for actor_id in use_case["actor_ids"]:

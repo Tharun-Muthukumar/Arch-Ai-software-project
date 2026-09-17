@@ -15,10 +15,9 @@ never guesses:
     became a workflow, an activity in the activity diagram, and a use case with
     no actor.
   * An actor whose name is an access-mechanism acronym compounded onto a role
-    ("Sso Admin", "Rbac Admin"), or whose name no longer normalizes to a role
-    at all ("USER", "USERS"). The first comes from the wizard's auth answer
-    being read as a job title; the second from generic names the current
-    validation rejects.
+    ("Sso Admin", "Rbac Admin"), or whose generated name no longer normalizes
+    to a role at all ("USER", "USERS"). A generic name explicitly selected by
+    the user is preserved because user edits are canonical project data.
 
 Detection is deterministic and reports what it found. It does not mutate
 anything: removal happens only through the explicit, undoable
@@ -28,6 +27,7 @@ data and a silent deletion is not an acceptable repair.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from app.schemas.domain import RequirementModel
@@ -69,7 +69,17 @@ def _normalized(value: str) -> str:
     return " ".join(str(value or "").split()).casefold().rstrip(".")
 
 
-def _actor_is_artifact(name: str) -> bool:
+def _product_title_signature(value: str) -> str:
+    """Comparable title text without a leading project-creation command."""
+    normalized = _normalized(value)
+    return re.sub(
+        r"^(?:build|create|develop|design|implement|make)\s+(?:an?|the)?\s*",
+        "",
+        normalized,
+    ).strip()
+
+
+def _actor_is_artifact(name: str, *, user_confirmed: bool = False) -> bool:
     """Whether an actor name can be shown not to be a role.
 
     Two exact tests, no judgement:
@@ -84,9 +94,19 @@ def _actor_is_artifact(name: str) -> bool:
     """
     if not str(name or "").strip():
         return True
-    if not _normalize_role(name):
+    # Authentication and authorization mechanisms are never role names, even
+    # when a user has edited the actor: "SSO Admin" still describes how an
+    # administrator signs in, not a separate participant in the system.
+    if set(tokenize(name)) & _ACCESS_MECHANISM_TERMS:
         return True
-    return bool(set(tokenize(name)) & _ACCESS_MECHANISM_TERMS)
+    # A user may deliberately rename a domain role to a broader label such as
+    # "User".  That is explicit project data and must win over the extractor's
+    # preference for more specific role names.  The previous repair path
+    # deleted such a rename while claiming it was only removing generated
+    # artifacts.
+    if user_confirmed:
+        return False
+    return not _normalize_role(name)
 
 
 def detect_requirement_artifacts(
@@ -103,16 +123,22 @@ def detect_requirement_artifacts(
     found = RequirementArtifacts()
 
     sentences = split_sentences(original_prompt or "")
-    if len(sentences) > 1 and _is_product_title(sentences[0]):
-        title = _normalized(sentences[0])
+    if len(sentences) > 1 and (
+        _is_product_title(sentences[0])
+        or _is_product_title(_product_title_signature(sentences[0]))
+    ):
+        title = _product_title_signature(sentences[0])
         found.title_requirements = [
             requirement
             for requirement in requirements.functional_requirements
-            if _normalized(requirement) == title
+            if _product_title_signature(requirement) == title
         ]
 
     for actor in requirements.actors:
-        if _actor_is_artifact(actor.name):
+        user_confirmed = any(
+            evidence.status == "user-edited" for evidence in actor.source_evidence
+        )
+        if _actor_is_artifact(actor.name, user_confirmed=user_confirmed):
             found.invalid_actor_ids.append(actor.id)
             found.invalid_actor_names.append(actor.name)
 

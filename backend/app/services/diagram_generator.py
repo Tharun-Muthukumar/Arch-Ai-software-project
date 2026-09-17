@@ -3,6 +3,7 @@ from textwrap import wrap
 from typing import Callable, TypeVar
 
 from app.schemas.domain import (
+    Actor,
     UseCaseActorNode,
     UseCaseModel,
     UseCaseNode,
@@ -15,6 +16,12 @@ from app.schemas.domain import (
     DiagramArtifact,
     RecommendationResult,
     RequirementModel,
+)
+from app.services.domain_inference import (
+    _ACCESS_MECHANISM_TERMS,
+    _normalize_role,
+    extract_actors,
+    tokenize,
 )
 
 
@@ -487,7 +494,7 @@ class DiagramGenerator:
         all_functional = requirements.functional_requirements
         shown = all_functional[: self.USE_CASE_LIMIT]
         omitted = max(0, len(all_functional) - len(shown))
-        actors = requirements.actors[:6]
+        actor_profiles = self._use_case_actor_profiles(requirements)[:6]
 
         actor_nodes = [
             UseCaseActorNode(
@@ -495,13 +502,15 @@ class DiagramGenerator:
                 name=self._diagram_text(actor.name),
                 actor_type=actor.actor_type or "human",
             )
-            for index, actor in enumerate(actors, start=1)
+            for index, (actor, _) in enumerate(actor_profiles, start=1)
         ]
 
         use_case_nodes: list[UseCaseNode] = []
         for index, requirement in enumerate(shown, start=1):
             requirement_id = f"FR-{index:03d}"
-            actor_index = self._actor_for_requirement(requirements, requirement)
+            actor_indexes = self._actors_for_use_case(
+                requirements, requirement, actor_profiles
+            )
             use_case_nodes.append(
                 UseCaseNode(
                     id=f"UC-{index:03d}",
@@ -509,13 +518,25 @@ class DiagramGenerator:
                         self._clean_use_case_label(requirement) or requirement
                     ),
                     requirement_id=requirement_id,
-                    actor_ids=(
-                        [actor_nodes[actor_index].id]
-                        if actor_index is not None and actor_index < len(actor_nodes)
-                        else []
-                    ),
+                    actor_ids=[
+                        actor_nodes[actor_index].id
+                        for actor_index in actor_indexes
+                        if actor_index < len(actor_nodes)
+                    ],
                 )
             )
+
+        # An actor with no association communicates nothing and is normally an
+        # extraction artifact or a role whose requirements are outside this
+        # deliberately bounded view.  Do not draw decorative stick figures:
+        # every actor shown in the diagram participates in at least one shown
+        # use case.
+        used_actor_ids = {
+            actor_id
+            for use_case in use_case_nodes
+            for actor_id in use_case.actor_ids
+        }
+        actor_nodes = [actor for actor in actor_nodes if actor.id in used_actor_ids]
 
         system_name = self._diagram_text(requirements.domain or "System")
         model = UseCaseModel(
@@ -1230,6 +1251,182 @@ class DiagramGenerator:
                 connections.append((component, target, interaction))
         return connections
 
+    def _use_case_actor_profiles(
+        self, requirements: RequirementModel
+    ) -> list[tuple[Actor, set[str]]]:
+        """Actors suitable for a use-case view, with traceable aliases.
+
+        Authentication mechanisms prefixed to a role (``SSO Admin``) are not
+        separate actors.  They collapse to the underlying role and merge with
+        an already confirmed ``Admin``.  Generic names explicitly chosen by a
+        user are preserved, while unconfirmed generic extraction artifacts are
+        left out of the diagram.  Aliases retain the role that existed before
+        a rename, so changing ``Driver`` to ``User`` does not orphan every
+        requirement that still says "driver".
+        """
+        grouped: dict[str, tuple[Actor, set[str], bool]] = {}
+        order: list[str] = []
+        for source in requirements.actors:
+            raw_name = " ".join(str(source.name or "").split())
+            if not raw_name:
+                continue
+            tokens = set(tokenize(raw_name))
+            has_access_prefix = bool(tokens & _ACCESS_MECHANISM_TERMS)
+            canonical = _normalize_role(raw_name)
+            user_edited = any(
+                evidence.status == "user-edited"
+                for evidence in source.source_evidence
+            )
+            if not canonical and not user_edited:
+                continue
+            display_name = canonical or raw_name
+            if display_name.isupper() or display_name.islower():
+                display_name = " ".join(word.capitalize() for word in display_name.split())
+            key = display_name.casefold()
+            aliases = self._actor_aliases(source) | {raw_name, display_name}
+            candidate = source.model_copy(deep=True)
+            candidate.name = display_name
+
+            if key not in grouped:
+                grouped[key] = (candidate, aliases, has_access_prefix)
+                order.append(key)
+                continue
+
+            current, current_aliases, current_has_access = grouped[key]
+            # Prefer the clean role name over an authentication-prefixed copy,
+            # then merge the useful evidence from both records.
+            preferred = candidate if current_has_access and not has_access_prefix else current
+            other = current if preferred is candidate else candidate
+            preferred.responsibilities = list(dict.fromkeys([
+                *preferred.responsibilities,
+                *other.responsibilities,
+            ]))
+            preferred.permissions = list(dict.fromkeys([
+                *preferred.permissions,
+                *other.permissions,
+            ]))
+            preferred.source_evidence = [
+                *preferred.source_evidence,
+                *[
+                    evidence
+                    for evidence in other.source_evidence
+                    if evidence not in preferred.source_evidence
+                ],
+            ]
+            grouped[key] = (
+                preferred,
+                current_aliases | aliases,
+                current_has_access and has_access_prefix,
+            )
+
+        return [(grouped[key][0], grouped[key][1]) for key in order]
+
+    def _actors_for_use_case(
+        self,
+        requirements: RequirementModel,
+        requirement: str,
+        profiles: list[tuple[Actor, set[str]]],
+    ) -> list[int]:
+        """All confirmed participants for one actor goal.
+
+        Explicit role names and workflow ownership win.  A vocabulary score is
+        used only when it has at least two independent matching stems.  Finally
+        a single non-operational human role may own an otherwise unqualified
+        end-user goal; with two plausible primary roles the relationship stays
+        unknown rather than being fabricated.
+        """
+        matched: list[int] = []
+
+        def add(index: int) -> None:
+            if index not in matched:
+                matched.append(index)
+
+        for workflow in requirements.domain_workflows:
+            if self._text_overlap(workflow.description, requirement) < 0.65:
+                continue
+            owner = workflow.primary_actor.strip()
+            if not owner or owner.casefold() in self._UNKNOWN_ACTOR_LABELS:
+                continue
+            for index, (_, aliases) in enumerate(profiles):
+                if any(alias.casefold() == owner.casefold() for alias in aliases):
+                    add(index)
+
+        # A requirement may legitimately name more than one external role.
+        # Keep every explicit participant instead of forcing a single owner.
+        for index, (_, aliases) in enumerate(profiles):
+            if any(self._names_actor(requirement, alias) for alias in aliases):
+                add(index)
+        if matched:
+            return matched
+
+        requirement_tokens = self._stems(requirement)
+        best_index: int | None = None
+        best_score = 0.0
+        for index, (actor, aliases) in enumerate(profiles):
+            vocabulary: set[str] = set()
+            for alias in aliases:
+                vocabulary |= self._stems(alias)
+            vocabulary |= self._stems(" ".join(actor.responsibilities))
+            score = self._containment(requirement_tokens, vocabulary)
+            weak = self._containment(
+                requirement_tokens, self._stems(actor.description)
+            )
+            score = max(score, weak * 0.5)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        if best_index is not None and best_score >= 0.2:
+            return [best_index]
+
+        # If the text itself names a role that is absent from the canonical
+        # actor model, leave the use case unassigned.  Attaching "Operator
+        # controls" to a general User would hide a missing actor rather than
+        # fix it.
+        heading = re.sub(
+            r"^(?:support|enable|allow|provide)\s+",
+            "",
+            requirement.strip(),
+            flags=re.IGNORECASE,
+        )
+        if extract_actors(heading):
+            return []
+
+        operational_heads = {
+            "admin", "administrator", "operator", "manager", "staff",
+            "analyst", "auditor", "officer", "supervisor",
+        }
+        primary = [
+            index
+            for index, (actor, _) in enumerate(profiles)
+            if actor.actor_type == "human"
+            and not (set(tokenize(actor.name)) & operational_heads)
+        ]
+        return primary if len(primary) == 1 else []
+
+    def _actor_aliases(self, actor: Actor) -> set[str]:
+        aliases = {" ".join(str(actor.name or "").split())}
+        for evidence in actor.source_evidence:
+            text = " ".join(
+                str(evidence.excerpt or evidence.source or "").split()
+            )
+            match = re.search(
+                r"\bfrom\s+(.+?)\s+to\s+(.+?)(?:[.!?]|$)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                match = re.search(
+                    r"\b(?:rename|renamed)\s+(?:the\s+)?actor\s+(.+?)\s+to\s+(.+?)(?:[.!?]|$)",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+            if not match:
+                continue
+            old_name, new_name = (part.strip(" '\"") for part in match.groups())
+            if new_name.casefold() == actor.name.casefold() and old_name:
+                aliases.add(old_name)
+        return {alias for alias in aliases if alias}
+
     def _actor_for_requirement(
         self, requirements: RequirementModel, requirement: str
     ) -> int | None:
@@ -1245,7 +1442,10 @@ class DiagramGenerator:
             # The actor's own name is the strongest signal and is checked
             # first: a requirement that says "Operator controls ..." belongs to
             # the Operator, whatever the descriptions say.
-            if self._names_actor(requirement, actor.name):
+            if any(
+                self._names_actor(requirement, alias)
+                for alias in self._actor_aliases(actor)
+            ):
                 return index
 
             # Name and responsibilities are statements about what this actor

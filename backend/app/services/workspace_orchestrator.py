@@ -1213,6 +1213,15 @@ class WorkspaceOrchestrator:
         """Return the minimal dependency closure in a stable execution order."""
         expanded = set(sections)
         dependencies = {
+            # Requirements are the canonical source for every generated
+            # artifact.  This edge was missing, so a requirement repair saved
+            # the corrected model while diagrams, APIs and architecture stayed
+            # one revision behind even though the response claimed they were
+            # regenerated.
+            "requirements": {
+                "clarifications", "architectures", "database", "comparison",
+                "api", "prototype", "recommendation", "deployment", "diagrams",
+            },
             "architectures": {"comparison", "recommendation", "deployment", "diagrams"},
             "comparison": {"recommendation", "deployment", "diagrams"},
             "recommendation": {"deployment", "diagrams"},

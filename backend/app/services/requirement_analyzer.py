@@ -748,6 +748,39 @@ class RequirementAnalyzer:
                             except Exception:
                                 pass
 
+        # Short requirement headings often carry an explicit role without a
+        # full subject/verb sentence: "Operator controls", "Admin analytics",
+        # "Driver history".  They are still direct evidence of a participant,
+        # but the semantic call used to miss them whenever it had already
+        # returned at least one actor.  Add only role phrases found in the
+        # requirement itself; this supplies no domain knowledge or invented
+        # participant.
+        for requirement in functional_requirements:
+            heading = re.sub(
+                r"^(?:(?:the\s+)?system\s+(?:must|should|shall|can)\s+)?"
+                r"(?:support|enable|allow|provide)\s+",
+                "",
+                requirement.strip(),
+                flags=re.IGNORECASE,
+            )
+            for name, kind in extract_actors(heading):
+                normalized = _normalize_role(name)
+                if not normalized or not (
+                    self._actor_named_as_capability_owner(normalized, heading)
+                    or self._actor_grounded_in_requirements(
+                        normalized, [requirement], requirement
+                    )
+                ):
+                    continue
+                candidates.append(
+                    SemanticActorItem(
+                        name=normalized,
+                        actor_type=kind,
+                        responsibilities=[requirement],
+                        source_evidence=[requirement],
+                    )
+                )
+
         action_prefixes = frozenset(
             """
             coordinate manage create place deliver perform provide ensure track
@@ -794,6 +827,10 @@ class RequirementAnalyzer:
             normalized = _normalize_role(raw_name)
             if not normalized:
                 continue
+            explicitly_owns_heading = any(
+                self._actor_named_as_capability_owner(normalized, requirement)
+                for requirement in functional_requirements
+            )
             words = normalized.split()
             if len(words) > 4:
                 continue
@@ -812,9 +849,13 @@ class RequirementAnalyzer:
                 continue
 
             # 5. Generic noun rejection
-            if normalized.casefold() in GENERIC_ACTOR_NAMES or normalized.casefold() in {
-                "user", "users", "admin", "actor", "stakeholder", "person", "core"
-            }:
+            generic_name = normalized.casefold()
+            if (
+                generic_name in GENERIC_ACTOR_NAMES
+                or generic_name in {
+                    "user", "users", "admin", "actor", "stakeholder", "person", "core"
+                }
+            ) and not (generic_name == "admin" and explicitly_owns_heading):
                 continue
 
             # 6. Tech name rejection
@@ -829,6 +870,7 @@ class RequirementAnalyzer:
             if not (
                 self._actor_is_active(normalized, actor_source)
                 or self._actor_grounded_in_requirements(normalized, functional_requirements, actor_source)
+                or explicitly_owns_heading
                 or self._external_party_is_integration_boundary(normalized, actor_source)
                 or candidate.actor_type in {"device", "machine", "external-system", "external-partner"}
             ):
@@ -2851,6 +2893,39 @@ class RequirementAnalyzer:
             if subject and not re.search(rf"\b{action_pattern}\b", subject.group(1)):
                 return True
         return False
+
+    def _actor_named_as_capability_owner(
+        self, name: str, requirement: str
+    ) -> bool:
+        """Whether a terse requirement starts with an explicit role.
+
+        Generated and user-written requirements are often noun headings rather
+        than complete sentences ("Operator controls", "Admin analytics").
+        The first role phrase is the owner of that named capability.  Requiring
+        it at the beginning avoids promoting an object mentioned later in a
+        requirement into an actor.
+        """
+        heading = re.sub(
+            r"^(?:(?:the\s+)?system\s+(?:must|should|shall|can)\s+)?"
+            r"(?:support|enable|allow|provide)\s+",
+            "",
+            requirement.strip(),
+            flags=re.IGNORECASE,
+        )
+        role_tokens = [
+            self._normalize_token(token)
+            for token in re.findall(r"[a-z][a-z0-9-]+", name.casefold())
+        ]
+        heading_tokens = [
+            self._normalize_token(token)
+            for token in re.findall(r"[a-z][a-z0-9-]+", heading.casefold())
+        ]
+        if not role_tokens or len(heading_tokens) <= len(role_tokens):
+            return False
+        return all(
+            self._role_head_matches(expected, actual)
+            for expected, actual in zip(role_tokens, heading_tokens)
+        )
 
     @staticmethod
     def _role_head_matches(head: str, candidate: str) -> bool:

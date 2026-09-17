@@ -17,16 +17,16 @@ import type { UseCaseModel } from '../../types/api'
  * file infers an association or an actor that the model does not contain.
  */
 
-const ACTOR_X = 82
-const BOUNDARY_LEFT = 208
-const USE_CASE_CX = 470
-const ELLIPSE_RX = 132
-const ELLIPSE_RY = 34
-const ROW_HEIGHT = 86
-const TOP_PADDING = 62
-const BOTTOM_PADDING = 34
+const ACTOR_X = 88
+const BOUNDARY_LEFT = 250
+const USE_CASE_CX = 570
+const ELLIPSE_RX = 176
+const ELLIPSE_RY = 38
+const ROW_HEIGHT = 96
+const TOP_PADDING = 68
+const BOTTOM_PADDING = 38
 
-function wrap(label: string, perLine = 24, maxLines = 3): string[] {
+function wrap(label: string, perLine = 34, maxLines = 3): string[] {
   const words = label.split(/\s+/).filter(Boolean)
   const lines: string[] = []
   let current = ''
@@ -49,42 +49,6 @@ function wrap(label: string, perLine = 24, maxLines = 3): string[] {
   }
   return shown
 }
-
-/** Where a line aimed at (towardX, towardY) leaves an ellipse's boundary.
- *
- * Association lines used to run from a fixed point beside the actor to the
- * ellipse's leftmost point, `cx - rx`. That is only the boundary for a
- * perfectly horizontal line; at any other angle the line stopped short of the
- * outline or cut across into it, which is why the lines did not look attached.
- *
- * Solving `(t·ux/rx)² + (t·uy/ry)² = 1` along the unit vector towards the
- * other shape gives the exact point where the line meets the outline, at any
- * angle.
- */
-function ellipseEdge(
-  cx: number,
-  cy: number,
-  rx: number,
-  ry: number,
-  towardX: number,
-  towardY: number,
-): { x: number; y: number } {
-  const dx = towardX - cx
-  const dy = towardY - cy
-  const length = Math.hypot(dx, dy)
-  if (!length) return { x: cx + rx, y: cy }
-  const ux = dx / length
-  const uy = dy / length
-  const t = 1 / Math.hypot(ux / rx, uy / ry)
-  return { x: cx + ux * t, y: cy + uy * t }
-}
-
-// The stick figure's own bounds, used to start the line at the figure's edge
-// rather than inside its torso. Centred slightly above the baseline because
-// the glyph's head sits above it.
-const ACTOR_RX = 17
-const ACTOR_RY = 30
-const ACTOR_CY_OFFSET = -8
 
 /** The UML stick figure. A circle for the head, a torso, arms and two legs. */
 function ActorGlyph({ x, y, name, external }: { x: number; y: number; name: string; external: boolean }) {
@@ -181,7 +145,7 @@ export function UseCaseDiagram({ model }: { model: UseCaseModel }) {
     }
   }, [model])
 
-  const width = 760
+  const width = 980
   const unassigned = layout.useCases.filter((useCase) => !useCase.actor_ids.length).length
 
   return (
@@ -207,39 +171,27 @@ export function UseCaseDiagram({ model }: { model: UseCaseModel }) {
           {model.system_name}
         </text>
 
-        {/* Associations, drawn first so the shapes sit on top. Each end is
-            computed on the boundary of the shape it touches, so the line
-            meets the stick figure and the ellipse exactly. */}
+        {/* Associations are routed through a narrow lane outside the system
+            boundary. This keeps a heavily connected actor readable: no line
+            crosses an actor label or runs over the text inside a use case. */}
         {layout.useCases.map((useCase) =>
           useCase.actor_ids.map((actorId) => {
-            const actor = layout.actors.find((candidate) => candidate.id === actorId)
+            const actorIndex = layout.actors.findIndex((candidate) => candidate.id === actorId)
+            const actor = layout.actors[actorIndex]
             if (!actor) return null
-            const actorCy = actor.cy + ACTOR_CY_OFFSET
-            const from = ellipseEdge(
-              ACTOR_X,
-              actorCy,
-              ACTOR_RX,
-              ACTOR_RY,
-              USE_CASE_CX,
-              useCase.cy,
-            )
-            const to = ellipseEdge(
-              USE_CASE_CX,
-              useCase.cy,
-              ELLIPSE_RX,
-              ELLIPSE_RY,
-              ACTOR_X,
-              actorCy,
-            )
+            const fromX = ACTOR_X + 14
+            const fromY = actor.cy - 8
+            const laneX = ACTOR_X + 62 + actorIndex * 16
+            const toX = USE_CASE_CX - ELLIPSE_RX
             return (
-              <line
+              <path
                 key={`${useCase.id}-${actorId}`}
-                x1={from.x}
-                y1={from.y}
-                x2={to.x}
-                y2={to.y}
+                data-association="true"
+                d={`M ${fromX} ${fromY} H ${laneX} V ${useCase.cy} H ${toX}`}
+                fill="none"
                 stroke="var(--assoc-line)"
                 strokeWidth={1.3}
+                strokeLinejoin="round"
                 strokeLinecap="round"
               />
             )
@@ -287,7 +239,7 @@ export function UseCaseDiagram({ model }: { model: UseCaseModel }) {
                   x={USE_CASE_CX}
                   y={useCase.cy + 7 + index * 12 - (lines.length - 1) * 6}
                   textAnchor="middle"
-                  fontSize={10.5}
+                fontSize={11.5}
                   fill="var(--text)"
                 >
                   {line}

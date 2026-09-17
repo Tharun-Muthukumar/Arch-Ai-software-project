@@ -8,6 +8,9 @@ import uuid
 
 import pytest
 
+from app.schemas.domain import Actor, RequirementModel, SourceEvidence
+from app.services.diagram_generator import DiagramGenerator
+
 FRS = [
     "Station discovery for nearby charging stations.",
     "Slot reservations for an available charger.",
@@ -169,6 +172,85 @@ def test_other_diagram_kinds_do_not_carry_a_use_case_model(workspace):
         if key == "use_case":
             continue
         assert artifact.get("use_case_model") is None, key
+
+
+def test_actor_renames_duplicates_and_shorthand_roles_produce_a_clean_model():
+    requirements = RequirementModel(
+        summary="An EV charging booking service.",
+        domain="EV Charging Booking Platform",
+        scale_profile="unknown",
+        functional_requirements=[
+            "Station discovery.",
+            "Driver history.",
+            "Operator controls.",
+            "Admin analytics.",
+            "Use email and password for user authentication.",
+        ],
+        actors=[
+            Actor(
+                id="ACT-001",
+                name="USER",
+                description="Searches stations and manages bookings.",
+                actor_type="human",
+                source_evidence=[SourceEvidence(
+                    source_id="RENAME",
+                    source="explicit assistant command",
+                    status="user-edited",
+                    excerpt="Change the actor name from Driver to USER",
+                )],
+            ),
+            Actor(
+                id="ACT-002",
+                name="ADMIN",
+                description="Reviews analytics.",
+                actor_type="human",
+            ),
+            Actor(
+                id="ACT-003",
+                name="Sso Admin",
+                description="Uses SSO.",
+                actor_type="human",
+            ),
+            Actor(
+                id="ACT-004",
+                name="Operator",
+                description="Controls station availability.",
+                actor_type="human",
+            ),
+        ],
+    )
+
+    model = DiagramGenerator().use_case_only(requirements).use_case_model
+    assert model is not None
+    names = [actor.name for actor in model.actors]
+    assert names == ["User", "Admin", "Operator"]
+    assert "Sso Admin" not in names
+    by_requirement = {
+        use_case.requirement_id: set(use_case.actor_ids)
+        for use_case in model.use_cases
+    }
+    assert by_requirement["FR-001"] == {"ACT-001"}
+    assert by_requirement["FR-002"] == {"ACT-001"}
+    assert by_requirement["FR-003"] == {"ACT-004"}
+    assert by_requirement["FR-004"] == {"ACT-002"}
+    assert by_requirement["FR-005"] == {"ACT-001"}
+    assert all(use_case.actor_ids for use_case in model.use_cases)
+
+
+def test_one_use_case_can_have_multiple_confirmed_participants():
+    requirements = RequirementModel(
+        summary="A jointly administered service.",
+        domain="Operations Platform",
+        scale_profile="unknown",
+        functional_requirements=["Operators and admins review incident analytics."],
+        actors=[
+            Actor(id="ACT-001", name="Operator", description="Reviews incidents", actor_type="human"),
+            Actor(id="ACT-002", name="Admin", description="Reviews analytics", actor_type="human"),
+        ],
+    )
+    model = DiagramGenerator().use_case_only(requirements).use_case_model
+    assert model is not None
+    assert model.use_cases[0].actor_ids == ["ACT-001", "ACT-002"]
 
 
 # ------------------------------------------------- upgrading an older project

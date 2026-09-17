@@ -27,19 +27,20 @@ function svgOf(container: HTMLElement) {
   return svg as SVGSVGElement
 }
 
-/** Association lines only — the stick figures are drawn with <line> too. */
+/** Association paths only — stick figures still use primitive lines. */
 function associations(svg: SVGSVGElement) {
-  return Array.from(svg.querySelectorAll('line')).filter(
-    (line) => line.getAttribute('stroke') === 'var(--assoc-line)',
-  )
+  return Array.from(svg.querySelectorAll<SVGPathElement>('path[data-association="true"]'))
 }
 
-function numbers(line: SVGLineElement) {
+function endpoints(path: SVGPathElement) {
+  const values = (path.getAttribute('d') ?? '').match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? []
+  expect(values).toHaveLength(5)
   return {
-    x1: Number(line.getAttribute('x1')),
-    y1: Number(line.getAttribute('y1')),
-    x2: Number(line.getAttribute('x2')),
-    y2: Number(line.getAttribute('y2')),
+    x1: values[0],
+    y1: values[1],
+    laneX: values[2],
+    y2: values[3],
+    x2: values[4],
   }
 }
 
@@ -77,8 +78,8 @@ describe('UseCaseDiagram', () => {
       ry: Number(node.getAttribute('ry')),
     }))
 
-    for (const line of associations(svg)) {
-      const { x2, y2 } = numbers(line)
+    for (const path of associations(svg)) {
+      const { x2, y2 } = endpoints(path)
       // The endpoint must satisfy the ellipse equation for one of the drawn
       // ellipses: ((x-cx)/rx)^2 + ((y-cy)/ry)^2 === 1.
       const onSomeOutline = ellipses.some((ellipse) => {
@@ -93,11 +94,21 @@ describe('UseCaseDiagram', () => {
   it('starts every association clear of the actor glyph, never inside it', () => {
     const { container } = render(<UseCaseDiagram model={model} />)
     const svg = svgOf(container)
-    for (const line of associations(svg)) {
-      const { x1 } = numbers(line)
-      // The glyph is centred at x=82 with a half-width of 17, so a line that
+    for (const path of associations(svg)) {
+      const { x1 } = endpoints(path)
+      // The glyph is centred at x=88 with a half-width of 14, so a path that
       // begins at or left of the torso is starting inside the figure.
-      expect(x1).toBeGreaterThan(82)
+      expect(x1).toBeGreaterThan(88)
+    }
+  })
+
+  it('routes associations outside the boundary before entering each use case', () => {
+    const { container } = render(<UseCaseDiagram model={model} />)
+    for (const path of associations(svgOf(container))) {
+      const { x1, laneX, x2 } = endpoints(path)
+      expect(laneX).toBeGreaterThan(x1)
+      expect(laneX).toBeLessThan(250)
+      expect(x2).toBeGreaterThan(250)
     }
   })
 

@@ -831,7 +831,7 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
     border-color: var(--card-border);
     background: var(--surface);
   }
-  .use-case-diagram svg { min-width: 680px; display: block; }
+  .use-case-diagram svg { min-width: 860px; display: block; }
   .use-case-legend {
     @apply mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 border-t pt-3 text-[10.5px];
     border-color: var(--border-subtle);

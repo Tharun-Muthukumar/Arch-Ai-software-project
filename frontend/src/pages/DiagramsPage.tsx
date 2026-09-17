@@ -7,6 +7,7 @@ import { StatePanel } from '../components/workspace/StatePanel'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage } from '../lib/utils'
 import { WorkspaceEditDialog } from '../components/workspace/WorkspaceEditDialog'
+import { RequirementRepairNotice } from '../components/workspace/RequirementRepairNotice'
 
 const diagramOrder = [
   'use_case', 'activity', 'sequence', 'class', 'er', 'component', 'deployment',
@@ -109,6 +110,7 @@ export function DiagramsPage() {
         ))}
       </div>
 
+      <RequirementRepairNotice workspace={workspace} />
       <div className="notice notice-info"><Edit3 className="h-4 w-4 shrink-0" /><p><strong>Model edits</strong> regenerate affected diagrams. Visual notes are presentation-only and never change architecture decisions.</p></div>
 
       {note ? <div className="diagram-note"><StickyNote className="h-4 w-4" /><span>{note}</span><button type="button" className="icon-button ml-auto" title="Edit note" aria-label="Edit visual note" onClick={() => setEditingNote(true)}><Edit3 className="h-3.5 w-3.5" /></button></div> : null}

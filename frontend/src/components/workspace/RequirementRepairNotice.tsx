@@ -11,11 +11,10 @@ import type { Workspace } from '../../types/api'
  * nothing in the UI explaining why.
  *
  * So the backend reports what it can *prove* is an artifact — a functional
- * requirement that is verbatim the brief's own product-title sentence, an actor
- * whose name is an access-mechanism acronym ("Sso Admin") or is not a role at
- * all ("USER") — and this is the one-click, undoable way to act on it. It is
- * never applied automatically, because the requirement model is the user's own
- * data.
+ * requirement that is verbatim the brief's own product-title sentence, or an
+ * actor whose name is an access mechanism rather than a role ("Sso Admin").
+ * Generic labels explicitly chosen by the user are preserved. This remains a
+ * one-click, undoable action because the requirement model is user data.
  */
 export function RequirementRepairNotice({ workspace }: { workspace: Workspace }) {
   const { repairRequirementModel } = useWorkspaceEditing(workspace)
