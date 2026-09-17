@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -24,6 +24,21 @@
   --danger: #f46b6b;
   --danger-soft: #34191b;
   --warning: #e6a23c;
+  /* Signal Dark additions. Used by the assistant metadata row, evidence
+     labels and the identifier treatment; named so a future direction can be
+     swapped here rather than in every component. */
+  --text-faint: #6f7a85;
+  --text-dim: #5f6a74;
+  --label-confirmed-bg: #12211a;
+  --label-confirmed-fg: #3fc380;
+  --label-inferred-bg: #102c31;
+  --label-inferred-fg: #82dce7;
+  --label-unknown-bg: #241a10;
+  --label-unknown-fg: #e6a23c;
+  --id-color: #ffc45b;
+  /* Association lines in the UML diagram. --border-subtle was too close to
+     the panel fill to read as a line at all. */
+  --assoc-line: #5a6672;
   font-synthesis: none;
 }
 
@@ -45,7 +60,7 @@ body {
   overflow-x: hidden;
   background: var(--bg);
   color: var(--text);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Archivo', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -722,4 +737,171 @@ code, pre, .font-mono { font-family: 'JetBrains Mono', Consolas, monospace; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
+
+@layer components {
+  /* Signal Dark — assistant answer provenance.
+     The backend stamps every reply with category, confidence, resolved_by and
+     elapsed_ms. These were being discarded by the UI; this is what renders
+     them, so a grounded deterministic answer is visibly different from a
+     model-generated one. */
+  .assistant-meta {
+    @apply mb-2 flex flex-wrap items-center gap-1.5;
+  }
+  .assistant-category {
+    @apply rounded px-2 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-wider;
+    background: var(--surface-strong);
+    color: var(--text-muted);
+  }
+  .assistant-category.is-action { background: var(--brand-soft); color: var(--brand-strong); }
+  .assistant-category.is-analysis,
+  .assistant-category.is-simulation { background: var(--label-inferred-bg); color: var(--label-inferred-fg); }
+  .assistant-category.is-clarification { background: var(--label-unknown-bg); color: var(--label-unknown-fg); }
+
+  .assistant-resolver {
+    @apply flex items-center gap-1.5 rounded px-2 py-0.5 font-mono text-[9.5px];
+    color: var(--text-dim);
+  }
+  .assistant-resolver::before {
+    content: '';
+    @apply h-1 w-1 rounded-full;
+    background: currentColor;
+  }
+  .assistant-resolver.is-deterministic { color: var(--label-confirmed-fg); }
+
+  .assistant-evidence {
+    @apply mt-3 flex flex-wrap items-center gap-1 border-t pt-2.5;
+    border-color: var(--border-subtle);
+  }
+  .assistant-evidence-id {
+    @apply rounded px-1.5 py-0.5 font-mono text-[10px];
+    background: var(--surface-strong);
+    color: var(--id-color);
+  }
+}
+
+@layer components {
+  /* Signal Dark — prototype composition.
+     These style the components added so a screen reads as a screen: search
+     results beside a filter, a traced scope summary beside a form, and a
+     lifecycle strip on the booking screen. Light surfaces because the
+     prototype device frame is a light product preview inside the dark
+     workspace chrome. */
+  .prototype-results-experience .prototype-result-rows {
+    @apply flex flex-col gap-1.5;
+  }
+  .prototype-result-rows article {
+    @apply flex items-center gap-3 rounded-md border px-3 py-2.5 transition-colors;
+    border-color: #dfe5e2;
+    background: #fff;
+  }
+  .prototype-result-rows article:hover { border-color: #b9c7c2; background: #fbfdfc; }
+  .prototype-result-rows article > div { @apply flex min-w-0 flex-1 flex-col; }
+  .prototype-result-rows strong { @apply truncate text-[11px] font-semibold; color: #1d2b26; }
+  .prototype-result-rows small { @apply truncate text-[9px]; color: #77877f; }
+  .prototype-result-rows svg { @apply shrink-0; color: #94a49c; }
+  .prototype-result-index {
+    @apply flex h-6 w-6 shrink-0 items-center justify-center rounded text-[9px] font-semibold;
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    background: #eef3f1;
+    color: #5c6f67;
+  }
+
+  .prototype-summary-experience .prototype-summary-list { @apply flex flex-col gap-2; }
+  .prototype-summary-list p {
+    @apply flex items-start gap-2 text-[11px] leading-4;
+    color: #3d4c46;
+  }
+  .prototype-summary-list svg { @apply mt-0.5 shrink-0; color: #2f8f6b; }
+  .prototype-summary-experience .font-mono {
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    font-size: 9px;
+    color: #77877f;
+  }
+
+  .prototype-timeline-experience small { @apply text-[9px]; color: #77877f; }
+}
+
+@layer components {
+  /* Signal Dark — UML use case diagram.
+     Drawn as SVG rather than through Mermaid, so the notation is real: stick
+     figures outside the boundary, ellipses inside it. */
+  .use-case-diagram {
+    @apply mt-4 overflow-x-auto rounded-lg border p-3;
+    border-color: var(--card-border);
+    background: var(--surface);
+  }
+  .use-case-diagram svg { min-width: 680px; display: block; }
+  .use-case-legend {
+    @apply mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 border-t pt-3 text-[10.5px];
+    border-color: var(--border-subtle);
+    color: var(--text-muted);
+  }
+  .use-case-legend span { @apply flex items-center gap-2; }
+  .use-case-legend i { @apply h-2.5 w-2.5 shrink-0 rounded-full border; }
+  .use-case-legend .legend-actor { border-color: var(--accent); background: transparent; }
+  .use-case-legend .legend-usecase { border-color: var(--brand); background: var(--brand-soft); }
+  .use-case-legend .legend-unassigned {
+    border-color: var(--text-muted);
+    background: transparent;
+    border-style: dashed;
+  }
+}
+
+@layer components {
+  /* Signal Dark — workspace chrome.
+     The count beside each nav item and the persistent weighted score are the
+     two things that make direction A's chrome legible: the shape of the
+     project and the standing of the recommended architecture are visible from
+     every page, not only from the page that owns them. */
+  .nav-count {
+    @apply ml-auto shrink-0 text-[10px] tabular-nums;
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    color: var(--text-dim);
+  }
+  .nav-link.is-active .nav-count { color: var(--brand-strong); }
+
+  .topbar-domain {
+    @apply shrink-0 truncate rounded px-2 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider;
+    background: var(--accent-soft);
+    color: #82dce7;
+  }
+  .topbar-subtitle {
+    @apply mt-0.5 truncate text-[10.5px];
+    color: var(--text-faint);
+  }
+  .topbar-score {
+    @apply shrink-0 items-baseline gap-1.5 rounded-md border px-2.5 py-1;
+    border-color: #1d4432;
+    background: #12211a;
+  }
+  .topbar-score strong {
+    @apply text-[14px] font-semibold tabular-nums;
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    color: var(--success);
+  }
+  .topbar-score span { @apply text-[10px]; color: #5d8a75; }
+}
+
+/* The requirement-repair notice needs its action on the same row as the
+   message, and the message has to be able to wrap without pushing the button
+   off the card. */
+.repair-notice {
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.repair-notice-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .repair-notice {
+    flex-wrap: wrap;
+  }
+  .repair-notice .button-brand {
+    width: 100%;
+    justify-content: center;
+  }
 }

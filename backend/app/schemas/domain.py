@@ -431,9 +431,20 @@ ProjectActionKind = Literal[
     "update_prototype_screen",
     "remove_prototype_screen",
     "regenerate_affected",
+    "repair_requirement_model",
     "undo",
     "redo",
 ]
+
+
+# Actions that operate on the whole workspace rather than on one named element,
+# so they carry no target_id, value or requirement_type. Named once because the
+# shape validator, the preview path and the apply path all have to agree; three
+# scattered literals is how `repair_requirement_model` would end up demanding a
+# requirement_type purely because its name contains the word "requirement".
+WHOLE_WORKSPACE_ACTIONS = frozenset(
+    {"undo", "redo", "regenerate_affected", "repair_requirement_model"}
+)
 
 
 class ProjectAction(BaseModel):
@@ -448,7 +459,7 @@ class ProjectAction(BaseModel):
 
     @model_validator(mode="after")
     def validate_action_shape(self):
-        if self.action in {"undo", "redo", "regenerate_affected"}:
+        if self.action in WHOLE_WORKSPACE_ACTIONS:
             return self
         if self.action.startswith("add_") or self.action.startswith("update_"):
             if self.value is None:
@@ -762,11 +773,49 @@ class RecommendationResult(BaseModel):
     confidence: str
 
 
+class UseCaseActorNode(BaseModel):
+    """One actor in a use case diagram, drawn as a UML stick figure."""
+
+    id: str
+    name: str
+    actor_type: str = "human"
+
+
+class UseCaseNode(BaseModel):
+    """One use case, drawn as a UML ellipse inside the system boundary."""
+
+    id: str
+    label: str
+    requirement_id: str
+    actor_ids: list[str] = Field(default_factory=list)
+
+
+class UseCaseModel(BaseModel):
+    """A use case diagram as structure rather than as a picture.
+
+    Mermaid has no use case diagram type and cannot draw a stick figure, so a
+    flowchart rendered actors as plain rectangles. Emitting the model lets the
+    client draw correct UML notation (stick figures, ellipses, a system
+    boundary) while `mermaid` remains a valid fallback and `plantuml` carries
+    the native `actor`/`usecase`/`rectangle` form for export.
+    """
+
+    system_name: str
+    actors: list[UseCaseActorNode] = Field(default_factory=list)
+    use_cases: list[UseCaseNode] = Field(default_factory=list)
+    # Requirements beyond the drawing limit. Reported rather than substituted:
+    # the diagram previously replaced the last shown requirement with the final
+    # one in the model, so a node labelled FR-012 carried FR-013's text.
+    omitted_use_case_count: int = 0
+
+
 class DiagramArtifact(BaseModel):
     title: str
     description: str
     mermaid: str
     plantuml: str
+    # Present only for diagram kinds whose notation Mermaid cannot express.
+    use_case_model: UseCaseModel | None = None
 
 
 class DatabaseField(BaseModel):

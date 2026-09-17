@@ -215,12 +215,30 @@ export interface ArchitectureChatImage {
   data: string
 }
 
+/** Mirrors backend `AssistantCategory`. Keep in step with
+ *  `backend/app/schemas/domain.py`. */
+export type AssistantCategory =
+  | 'QUESTION'
+  | 'ANALYSIS'
+  | 'SUGGESTION'
+  | 'ACTION'
+  | 'SIMULATION'
+  | 'EXPLANATION'
+  | 'CLARIFICATION'
+
 export interface ArchitectureChatResponse {
   type: 'question' | 'architecture_change'
   answer: string
   affected_components: string[]
   recommendations: string[]
   proposal?: ArchitectureChangeProposal | null
+  /** How the turn was understood and how it was answered. Optional here
+   *  because replies restored from session storage predate these fields. */
+  category?: AssistantCategory
+  confidence?: 'high' | 'medium' | 'low'
+  evidence_ids?: string[]
+  resolved_by?: 'deterministic' | 'model' | 'fallback'
+  elapsed_ms?: number
 }
 
 export type RiskSeverity = 'critical' | 'high' | 'medium' | 'low' | 'informational'
@@ -308,11 +326,35 @@ export interface RecommendationResult {
   confidence: string
 }
 
+export interface UseCaseActorNode {
+  id: string
+  name: string
+  actor_type: string
+}
+
+export interface UseCaseNode {
+  id: string
+  label: string
+  requirement_id: string
+  actor_ids: string[]
+}
+
+/** A use case diagram as structure, so it can be drawn in real UML notation.
+ *  Mermaid has no use case diagram type and cannot draw a stick figure. */
+export interface UseCaseModel {
+  system_name: string
+  actors: UseCaseActorNode[]
+  use_cases: UseCaseNode[]
+  omitted_use_case_count: number
+}
+
 export interface DiagramArtifact {
   title: string
   description: string
   mermaid: string
   plantuml: string
+  /** Present only for diagram kinds whose notation Mermaid cannot express. */
+  use_case_model?: UseCaseModel | null
 }
 
 export interface DatabaseField {
@@ -463,7 +505,7 @@ export interface PrototypeSpec {
   generated_at: string
 }
 
-export type ProjectActionKind = 'add_requirement' | 'update_requirement' | 'delete_requirement' | 'add_actor' | 'update_actor' | 'delete_actor' | 'add_entity' | 'update_entity' | 'delete_entity' | 'add_architecture_component' | 'update_architecture_component' | 'delete_architecture_component' | 'add_api_endpoint' | 'update_api_endpoint' | 'delete_api_endpoint' | 'add_database_entity' | 'update_database_entity' | 'delete_database_entity' | 'update_deployment' | 'update_prototype' | 'add_prototype_screen' | 'update_prototype_screen' | 'remove_prototype_screen' | 'regenerate_affected' | 'undo' | 'redo'
+export type ProjectActionKind = 'add_requirement' | 'update_requirement' | 'delete_requirement' | 'add_actor' | 'update_actor' | 'delete_actor' | 'add_entity' | 'update_entity' | 'delete_entity' | 'add_architecture_component' | 'update_architecture_component' | 'delete_architecture_component' | 'add_api_endpoint' | 'update_api_endpoint' | 'delete_api_endpoint' | 'add_database_entity' | 'update_database_entity' | 'delete_database_entity' | 'update_deployment' | 'update_prototype' | 'add_prototype_screen' | 'update_prototype_screen' | 'remove_prototype_screen' | 'regenerate_affected' | 'repair_requirement_model' | 'undo' | 'redo'
 
 export interface ProjectAction {
   action: ProjectActionKind

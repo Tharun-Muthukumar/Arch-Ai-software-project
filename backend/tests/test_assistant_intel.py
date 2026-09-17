@@ -476,3 +476,74 @@ def test_fallback_explains_itself_and_offers_usable_commands(client, monkeypatch
     assert "response budget" not in body["answer"]
     assert body["recommendations"]
     assert any("rename" in item or "change the name" in item for item in body["recommendations"])
+
+
+# ------------------------------------------------------- identifier allocation
+# Identifiers are the handles the causal graph, API citations, prototype roles
+# and every assistant action use to address an item. A duplicate makes "delete
+# ACT-001" ambiguous, so allocation must never produce one.
+
+
+def test_positional_allocation_bug_is_fixed_when_an_item_is_inserted_first():
+    """The real failure: Driver and Operator both ended up as ACT-001."""
+    from app.utils.identifiers import assign_missing_identifiers
+
+    class Item:
+        def __init__(self, id=""):
+            self.id = id
+
+    # Operator was numbered first, then Driver was inserted ahead of it.
+    operator = Item("ACT-001")
+    driver = Item("")
+    assign_missing_identifiers([driver, operator], "ACT")
+    assert driver.id != operator.id
+    assert {driver.id, operator.id} == {"ACT-001", "ACT-002"}
+
+
+def test_an_existing_duplicate_is_repaired():
+    from app.utils.identifiers import assign_missing_identifiers
+
+    class Item:
+        def __init__(self, id=""):
+            self.id = id
+
+    items = [Item("ACT-001"), Item("ACT-001"), Item("ACT-001")]
+    assign_missing_identifiers(items, "ACT")
+    assert len({item.id for item in items}) == 3
+    # The first holder keeps what it had, so stable references do not move.
+    assert items[0].id == "ACT-001"
+
+
+def test_count_allocation_bug_is_fixed_after_a_deletion():
+    """`len(items) + 1` reuses an id that a surviving item still holds."""
+    from app.utils.identifiers import next_identifier
+
+    # ACT-001 was deleted; ACT-002 survives. A count would propose ACT-002.
+    assert next_identifier("ACT", ["ACT-002"]) == "ACT-001"
+    assert next_identifier("ACT", ["ACT-001", "ACT-002"]) == "ACT-003"
+
+
+def test_unrelated_prefixes_do_not_block_each_other():
+    from app.utils.identifiers import next_identifier
+
+    assert next_identifier("ENT", ["ACT-001", "ACT-002"]) == "ENT-001"
+
+
+def test_prototype_roles_are_unique_even_for_a_legacy_duplicate(client):
+    """A workspace saved before the fix must still render."""
+    workspace = seeded_workspace(client)
+    roles = (workspace.get("prototype") or {}).get("roles", [])
+    actor_ids = [role["actor_id"] for role in roles]
+    assert len(actor_ids) == len(set(actor_ids)), actor_ids
+
+
+def test_actor_identifiers_in_the_stored_model_are_unique(client):
+    workspace = seeded_workspace(client)
+    actor_ids = [actor["id"] for actor in workspace["requirements"]["actors"]]
+    assert len(actor_ids) == len(set(actor_ids)), actor_ids
+
+
+def test_domain_entity_identifiers_are_unique(client):
+    workspace = seeded_workspace(client)
+    entity_ids = [entity["id"] for entity in workspace["requirements"]["domain_entities"]]
+    assert len(entity_ids) == len(set(entity_ids)), entity_ids

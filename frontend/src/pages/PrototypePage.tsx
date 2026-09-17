@@ -426,6 +426,75 @@ function PrototypeComponentView({ component, screen, pattern, realtime, isChargi
     )
   }
 
+  // Result rows for a search screen. Previously `list` fell through to the
+  // workflow fallback, which rendered a *form* — text inputs where results
+  // belong. The row shape comes from the entity model; no record is invented.
+  if (component.component_type === 'list' || component.component_type === 'cards') {
+    return (
+      <section className="prototype-product-section prototype-results-experience">
+        <div className="prototype-section-heading">
+          <div><span>Results</span><h4>{component.title}</h4></div>
+          <small>{items.length} record shape{items.length === 1 ? '' : 's'}</small>
+        </div>
+        {component.description ? <p className="prototype-section-copy">{component.description}</p> : null}
+        <div className="prototype-result-rows">
+          {items.slice(0, 6).map((item, index) => (
+            <article key={`${item}-${index}`}>
+              <span className="prototype-result-index">{String(index + 1).padStart(2, '0')}</span>
+              <div>
+                <strong>{cleanPrototypeCopy(item)}</strong>
+                <small>Column defined by the validated data model</small>
+              </div>
+              <ChevronRight className="h-4 w-4" />
+            </article>
+          ))}
+        </div>
+      </section>
+    )
+  }
+
+  // The scope panel beside a form or workflow: what the screen covers, traced.
+  if (component.component_type === 'details' || component.component_type === 'notice') {
+    return (
+      <section className="prototype-product-section prototype-summary-experience">
+        <div className="prototype-section-heading">
+          <div><span>Summary</span><h4>{component.title}</h4></div>
+          {component.source_requirement_ids.length ? (
+            <small className="font-mono">{component.source_requirement_ids.slice(0, 4).join(' · ')}</small>
+          ) : null}
+        </div>
+        {component.description ? <p className="prototype-section-copy">{component.description}</p> : null}
+        <div className="prototype-summary-list">
+          {items.slice(0, 5).map((item, index) => (
+            <p key={`${item}-${index}`}><CheckCircle2 className="h-3.5 w-3.5" />{cleanPrototypeCopy(item)}</p>
+          ))}
+        </div>
+      </section>
+    )
+  }
+
+  // A standalone lifecycle strip. The status renderer already draws one, but a
+  // booking screen needs it beside its form, not only on a monitoring screen.
+  if (component.component_type === 'timeline') {
+    return (
+      <section className="prototype-product-section prototype-timeline-experience">
+        <div className="prototype-section-heading">
+          <div><span>Lifecycle</span><h4>{component.title}</h4></div>
+          <small>{items.length} state{items.length === 1 ? '' : 's'}</small>
+        </div>
+        {component.description ? <p className="prototype-section-copy">{component.description}</p> : null}
+        <div className="prototype-timeline">
+          {items.map((state, index) => (
+            <div key={`${state}-${index}`} className={index === 0 ? 'is-current' : ''}>
+              <span>{index === 0 ? <Activity className="h-3.5 w-3.5" /> : <Clock3 className="h-3.5 w-3.5" />}</span>
+              <p><strong>{state}</strong><small>{index === 0 ? 'Current preview state' : 'Supported interface state'}</small></p>
+            </div>
+          ))}
+        </div>
+      </section>
+    )
+  }
+
   if (component.component_type === 'table') {
     return (
       <section className="prototype-product-section prototype-records-experience">

@@ -35,22 +35,42 @@ def test_ev_workspace_generates_clear_diagram_artifacts(client):
     er_diagram = workspace["diagrams"]["er"]["mermaid"]
     class_diagram = workspace["diagrams"]["class"]["mermaid"]
 
-    assert "Confirmed project brief" in use_case
+    # The project brief is not an actor and is no longer drawn as one; the
+    # system boundary is a subgraph, and the real notation lives in
+    # `use_case_model` (see tests/test_use_case_diagram.py).
+    assert "Confirmed project brief" not in use_case
+    assert "subgraph" in use_case
     assert "FR-001" in use_case
     assert "Driver" in use_case
     assert "charging" in use_case.lower()
     assert "pharmac" not in use_case.lower()
+
+    use_case_model = workspace["diagrams"]["use_case"]["use_case_model"]
+    assert use_case_model is not None
+    assert any(actor["name"] == "Driver" for actor in use_case_model["actors"])
 
     assert "STATION" in er_diagram
     assert "CHARGER" in er_diagram
     assert "BOOKING" in er_diagram
     assert "PAYMENT" in er_diagram
     assert "||--o{" in er_diagram or "||--||" in er_diagram
-    assert "*id" in er_diagram
+    # Mermaid ER key notation, not a `*id` prefix invented into the name.
+    assert "UUID id PK" in er_diagram
+    assert " FK" in er_diagram, "foreign keys must be marked in the key slot"
+    assert "*id" not in er_diagram
+    # A nullable column is a comment, not part of the type. `VARCHAR?` is not
+    # a type Mermaid understands.
+    assert "?" not in er_diagram.replace("\\?", "")
 
     assert "Station" in class_diagram
     assert "Booking" in class_diagram
     assert "Payment" in class_diagram
+    # UML members, and crucially parenthesis-free: a member containing `()` is
+    # rendered by Mermaid in the methods compartment, which is where every
+    # VARCHAR(255) column used to end up.
+    assert "+id : UUID" in class_diagram
+    assert "VARCHAR" not in class_diagram
+    assert "(" not in class_diagram
 
 
 def test_pharmacy_workspace_generates_domain_specific_diagrams(client):
@@ -88,7 +108,13 @@ def test_pharmacy_workspace_generates_domain_specific_diagrams(client):
     assert "prescription" in use_case.lower()
     assert "charging" not in use_case.lower()
 
-    assert "Confirmed requirement model" in activity
+    # The activity diagram used to hang every activity off a single
+    # "Confirmed requirement model" hub — a star graph, not activity notation.
+    # It is now start -> fork -> per-actor partitions -> join -> final.
+    assert "Confirmed requirement model" not in activity
+    assert "START" in activity and "FINAL" in activity
+    assert "FORK" in activity and "JOIN" in activity
+    assert "subgraph LANE1" in activity
     assert "prescription" in activity.lower()
 
     assert "System interface" in sequence

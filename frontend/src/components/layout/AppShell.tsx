@@ -25,7 +25,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { useEffect, useState, type FocusEvent, type MouseEvent } from 'react'
+import { useEffect, useState, type FocusEvent, type MouseEvent, useMemo } from 'react'
 import { useIsMutating } from '@tanstack/react-query'
 import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../../context/auth'
@@ -71,7 +71,18 @@ const navGroups = [
 
 const allNavItems = navGroups.flatMap((group) => group.items)
 
-function Navigation({ compact, onNavigate }: { compact: boolean; onNavigate?: () => void }) {
+function Navigation({
+  compact,
+  onNavigate,
+  counts,
+}: {
+  compact: boolean
+  onNavigate?: () => void
+  /** Per-route counts read from the already-loaded workspace. Signal Dark
+   *  puts the size of each collection next to its nav item, so the shape of
+   *  the project is legible without opening every page. */
+  counts?: Record<string, number>
+}) {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const workspaceId = searchParams.get('workspace')
@@ -114,6 +125,9 @@ function Navigation({ compact, onNavigate }: { compact: boolean; onNavigate?: ()
                 >
                   <Icon className="h-[18px] w-[18px] shrink-0" />
                   {!compact ? <span>{item.label}</span> : null}
+                  {!compact && counts?.[item.to] !== undefined ? (
+                    <span className="nav-count">{counts[item.to]}</span>
+                  ) : null}
                 </NavLink>
               )
             })}
@@ -136,6 +150,41 @@ export function AppShell() {
   const [searchParams, setSearchParams] = useSearchParams()
   const workspaces = useWorkspacesQuery()
   const workspace = getActiveWorkspace(workspaces.data, searchParams.get('workspace'))
+
+  // Counts come from the workspace payload that is already loaded; nothing
+  // here issues a request, and a collection with nothing in it shows no
+  // number rather than a zero.
+  const navCounts = useMemo<Record<string, number>>(() => {
+    if (!workspace) return {}
+    const requirements =
+      workspace.requirements.functional_requirements.length +
+      workspace.requirements.non_functional_requirements.length
+    const endpoints = workspace.api_design.groups.reduce(
+      (total, group) => total + group.endpoints.length,
+      0,
+    )
+    const candidates: Record<string, number> = {
+      '/wizard': requirements,
+      '/interfaces': endpoints + workspace.database_design.entities.length,
+      '/prototype': workspace.prototype?.screens.length ?? 0,
+      '/causal-graph': workspace.causal_graph?.nodes.length ?? 0,
+      '/diagrams': Object.keys(workspace.diagrams ?? {}).length,
+      '/comparison': workspace.architectures.length,
+    }
+    return Object.fromEntries(
+      Object.entries(candidates).filter(([, value]) => value > 0),
+    )
+  }, [workspace])
+
+  // The recommended architecture's weighted score, shown persistently rather
+  // than only on the architecture page.
+  const recommendedScore = useMemo(() => {
+    if (!workspace) return null
+    const card = workspace.comparison?.scorecards.find(
+      (item) => item.architecture_id === workspace.recommendation.recommended_architecture_id,
+    )
+    return card ? card.weighted_score : null
+  }, [workspace])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
@@ -209,7 +258,7 @@ export function AppShell() {
           {!sidebarCollapsed ? <div><strong>ArchAI</strong><span>Architecture studio</span></div> : null}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
-          <Navigation compact={sidebarCollapsed} />
+          <Navigation compact={sidebarCollapsed} counts={navCounts} />
         </div>
         <div className="border-t p-3" style={{ borderColor: 'var(--card-border)' }}>
           <NavLink to="/profile" className={cn('profile-link', sidebarCollapsed && 'justify-center')} title={sidebarCollapsed ? 'Profile' : undefined}>
@@ -236,7 +285,7 @@ export function AppShell() {
               <div className="brand-lockup p-0"><div className="brand-mark"><Sparkles className="h-4 w-4" /></div><div><strong>ArchAI</strong><span>Architecture studio</span></div></div>
               <button type="button" className="icon-button" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X className="h-4 w-4" /></button>
             </div>
-            <div className="overflow-y-auto p-3"><Navigation compact={false} onNavigate={() => setMobileOpen(false)} /></div>
+            <div className="overflow-y-auto p-3"><Navigation compact={false} onNavigate={() => setMobileOpen(false)} counts={navCounts} /></div>
           </aside>
         </div>
       ) : null}
@@ -246,9 +295,26 @@ export function AppShell() {
           <button type="button" className="icon-button lg:hidden" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu className="h-5 w-5" /></button>
           <div className="min-w-0">
             <div className="breadcrumb"><span>Design room</span><ChevronLeft className="h-3 w-3 rotate-180" /><strong>{pageTitle}</strong></div>
-            <h1 className="topbar-title">{workspace?.title ?? pageTitle}</h1>
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="topbar-title">{workspace?.title ?? pageTitle}</h1>
+              {workspace?.requirements.domain ? (
+                <span className="topbar-domain">{workspace.requirements.domain}</span>
+              ) : null}
+            </div>
+            {workspace?.business_context ? (
+              <p className="topbar-subtitle">{workspace.business_context}</p>
+            ) : null}
           </div>
           <div className="ml-auto flex min-w-0 items-center gap-2">
+            {recommendedScore !== null ? (
+              <div
+                className="topbar-score hidden xl:flex"
+                title={`Weighted score of the recommended architecture (${workspace?.recommendation.recommended_architecture_name})`}
+              >
+                <strong>{recommendedScore.toFixed(1)}</strong>
+                <span>weighted</span>
+              </div>
+            ) : null}
             {workspace ? <WorkspaceRevisionControls workspace={workspace} /> : null}
             {workspace && workspaces.data && workspaces.data.length > 0 ? (
               <label className="workspace-select hidden md:flex">

@@ -3,6 +3,9 @@ from textwrap import wrap
 from typing import Callable, TypeVar
 
 from app.schemas.domain import (
+    UseCaseActorNode,
+    UseCaseModel,
+    UseCaseNode,
     ArchitectureComponent,
     ArchitectureOption,
     DatabaseDesign,
@@ -16,6 +19,97 @@ from app.schemas.domain import (
 
 
 T = TypeVar("T")
+
+
+# ---------------------------------------------------------------- diagram types
+# SQL column types are not UML types. A class diagram that prints VARCHAR(255)
+# is both wrong as UML *and* broken as Mermaid: a member containing parentheses
+# is parsed as an operation, so every varchar attribute was rendering in the
+# methods compartment with the nullability marker as a bogus return type.
+_SQL_TO_UML: list[tuple[str, str]] = [
+    ("UUID", "UUID"),
+    ("VARCHAR", "String"),
+    ("CHARACTER VARYING", "String"),
+    ("TEXT", "String"),
+    ("CITEXT", "String"),
+    ("TIMESTAMPTZ", "DateTime"),
+    ("TIMESTAMP", "DateTime"),
+    ("DATETIME", "DateTime"),
+    ("DATE", "Date"),
+    ("TIME", "Time"),
+    ("INTERVAL", "Duration"),
+    ("BIGSERIAL", "Integer"),
+    ("SERIAL", "Integer"),
+    ("BIGINT", "Integer"),
+    ("SMALLINT", "Integer"),
+    ("INTEGER", "Integer"),
+    ("INT", "Integer"),
+    ("NUMERIC", "Decimal"),
+    ("DECIMAL", "Decimal"),
+    ("DOUBLE", "Float"),
+    ("REAL", "Float"),
+    ("FLOAT", "Float"),
+    ("BOOLEAN", "Boolean"),
+    ("BOOL", "Boolean"),
+    ("JSONB", "Json"),
+    ("JSON", "Json"),
+    ("BYTEA", "Binary"),
+    ("ENUM", "Enum"),
+    ("ARRAY", "List"),
+    ("INET", "String"),
+    ("MONEY", "Decimal"),
+]
+
+
+ER_FIELD_LIMIT = 10
+CLASS_FIELD_LIMIT = 10
+
+
+def uml_type(data_type: str) -> str:
+    """Map a SQL column type to a UML-appropriate one, parenthesis-free."""
+    upper = str(data_type or "").upper()
+    for needle, uml in _SQL_TO_UML:
+        if needle in upper:
+            return uml
+    # Unknown type: keep it, but strip anything Mermaid would mis-parse.
+    cleaned = re.sub(r"\(.*?\)", "", str(data_type or "")).strip()
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", cleaned).strip("_")
+    return cleaned or "String"
+
+
+# Verb phrases worth lifting out of a recorded relationship description, in
+# the order they should win. Deliberately generic: these are relational verbs,
+# not domain vocabulary.
+_RELATIONSHIP_VERBS = (
+    "belongs to", "owned by", "made by", "placed by", "uploaded by",
+    "delivered to", "assigned to", "linked to", "associated with",
+    "fulfills", "contains", "tracks", "sends to", "references", "uses",
+    "has many", "has one",
+)
+
+
+def clean_label_text(value: str) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def extract_relationship_verb(description: str) -> str | None:
+    """The first relational verb phrase the description actually contains."""
+    for verb in _RELATIONSHIP_VERBS:
+        if verb in description:
+            return verb
+    return None
+
+
+def er_type(data_type: str) -> str:
+    """The SQL type as an ER diagram should show it: real, but tokenised.
+
+    Mermaid's ER attribute type accepts no parentheses and no punctuation, so
+    VARCHAR(255) becomes VARCHAR. The precision is not lost information worth
+    breaking the parser for; it lives in the database design view.
+    """
+    cleaned = re.sub(r"\(.*?\)", "", str(data_type or "")).strip()
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", cleaned).strip("_")
+    return (cleaned or "TEXT").upper()
 
 
 class DiagramGenerator:
@@ -40,336 +134,22 @@ class DiagramGenerator:
             "deployment": self._deployment(deployment_plan),
         }
 
+    def use_case_only(self, requirements: RequirementModel) -> DiagramArtifact:
+        """Build just the use case diagram.
+
+        Used to repair a workspace whose stored diagrams predate the current
+        notation, without regenerating every other artifact.
+        """
+        return self._use_case(requirements)
+
     def _use_case(self, requirements: RequirementModel) -> DiagramArtifact:
+        # 329 lines of unreachable code used to follow this return: a complete
+        # hand-written use case diagram gated on
+        # `requirements.domain == "EV Charging Booking Platform"`, dead since
+        # the dynamic builder was introduced. It also hardcoded one industry,
+        # which the project's own rules exclude. Removed rather than left to
+        # mislead the next reader.
         return self._dynamic_use_case(requirements)
-
-        if requirements.domain == "EV Charging Booking Platform":
-            mermaid = "\n".join(
-                [
-                    "---",
-                    "title: EV CHARGING STATION BOOKING SYSTEM",
-                    "---",
-                    "flowchart TD",
-                    "    classDef actor fill:transparent,stroke:transparent,color:#7a5a3e,font-weight:bold;",
-                    "    classDef usecase fill:#fff7ef,stroke:#af7743,color:#2d1d11,stroke-width:1.4px;",
-                    "    classDef support fill:#f8e9d8,stroke:#c59764,color:#3f2a17,stroke-dasharray: 5 3;",
-                    "    classDef external fill:#13263a,stroke:#4b6d8d,color:#f7f0e7;",
-                    "",
-                    '    Driver["Driver"]:::actor',
-                    '    Operator["Station Operator"]:::actor',
-                    '    Admin["Platform Admin"]:::actor',
-                    '    Gateway["Payment Gateway"]:::external',
-                    "",
-                    '    Login([Register<br/>and sign in]):::usecase',
-                    '    Dashboard([View booking<br/>dashboard]):::usecase',
-                    '    Browse([Browse charging<br/>stations]):::usecase',
-                    '    Availability([Check charger<br/>availability]):::usecase',
-                    '    Reserve([Reserve charging<br/>slot]):::usecase',
-                    '    Cancel([Cancel<br/>booking]):::usecase',
-                    '    History([View payment<br/>history]):::usecase',
-                    '    Session([Start and stop<br/>charging]):::usecase',
-                    '    ManageStations([Manage<br/>stations]):::usecase',
-                    '    ManageSlots([Manage charging<br/>slots]):::usecase',
-                    '    Reports([Review reports<br/>and analytics]):::usecase',
-                    '    Upcoming([Upcoming<br/>bookings]):::support',
-                    '    Recent([Recent<br/>bookings]):::support',
-                    '    Details([View station<br/>details]):::support',
-                    '    SelectSlot([Select station<br/>and slot]):::support',
-                    '    Payment([Make<br/>payment]):::support',
-                    '    Refund([Request<br/>refund]):::support',
-                    '    StationOps([Add, update, or<br/>deactivate station]):::support',
-                    '    SlotOps([Add, update, or<br/>deactivate slots]):::support',
-                    "",
-                    "    Driver --> Login",
-                    "    Driver --> Dashboard",
-                    "    Driver --> Browse",
-                    "    Driver --> Availability",
-                    "    Driver --> Reserve",
-                    "    Driver --> Cancel",
-                    "    Driver --> History",
-                    "    Driver --> Session",
-                    "    Operator --> ManageStations",
-                    "    Operator --> ManageSlots",
-                    "    Admin --> ManageStations",
-                    "    Admin --> ManageSlots",
-                    "    Admin --> Reports",
-                    "    Dashboard -. includes .-> Upcoming",
-                    "    Dashboard -. includes .-> Recent",
-                    "    Browse -. includes .-> Details",
-                    "    Availability -. includes .-> Details",
-                    "    Reserve -. includes .-> SelectSlot",
-                    "    Reserve -. includes .-> Payment",
-                    "    Cancel -. extends .-> Refund",
-                    "    ManageStations -. includes .-> StationOps",
-                    "    ManageSlots -. includes .-> SlotOps",
-                    "    Gateway --> Payment",
-                    "    Gateway --> Refund",
-                ]
-            )
-            plantuml = "\n".join(
-                [
-                    "@startuml",
-                    "left to right direction",
-                    "actor Driver",
-                    "actor \"Station Operator\" as Operator",
-                    "actor \"Platform Admin\" as Admin",
-                    "actor \"Payment Gateway\" as Gateway",
-                    'rectangle "EV CHARGING STATION BOOKING SYSTEM" {',
-                    '  usecase "Register / sign in" as UC_Login',
-                    '  usecase "View booking dashboard" as UC_Dashboard',
-                    '  usecase "Browse charging stations" as UC_Browse',
-                    '  usecase "Check charger availability" as UC_Availability',
-                    '  usecase "Reserve charging slot" as UC_Reserve',
-                    '  usecase "Cancel booking" as UC_Cancel',
-                    '  usecase "View payment history" as UC_History',
-                    '  usecase "Start / stop charging" as UC_Session',
-                    '  usecase "Manage stations" as UC_ManageStations',
-                    '  usecase "Manage charging slots" as UC_ManageSlots',
-                    '  usecase "Review reports & analytics" as UC_Reports',
-                    '  usecase "Upcoming bookings" as UC_Upcoming',
-                    '  usecase "Recent bookings" as UC_Recent',
-                    '  usecase "View station details" as UC_Details',
-                    '  usecase "Select station & slot" as UC_Select',
-                    '  usecase "Make payment" as UC_Payment',
-                    '  usecase "Request refund" as UC_Refund',
-                    '  usecase "Add / update / deactivate station" as UC_StationOps',
-                    '  usecase "Add / update / deactivate slots" as UC_SlotOps',
-                    "}",
-                    "Driver --> UC_Login",
-                    "Driver --> UC_Dashboard",
-                    "Driver --> UC_Browse",
-                    "Driver --> UC_Availability",
-                    "Driver --> UC_Reserve",
-                    "Driver --> UC_Cancel",
-                    "Driver --> UC_History",
-                    "Driver --> UC_Session",
-                    "Operator --> UC_ManageStations",
-                    "Operator --> UC_ManageSlots",
-                    "Admin --> UC_ManageStations",
-                    "Admin --> UC_ManageSlots",
-                    "Admin --> UC_Reports",
-                    "UC_Dashboard .> UC_Upcoming : <<include>>",
-                    "UC_Dashboard .> UC_Recent : <<include>>",
-                    "UC_Browse .> UC_Details : <<include>>",
-                    "UC_Availability .> UC_Details : <<include>>",
-                    "UC_Reserve .> UC_Select : <<include>>",
-                    "UC_Reserve .> UC_Payment : <<include>>",
-                    "UC_Cancel .> UC_Refund : <<extend>>",
-                    "UC_ManageStations .> UC_StationOps : <<include>>",
-                    "UC_ManageSlots .> UC_SlotOps : <<include>>",
-                    "Gateway --> UC_Payment",
-                    "Gateway --> UC_Refund",
-                    "@enduml",
-                ]
-            )
-            return DiagramArtifact(
-                title="Use Case Diagram",
-                description="Shows the driver, operator, admin, and payment workflows for EV reservation, cancellation, charging, and station management within one clear system boundary.",
-                mermaid=mermaid,
-                plantuml=plantuml,
-            )
-
-        if requirements.domain == "Online Pharmacy":
-            mermaid = "\n".join(
-                [
-                    "---",
-                    "title: ONLINE PHARMACY SYSTEM",
-                    "---",
-                    "flowchart TD",
-                    "    classDef actor fill:transparent,stroke:transparent,color:#7a5a3e,font-weight:bold;",
-                    "    classDef usecase fill:#fff7ef,stroke:#af7743,color:#2d1d11,stroke-width:1.4px;",
-                    "    classDef support fill:#f8e9d8,stroke:#c59764,color:#3f2a17,stroke-dasharray: 5 3;",
-                    "    classDef external fill:#13263a,stroke:#4b6d8d,color:#f7f0e7;",
-                    "",
-                    '    Customer["Customer"]:::actor',
-                    '    Pharmacist["Pharmacist"]:::actor',
-                    '    Courier["Delivery Partner"]:::actor',
-                    '    Admin["Operations Admin"]:::actor',
-                    '    Gateway["Payment Gateway"]:::external',
-                    "",
-                    '    Login([Register<br/>and sign in]):::usecase',
-                    '    Browse([Search medicine<br/>catalog]):::usecase',
-                    '    PlaceOrder([Place<br/>order]):::usecase',
-                    '    RxOrder([Place prescription<br/>order]):::usecase',
-                    '    Track([Track order<br/>status]):::usecase',
-                    '    History([Review order<br/>history]):::usecase',
-                    '    Inventory([Manage inventory<br/>levels]):::usecase',
-                    '    Catalog([Manage catalog<br/>and pricing]):::usecase',
-                    '    Substitute([Approve substitutions<br/>when needed]):::usecase',
-                    '    Dispatch([Prepare and dispatch<br/>order]):::usecase',
-                    '    Reports([Review operational<br/>dashboards]):::usecase',
-                    '    ViewDetails([View medicine<br/>details]):::support',
-                    '    UploadRx([Upload<br/>prescription]):::support',
-                    '    VerifyRx([Verify<br/>prescription]):::support',
-                    '    Payment([Process<br/>payment]):::support',
-                    '    DeliveryUpdate([Update delivery<br/>status]):::support',
-                    "",
-                    "    Customer --> Login",
-                    "    Customer --> Browse",
-                    "    Customer --> PlaceOrder",
-                    "    Customer --> RxOrder",
-                    "    Customer --> Track",
-                    "    Customer --> History",
-                    "    Pharmacist --> VerifyRx",
-                    "    Pharmacist --> Inventory",
-                    "    Pharmacist --> Substitute",
-                    "    Pharmacist --> Dispatch",
-                    "    Courier --> DeliveryUpdate",
-                    "    Admin --> Catalog",
-                    "    Admin --> Inventory",
-                    "    Admin --> Reports",
-                    "    Browse -. includes .-> ViewDetails",
-                    "    PlaceOrder -. includes .-> Payment",
-                    "    RxOrder -. extends .-> PlaceOrder",
-                    "    RxOrder -. includes .-> UploadRx",
-                    "    RxOrder -. includes .-> VerifyRx",
-                    "    Gateway --> Payment",
-                ]
-            )
-            plantuml = "\n".join(
-                [
-                    "@startuml",
-                    "left to right direction",
-                    "actor Customer",
-                    "actor Pharmacist",
-                    "actor \"Delivery Partner\" as Courier",
-                    "actor \"Operations Admin\" as Admin",
-                    "actor \"Payment Gateway\" as Gateway",
-                    'rectangle "ONLINE PHARMACY SYSTEM" {',
-                    '  usecase "Register / sign in" as UC_Login',
-                    '  usecase "Search medicine catalog" as UC_Browse',
-                    '  usecase "Place order" as UC_PlaceOrder',
-                    '  usecase "Place prescription order" as UC_RxOrder',
-                    '  usecase "Track order status" as UC_Track',
-                    '  usecase "Review order history" as UC_History',
-                    '  usecase "Manage inventory levels" as UC_Inventory',
-                    '  usecase "Manage catalog and pricing" as UC_Catalog',
-                    '  usecase "Approve substitutions when needed" as UC_Substitute',
-                    '  usecase "Prepare and dispatch order" as UC_Dispatch',
-                    '  usecase "Review operational dashboards" as UC_Reports',
-                    '  usecase "View medicine details" as UC_ViewDetails',
-                    '  usecase "Upload prescription" as UC_UploadRx',
-                    '  usecase "Verify prescription" as UC_VerifyRx',
-                    '  usecase "Process payment" as UC_Payment',
-                    '  usecase "Update delivery status" as UC_DeliveryUpdate',
-                    "}",
-                    "Customer --> UC_Login",
-                    "Customer --> UC_Browse",
-                    "Customer --> UC_PlaceOrder",
-                    "Customer --> UC_RxOrder",
-                    "Customer --> UC_Track",
-                    "Customer --> UC_History",
-                    "Pharmacist --> UC_VerifyRx",
-                    "Pharmacist --> UC_Inventory",
-                    "Pharmacist --> UC_Substitute",
-                    "Pharmacist --> UC_Dispatch",
-                    "Courier --> UC_DeliveryUpdate",
-                    "Admin --> UC_Catalog",
-                    "Admin --> UC_Inventory",
-                    "Admin --> UC_Reports",
-                    "UC_Browse .> UC_ViewDetails : <<include>>",
-                    "UC_PlaceOrder .> UC_Payment : <<include>>",
-                    "UC_RxOrder .> UC_PlaceOrder : <<extend>>",
-                    "UC_RxOrder .> UC_UploadRx : <<include>>",
-                    "UC_RxOrder .> UC_VerifyRx : <<include>>",
-                    "Gateway --> UC_Payment",
-                    "@enduml",
-                ]
-            )
-            return DiagramArtifact(
-                title="Use Case Diagram",
-                description="Shows the core customer, pharmacist, courier, admin, and payment interactions for catalog search, prescription handling, checkout, and fulfillment.",
-                mermaid=mermaid,
-                plantuml=plantuml,
-            )
-
-        actors = requirements.actors or []
-        primary_actor = actors[0].name if len(actors) > 0 else "Primary User"
-        secondary_actor = actors[1].name if len(actors) > 1 else "Secondary User"
-        tertiary_actor = actors[2].name if len(actors) > 2 else "External Service"
-
-        raw_requirements = requirements.functional_requirements[:6]
-        primary_labels = [self._clean_use_case_label(r) for r in raw_requirements]
-        primary_labels = [l for l in primary_labels if l]
-
-        if len(primary_labels) < 3:
-            primary_labels = primary_labels + ["View dashboard", "Manage settings", "Generate report"][
-                : 3 - len(primary_labels)
-            ]
-
-        support_labels = self._derive_support_labels(primary_labels)
-
-        num_primary = min(len(primary_labels), 6)
-        num_support = min(len(support_labels), 3)
-
-        mermaid_lines = [
-            "flowchart TD",
-            "    classDef actor fill:transparent,stroke:transparent,color:#7a5a3e,font-weight:bold;",
-            "    classDef usecase fill:#fff7ef,stroke:#af7743,color:#2d1d11,stroke-width:1.4px;",
-            "    classDef support fill:#f8e9d8,stroke:#c59764,color:#3f2a17,stroke-dasharray: 5 3;",
-            "",
-            f'    Primary["{primary_actor}"]:::actor',
-        ]
-        if num_primary > 3:
-            mermaid_lines.append(f'    Secondary["{secondary_actor}"]:::actor')
-        if num_support > 0:
-            mermaid_lines.append(f'    External["{tertiary_actor}"]:::actor')
-
-        mermaid_lines.append("")
-
-        for i, label in enumerate(primary_labels[:num_primary], start=1):
-            mermaid_lines.append(
-                f'    UC{i}([{self._wrap_label(label, 18, html=True)}]):::usecase'
-            )
-        for i, label in enumerate(support_labels[:num_support], start=1):
-            mermaid_lines.append(
-                f'    SC{i}([{self._wrap_label(label, 14, html=True)}]):::support'
-            )
-
-        mermaid_lines.append("")
-
-        for i in range(1, num_primary + 1):
-            mermaid_lines.append(f"    Primary --> UC{i}")
-        if num_primary > 3:
-            mermaid_lines.append(f"    Secondary --> UC{num_primary}")
-            mermaid_lines.append(f"    Secondary --> UC{max(1, num_primary - 1)}")
-        for i in range(1, num_support + 1):
-            mermaid_lines.append(f"    External --> SC{i}")
-        for i in range(1, min(num_primary, num_support) + 1):
-            mermaid_lines.append(f"    UC{i} -. includes .-> SC{i}")
-
-        plantuml_lines = [
-            "@startuml",
-            "left to right direction",
-            f'actor "{primary_actor}" as Primary',
-        ]
-        if num_primary > 3:
-            plantuml_lines.append(f'actor "{secondary_actor}" as Secondary')
-        if num_support > 0:
-            plantuml_lines.append(f'actor "{tertiary_actor}" as External')
-        plantuml_lines.append(f'rectangle "{requirements.domain.upper()}" {{')
-        for i, label in enumerate(primary_labels[:num_primary], start=1):
-            plantuml_lines.append(f'  usecase "{self._wrap_label(label, 18)}" as UC{i}')
-        for i, label in enumerate(support_labels[:num_support], start=1):
-            plantuml_lines.append(f'  usecase "{self._wrap_label(label, 14)}" as SC{i}')
-        plantuml_lines.append("}")
-        for i in range(1, num_primary + 1):
-            plantuml_lines.append(f"Primary --> UC{i}")
-        if num_primary > 3:
-            plantuml_lines.append(f"Secondary --> UC{num_primary}")
-            plantuml_lines.append(f"Secondary --> UC{max(1, num_primary - 1)}")
-        for i in range(1, num_support + 1):
-            plantuml_lines.append(f"External --> SC{i}")
-        for i in range(1, min(num_primary, num_support) + 1):
-            plantuml_lines.append(f"UC{i} .> SC{i} : <<include>>")
-        plantuml_lines.append("@enduml")
-
-        return DiagramArtifact(
-            title="Use Case Diagram",
-            description=f"Shows the primary actors and use cases for the {requirements.domain} system.",
-            mermaid="\n".join(mermaid_lines),
-            plantuml="\n".join(plantuml_lines),
-        )
 
     def _activity(self, requirements: RequirementModel) -> DiagramArtifact:
         return self._dynamic_activity(requirements)
@@ -687,95 +467,282 @@ class DiagramGenerator:
             plantuml=plantuml,
         )
 
+    # Strings the requirement extractor writes when it could not identify an
+    # actor. Drawing one as an actor name states something the model does not
+    # know; the diagrams say so explicitly instead.
+    _UNKNOWN_ACTOR_LABELS = {
+        "needs clarification",
+        "actor not yet identified",
+        "unknown",
+        "tbd",
+        "n/a",
+    }
+
+    # How many use cases fit on one readable diagram. Anything beyond this is
+    # reported as an omission, never substituted for a requirement that is
+    # shown: a node labelled FR-012 must carry FR-012.
+    USE_CASE_LIMIT = 12
+
     def _dynamic_use_case(self, requirements: RequirementModel) -> DiagramArtifact:
-        functional = requirements.functional_requirements[:12]
-        if len(requirements.functional_requirements) > 12:
-            functional = [*functional[:11], requirements.functional_requirements[-1]]
+        all_functional = requirements.functional_requirements
+        shown = all_functional[: self.USE_CASE_LIMIT]
+        omitted = max(0, len(all_functional) - len(shown))
         actors = requirements.actors[:6]
-        mermaid_lines = [
+
+        actor_nodes = [
+            UseCaseActorNode(
+                id=actor.id or f"ACT-{index:03d}",
+                name=self._diagram_text(actor.name),
+                actor_type=actor.actor_type or "human",
+            )
+            for index, actor in enumerate(actors, start=1)
+        ]
+
+        use_case_nodes: list[UseCaseNode] = []
+        for index, requirement in enumerate(shown, start=1):
+            requirement_id = f"FR-{index:03d}"
+            actor_index = self._actor_for_requirement(requirements, requirement)
+            use_case_nodes.append(
+                UseCaseNode(
+                    id=f"UC-{index:03d}",
+                    label=self._diagram_text(
+                        self._clean_use_case_label(requirement) or requirement
+                    ),
+                    requirement_id=requirement_id,
+                    actor_ids=(
+                        [actor_nodes[actor_index].id]
+                        if actor_index is not None and actor_index < len(actor_nodes)
+                        else []
+                    ),
+                )
+            )
+
+        system_name = self._diagram_text(requirements.domain or "System")
+        model = UseCaseModel(
+            system_name=system_name,
+            actors=actor_nodes,
+            use_cases=use_case_nodes,
+            omitted_use_case_count=omitted,
+        )
+
+        mermaid = self._use_case_mermaid(model)
+        plantuml = self._use_case_plantuml(model)
+        unassigned = sum(1 for node in use_case_nodes if not node.actor_ids)
+        description_parts = [
+            f"UML use case view of {system_name}: "
+            f"{len(actor_nodes)} actor(s) and {len(use_case_nodes)} use case(s)."
+        ]
+        if unassigned:
+            description_parts.append(
+                f"{unassigned} use case(s) have no confirmed actor and are drawn inside the "
+                "boundary without an association rather than attached to an invented actor."
+            )
+        if omitted:
+            description_parts.append(
+                f"{omitted} further requirement(s) are not drawn to keep the diagram readable."
+            )
+        return DiagramArtifact(
+            title="Use Case Diagram",
+            description=" ".join(description_parts),
+            mermaid=mermaid,
+            plantuml=plantuml,
+            use_case_model=model,
+        )
+
+    def _use_case_mermaid(self, model: UseCaseModel) -> str:
+        """A readable fallback, honestly labelled.
+
+        Mermaid has no use case diagram and cannot draw a stick figure, so this
+        stays a flowchart. It is the fallback; `use_case_model` is what the
+        client draws as correct UML.
+        """
+        lines = [
             "flowchart LR",
             "    classDef actor fill:#102c31,stroke:#35b7c8,color:#f4f6f8;",
             "    classDef usecase fill:#33230e,stroke:#f5a524,color:#f4f6f8;",
-            "    classDef source fill:#20262d,stroke:#66717c,color:#f4f6f8;",
-            '    Source["Confirmed project brief"]:::source',
+            "    classDef unassigned fill:#20262d,stroke:#66717c,color:#f4f6f8,stroke-dasharray: 4 3;",
         ]
-        plantuml_lines = ["@startuml", "left to right direction"]
-        for index, actor in enumerate(actors, start=1):
-            label = self._diagram_text(actor.name)
-            mermaid_lines.append(f'    Actor{index}["{label}"]:::actor')
-            plantuml_lines.append(f'actor "{label}" as Actor{index}')
+        alias = {actor.id: f"A{index}" for index, actor in enumerate(model.actors, start=1)}
+        for actor in model.actors:
+            lines.append(f'    {alias[actor.id]}["{actor.name}"]:::actor')
+        lines.append(f'    subgraph SYS["{model.system_name}"]')
+        for index, use_case in enumerate(model.use_cases, start=1):
+            label = self._diagram_text(self._wrap_label(use_case.label, 24, html=True))
+            style = "usecase" if use_case.actor_ids else "unassigned"
+            lines.append(
+                f'        U{index}(["{use_case.requirement_id}<br/>{label}"]):::{style}'
+            )
+        lines.append("    end")
+        for index, use_case in enumerate(model.use_cases, start=1):
+            for actor_id in use_case.actor_ids:
+                if actor_id in alias:
+                    lines.append(f"    {alias[actor_id]} --- U{index}")
+        if model.omitted_use_case_count:
+            lines.append(
+                f'    MORE["+{model.omitted_use_case_count} further requirement(s) '
+                f'not drawn"]:::unassigned'
+            )
+        return "\n".join(lines)
 
-        plantuml_lines.append(f'rectangle "{self._diagram_text(requirements.domain)}" {{')
-        if functional:
-            for index, requirement in enumerate(functional, start=1):
-                label = self._wrap_label(
-                    self._clean_use_case_label(requirement) or requirement,
-                    24,
-                    html=True,
-                )
-                mermaid_lines.append(f'    FR{index}(["FR-{index:03d}<br/>{self._diagram_text(label)}"]):::usecase')
-                plantuml_lines.append(
-                    f'  usecase "FR-{index:03d}\\n{self._diagram_text(self._wrap_label(requirement, 28))}" as FR{index}'
-                )
-                actor_index = self._actor_for_requirement(requirements, requirement)
-                if actor_index is None:
-                    mermaid_lines.append(f"    Source --> FR{index}")
-                else:
-                    mermaid_lines.append(f"    Actor{actor_index + 1} --> FR{index}")
-                    plantuml_lines.append(f"Actor{actor_index + 1} --> FR{index}")
-        else:
-            mermaid_lines.append('    Missing["Functional behavior is not confirmed"]:::usecase')
-            mermaid_lines.append("    Source --> Missing")
-            plantuml_lines.append('  usecase "Functional behavior is not confirmed" as Missing')
-        plantuml_lines.extend(["}", "@enduml"])
-        return DiagramArtifact(
-            title="Use Case Diagram",
-            description=(
-                f"Maps confirmed actors to the current {requirements.domain} requirements. "
-                "Unassigned requirements remain connected to the original brief rather than to an invented actor."
-            ),
-            mermaid="\n".join(mermaid_lines),
-            plantuml="\n".join(plantuml_lines),
-        )
+    def _use_case_plantuml(self, model: UseCaseModel) -> str:
+        """Native UML use case notation, which PlantUML does support.
+
+        `actor` renders the stick figure, `usecase` the ellipse and `rectangle`
+        the system boundary. Associations are plain lines placed after the
+        boundary, which is where PlantUML expects them.
+        """
+        lines = ["@startuml", "left to right direction", "skinparam packageStyle rectangle"]
+        alias = {actor.id: f"A{index}" for index, actor in enumerate(model.actors, start=1)}
+        for actor in model.actors:
+            keyword = "actor" if actor.actor_type in {"human", "organizational"} else "actor/"
+            lines.append(f'{keyword} "{actor.name}" as {alias[actor.id]}')
+        lines.append(f'rectangle "{model.system_name}" {{')
+        for index, use_case in enumerate(model.use_cases, start=1):
+            label = self._diagram_text(self._wrap_label(use_case.label, 28))
+            lines.append(f'  usecase "{use_case.requirement_id}\\n{label}" as U{index}')
+        lines.append("}")
+        for index, use_case in enumerate(model.use_cases, start=1):
+            for actor_id in use_case.actor_ids:
+                if actor_id in alias:
+                    lines.append(f"{alias[actor_id]} -- U{index}")
+        if model.omitted_use_case_count:
+            lines.append(
+                f'note as N1\n  {model.omitted_use_case_count} further requirement(s) '
+                f'are not drawn.\nend note'
+            )
+        lines.append("@enduml")
+        return "\n".join(lines)
 
     def _dynamic_activity(self, requirements: RequirementModel) -> DiagramArtifact:
+        """A UML activity diagram: start, fork, partitions, join, final node.
+
+        This was a star graph — every activity hanging off one
+        "Confirmed requirement model" hub — which is not activity notation at
+        all. The hub existed for an honest reason: the requirement model
+        records no execution order, and a chain of arrows would have invented
+        one.
+
+        UML already has the notation for exactly that situation. A **fork**
+        bar splits control into concurrent flows and a **join** bar merges
+        them, which states "these happen, order unspecified" in the language
+        of the diagram instead of by omitting the flow. Activities are grouped
+        into **partitions** (swimlanes) by their actor, which is where UML puts
+        the actor rather than drawing it as a node in the flow.
+        """
         workflows = requirements.domain_workflows[:6]
         if workflows:
             activities = [
                 (workflow.primary_actor, workflow.description) for workflow in workflows
             ]
         else:
-            activities = [("Actor not yet identified", item) for item in requirements.functional_requirements[:6]]
+            activities = [
+                ("", item) for item in requirements.functional_requirements[:6]
+            ]
 
-        mermaid_lines = ["flowchart TB", '    Model["Confirmed requirement model"]']
-        plantuml_lines = ["@startuml", "start", ":Use confirmed requirement model;"]
+        mermaid_lines = [
+            "flowchart TB",
+            # Fork and join are drawn as the thin solid bars UML uses, not as
+            # labelled boxes.
+            "    classDef bar fill:#f4f6f8,stroke:#f4f6f8,color:#f4f6f8,height:6px;",
+            "    classDef terminal fill:#f4f6f8,stroke:#f4f6f8,color:#0c0f12;",
+            # UML's final node is a ring around a filled dot, so it must not
+            # look identical to the solid initial node. Mermaid's double circle
+            # is the closest shape available; filling it dark and stroking it
+            # light makes the ring visible, which a solid fill hid.
+            "    classDef final fill:#0c0f12,stroke:#f4f6f8,stroke-width:2.5px,color:#0c0f12;",
+            "    classDef action fill:#33230e,stroke:#f5a524,color:#f4f6f8;",
+            '    START(("&nbsp;")):::terminal',
+        ]
+        plantuml_lines = ["@startuml", "start"]
+
         if not activities:
             mermaid_lines.extend(
                 [
-                    '    Missing["Workflow details are unknown"]',
-                    "    Model --> Missing",
+                    '    A1["Workflow details are not confirmed"]:::action',
+                    '    FINAL((("&nbsp;"))):::final',
+                    "    START --> A1 --> FINAL",
                 ]
             )
-            plantuml_lines.append(":Workflow details are unknown;")
+            plantuml_lines.extend([":Workflow details are not confirmed;", "stop", "@enduml"])
+            return DiagramArtifact(
+                title="Activity Diagram",
+                description=(
+                    "No confirmed domain workflow is recorded, so no activity flow can be "
+                    "drawn from the requirement model."
+                ),
+                mermaid="\n".join(mermaid_lines),
+                plantuml="\n".join(plantuml_lines),
+            )
+
+        concurrent = len(activities) > 1
+        if concurrent:
+            mermaid_lines.append('    FORK[" "]:::bar')
+            mermaid_lines.append("    START --> FORK")
+
+        # Group by actor so each partition is one swimlane, preserving the
+        # order the workflows were recorded in.
+        partitions: dict[str, list[tuple[int, str]]] = {}
         for index, (actor, activity) in enumerate(activities, start=1):
-            actor_label = self._diagram_text(actor)
-            activity_label = self._diagram_text(self._wrap_label(activity, 34, html=True))
-            mermaid_lines.extend(
-                [
-                    f'    Actor{index}["{actor_label}"]',
-                    f'    Activity{index}["{activity_label}"]',
-                    f"    Model --> Actor{index} --> Activity{index}",
-                ]
+            label = self._diagram_text(actor).strip()
+            # "Needs clarification" is a placeholder the extractor writes when
+            # it could not identify the actor. Printing it as a swimlane title
+            # states a fact the model does not hold.
+            if not label or label.casefold() in self._UNKNOWN_ACTOR_LABELS:
+                # The workflow's own actor is only set when the requirement
+                # text names it. An enumerated requirement ("Support station
+                # discovery.") names no one, so fall back to the same stem
+                # matcher the use case diagram uses rather than declaring the
+                # actor unknown when the requirement model can identify it.
+                matched = self._actor_for_requirement(requirements, activity)
+                label = (
+                    self._diagram_text(requirements.actors[matched].name)
+                    if matched is not None
+                    else "Actor not confirmed"
+                )
+            partitions.setdefault(label, []).append((index, activity))
+
+        for partition_index, (actor_label, items) in enumerate(partitions.items(), start=1):
+            mermaid_lines.append(
+                f'    subgraph LANE{partition_index}["{actor_label}"]'
             )
-            plantuml_lines.append(
-                f':{actor_label}: {self._diagram_text(self._wrap_label(activity, 42))};'
-            )
+            mermaid_lines.append("        direction TB")
+            for index, activity in items:
+                activity_label = self._diagram_text(
+                    self._wrap_label(activity, 32, html=True)
+                )
+                mermaid_lines.append(f'        A{index}["{activity_label}"]:::action')
+            mermaid_lines.append("    end")
+            plantuml_lines.append(f'partition "{actor_label}" {{')
+            for _, activity in items:
+                plantuml_lines.append(
+                    f'  :{self._diagram_text(self._wrap_label(activity, 42))};'
+                )
+            plantuml_lines.append("}")
+
+        mermaid_lines.append('    JOIN[" "]:::bar' if concurrent else "")
+        mermaid_lines.append('    FINAL((("&nbsp;"))):::final')
+        for index, _ in enumerate(activities, start=1):
+            if concurrent:
+                mermaid_lines.append(f"    FORK --> A{index}")
+                mermaid_lines.append(f"    A{index} --> JOIN")
+            else:
+                mermaid_lines.append(f"    START --> A{index}")
+                mermaid_lines.append(f"    A{index} --> FINAL")
+        if concurrent:
+            mermaid_lines.append("    JOIN --> FINAL")
+        mermaid_lines = [line for line in mermaid_lines if line != ""]
+
         plantuml_lines.extend(["stop", "@enduml"])
         return DiagramArtifact(
             title="Activity Diagram",
             description=(
-                "Shows each confirmed domain workflow independently. The diagram does not infer "
-                "an execution order where the requirements do not provide one."
+                f"{len(activities)} confirmed workflow(s), grouped into partitions by actor. "
+                + (
+                    "A fork and join express that they are known to happen without an "
+                    "execution order being recorded; no sequence is inferred."
+                    if concurrent
+                    else "A single workflow is recorded, so the flow is sequential."
+                )
             ),
             mermaid="\n".join(mermaid_lines),
             plantuml="\n".join(plantuml_lines),
@@ -795,12 +762,8 @@ class DiagramGenerator:
             if requirements.functional_requirements
             else "Workflow details require clarification"
         )
-        actor = (
-            workflow.primary_actor
-            if workflow
-            else requirements.actors[0].name
-            if requirements.actors
-            else "Actor not yet identified"
+        actor = self._confirmed_actor_name(
+            workflow.primary_actor if workflow else "", requirements
         )
         component = self._best_text_match(
             requirement,
@@ -809,19 +772,26 @@ class DiagramGenerator:
                 [item.name, item.responsibility, *item.interactions]
             ),
         )
-        entity = self._best_text_match(
-            requirement,
-            database_design.entities,
-            lambda item: " ".join(
-                [item.name, item.description, *[field.name for field in item.fields]]
-            ),
-        )
-        actor_text = self._diagram_text(actor)
+        entity = self._entity_for_requirement(requirement, database_design)
+        actor_text = actor
         system_text = self._diagram_text(component.name if component else architecture.name)
-        request_text = self._diagram_text(requirement)
+        # "Support station discovery." is how the requirement reads; as a
+        # message on a lifeline it should read as the request being made.
+        request_text = self._diagram_text(
+            re.sub(
+                r"^(?:support|expose|provide|enable|allow)\s+",
+                "",
+                requirement.strip(),
+                flags=re.IGNORECASE,
+            ).rstrip(".")
+        )
+        request_text = f"{request_text[:1].upper()}{request_text[1:]}" if request_text else "Workflow request"
 
         mermaid_lines = [
             "sequenceDiagram",
+            # UML numbers messages on a sequence diagram and shows execution
+            # occurrences as activation bars on the lifeline; both were missing.
+            "    autonumber",
             f"    actor UserParticipant as {actor_text}",
             "    participant Interface as System interface",
             f"    participant System as {system_text}",
@@ -838,8 +808,8 @@ class DiagramGenerator:
             plantuml_lines.append(f'database "{entity_text}" as Data')
         mermaid_lines.extend(
             [
-                f"    UserParticipant->>Interface: {request_text}",
-                "    Interface->>System: Submit validated workflow request",
+                f"    UserParticipant->>+Interface: {request_text}",
+                "    Interface->>+System: Submit validated workflow request",
             ]
         )
         plantuml_lines.extend(
@@ -851,8 +821,8 @@ class DiagramGenerator:
         if entity:
             mermaid_lines.extend(
                 [
-                    f"    System->>Data: Read or update {entity_text} as required",
-                    "    Data-->>System: Persisted workflow state",
+                    f"    System->>+Data: Read or update {entity_text} as required",
+                    "    Data-->>-System: Persisted workflow state",
                 ]
             )
             plantuml_lines.extend(
@@ -863,8 +833,8 @@ class DiagramGenerator:
             )
         mermaid_lines.extend(
             [
-                "    System-->>Interface: Workflow result or validation error",
-                "    Interface-->>UserParticipant: Present confirmed result",
+                "    System-->>-Interface: Workflow result or validation error",
+                "    Interface-->>-UserParticipant: Present confirmed result",
             ]
         )
         plantuml_lines.extend(
@@ -878,11 +848,51 @@ class DiagramGenerator:
             title="Sequence Diagram",
             description=(
                 f"Traces one confirmed {requirements.domain} workflow through the closest matching "
-                "architecture component and data entity. Unconfirmed integrations are not added."
+                "architecture component"
+                + (f" and the {self._diagram_text(entity.name)} entity." if entity else
+                   ", with no data entity drawn because none matches the workflow closely enough.")
+                + " Unconfirmed integrations are not added."
             ),
             mermaid="\n".join(mermaid_lines),
             plantuml="\n".join(plantuml_lines),
         )
+
+    def _entity_for_requirement(
+        self, requirement: str, database_design: DatabaseDesign
+    ) -> DatabaseEntity | None:
+        """The entity the requirement actually names, or None.
+
+        Text overlap alone is the wrong test here. Any shared word was enough,
+        so a requirement mentioning "user" selected the platform's `users` auth
+        table over the domain's own entities and the sequence diagram named a
+        store the workflow never touches. Raising the bar to two shared words
+        traded that for the opposite failure: "Instructors publish courses and
+        lessons." shares exactly one word with the `courses` entity, so most
+        projects drew no data participant at all.
+
+        The requirement must name the entity — its name stem has to appear in
+        the requirement — and among those, the one sharing most vocabulary
+        wins. That rejects the incidental match and keeps the real one.
+        """
+        requirement_stems = self._stems(requirement)
+        if not requirement_stems:
+            return None
+        best: DatabaseEntity | None = None
+        best_score = -1.0
+        for candidate in database_design.entities:
+            name_stems = self._stems(candidate.name)
+            if not name_stems or not (name_stems <= requirement_stems):
+                continue
+            vocabulary = name_stems | self._stems(candidate.description) | {
+                self._stem(token)
+                for field in candidate.fields
+                for token in self._tokens(field.name)
+            }
+            score = len(requirement_stems & vocabulary) / len(requirement_stems)
+            if score > best_score:
+                best_score = score
+                best = candidate
+        return best
 
     def _class_diagram(self, database_design: DatabaseDesign) -> DiagramArtifact:
         selected_entities = self._diagram_entities(database_design)
@@ -895,10 +905,18 @@ class DiagramGenerator:
             alias = self._entity_alias(entity.name)
             mermaid_lines.append(f"class {alias} {{")
             plantuml_lines.append(f"class {alias} {{")
-            for field in entity.fields[:6]:
-                field_type = f"{field.data_type}{'?' if field.nullable else ''}"
-                mermaid_lines.append(f"  {field.name}: {field_type}")
-                plantuml_lines.append(f"  {field.name} : {field_type}")
+            for field in entity.fields[:CLASS_FIELD_LIMIT]:
+                # `+name : Type` — UML member syntax with visibility. The type
+                # is a UML type, not a SQL one, so it carries no parentheses:
+                # a member containing `()` is rendered by Mermaid in the
+                # methods compartment, which is what put every VARCHAR column
+                # among this class's operations.
+                declared = uml_type(field.data_type)
+                # UML expresses optionality as multiplicity, not as a `?` glued
+                # to the type name.
+                multiplicity = " [0..1]" if field.nullable else ""
+                mermaid_lines.append(f"  +{field.name} : {declared}{multiplicity}")
+                plantuml_lines.append(f"  +{field.name} : {declared}{multiplicity}")
             mermaid_lines.append("}")
             plantuml_lines.append("}")
 
@@ -933,14 +951,44 @@ class DiagramGenerator:
             entity.name: self._entity_diagram_name(entity.name) for entity in selected_entities
         }
 
+        # Which columns are foreign keys, taken from the recorded relationships
+        # rather than guessed from a naming convention. `foreign_key` is stored
+        # as "table.column".
+        foreign_keys: set[tuple[str, str]] = set()
+        for relation in database_design.relationships:
+            if not relation.foreign_key or "." not in relation.foreign_key:
+                continue
+            table, _, column = relation.foreign_key.partition(".")
+            foreign_keys.add((table.strip(), column.strip()))
+
         entity_blocks: list[str] = []
+        hidden_fields = 0
         for entity in selected_entities:
             entity_blocks.append(f"    {diagram_names[entity.name]} {{")
-            for field in entity.fields[:6]:
-                field_type = re.sub(r"\(.*?\)", "", field.data_type)
-                nullable = "?" if field.nullable else ""
-                prefix = "*" if field.name == "id" else ""
-                entity_blocks.append(f"        {field_type}{nullable} {prefix}{field.name}")
+            shown = entity.fields[:ER_FIELD_LIMIT]
+            hidden_fields += max(0, len(entity.fields) - len(shown))
+            for field in shown:
+                # Mermaid ER attributes are `type name [key] ["comment"]`. The
+                # key slot is what makes an ER diagram readable, so primary and
+                # foreign keys go there instead of being faked into the name
+                # with a `*` prefix, and nullability goes in the comment slot
+                # instead of being appended to the type — `VARCHAR?` is not a
+                # type Mermaid understands.
+                keys: list[str] = []
+                if field.name == "id":
+                    keys.append("PK")
+                if (entity.name, field.name) in foreign_keys:
+                    keys.append("FK")
+                elif field.name.endswith("_id") and field.name != "id":
+                    # A conventional reference column with no recorded
+                    # relationship. Marked so the gap is visible rather than
+                    # silently looking like an ordinary column.
+                    keys.append("FK")
+                key_slot = f" {','.join(keys)}" if keys else ""
+                comment = ' "nullable"' if field.nullable else ""
+                entity_blocks.append(
+                    f"        {er_type(field.data_type)} {field.name}{key_slot}{comment}"
+                )
             entity_blocks.append("    }")
 
         relations = []
@@ -1047,48 +1095,99 @@ class DiagramGenerator:
         return self._dynamic_deployment(deployment_plan)
 
     def _dynamic_deployment(self, plan: DeploymentPlan) -> DiagramArtifact:
+        """A UML deployment diagram: nodes containing artifacts.
+
+        Previously this drew edges in two directions for no reason
+        (`Plan --> Runtime{i}` but `Platform{i} --> Plan`), and drew the region
+        list and replica count as graph nodes with arrows into the plan — so
+        "Replicas: 2" appeared to be a deployed thing that talks to the
+        deployment model.
+
+        UML deployment notation has the right places for all of this. A
+        **node** is a unit that executes things; **artifacts** are what is
+        deployed onto it; region and replica are **properties of the node**, so
+        they belong in its label. The target stack is the platform the node
+        runs on, joined by a single **communication path** (a plain line, not
+        an arrow — direction is not known and none is implied).
+        """
         runtime_items = self._unique(
             [*plan.docker_services, *plan.kubernetes_modules]
         )[:10]
         platform_items = self._unique(plan.target_stack)[:6]
+
+        # Region and replica count are node properties, rendered into the node
+        # label the way UML tags a node, not as separate boxes.
+        properties: list[str] = []
+        if plan.replicas is not None:
+            properties.append(f"replicas = {plan.replicas}")
+        if plan.regions:
+            properties.append(f"regions = {self._diagram_text(', '.join(plan.regions))}")
+        node_label = f"«node» {self._diagram_text(plan.deployment_model)}"
+        if properties:
+            # UML writes a node's properties as tagged values in braces beside
+            # its name. On one line, because Mermaid reserves the height of a
+            # single-line subgraph title: a `<br/>` in the title rendered the
+            # second line on top of the artifacts inside the node.
+            node_label += " {" + ", ".join(properties) + "}"
+
         mermaid_lines = [
             "flowchart TB",
-            f'    Plan["{self._diagram_text(plan.deployment_model)}"]',
+            "    classDef node fill:#14181d,stroke:#f5a524,color:#f4f6f8;",
+            "    classDef artifact fill:#20262d,stroke:#303840,color:#f4f6f8;",
+            "    classDef platform fill:#14181d,stroke:#35b7c8,color:#f4f6f8;",
+            f'    subgraph DEPLOY["{node_label}"]',
+            "        direction TB",
         ]
         plantuml_lines = [
             "@startuml",
             f'node "{self._diagram_text(plan.deployment_model)}" as Plan {{',
         ]
-        for index, item in enumerate(runtime_items, start=1):
-            label = self._diagram_text(self._wrap_label(item, 28, html=True))
-            mermaid_lines.append(f'    Runtime{index}["{label}"]')
-            mermaid_lines.append(f"    Plan --> Runtime{index}")
-            plantuml_lines.append(
-                f'  component "{self._diagram_text(item)}" as Runtime{index}'
+        if properties:
+            plantuml_lines.append("  ' " + "; ".join(properties))
+        if runtime_items:
+            for index, item in enumerate(runtime_items, start=1):
+                label = self._diagram_text(self._wrap_label(item, 28, html=True))
+                mermaid_lines.append(f'        Runtime{index}["«artifact» {label}"]:::artifact')
+                plantuml_lines.append(
+                    f'  artifact "{self._diagram_text(item)}" as Runtime{index}'
+                )
+        else:
+            mermaid_lines.append(
+                '        Runtime0["No deployable artifact is confirmed"]:::artifact'
             )
+        mermaid_lines.append("    end")
         plantuml_lines.append("}")
-        for index, item in enumerate(platform_items, start=1):
-            label = self._diagram_text(self._wrap_label(item, 24, html=True))
-            mermaid_lines.append(f'    Platform{index}["{label}"]')
-            mermaid_lines.append(f"    Platform{index} --> Plan")
-            plantuml_lines.append(
-                f'node "{self._diagram_text(item)}" as Platform{index}'
-            )
-            plantuml_lines.append(f"Platform{index} --> Plan")
-        if plan.regions:
-            region_text = self._diagram_text(", ".join(plan.regions))
-            mermaid_lines.append(f'    Regions["Regions: {region_text}"] --> Plan')
-            plantuml_lines.append(f'cloud "Regions: {region_text}" as Regions')
-            plantuml_lines.append("Regions --> Plan")
-        if plan.replicas is not None:
-            mermaid_lines.append(f'    Replicas["Replicas: {plan.replicas}"] --> Plan')
-            plantuml_lines.append(f'note right of Plan : Replicas: {plan.replicas}')
+
+        if platform_items:
+            mermaid_lines.append('    subgraph PLATFORM["«execution environment» Target stack"]')
+            mermaid_lines.append("        direction TB")
+            plantuml_lines.append('node "Target stack" as Platform {')
+            for index, item in enumerate(platform_items, start=1):
+                label = self._diagram_text(self._wrap_label(item, 24, html=True))
+                mermaid_lines.append(f'        Platform{index}["{label}"]:::platform')
+                plantuml_lines.append(
+                    f'  component "{self._diagram_text(item)}" as Platform{index}'
+                )
+            mermaid_lines.append("    end")
+            plantuml_lines.append("}")
+            # A communication path: an undirected line. The earlier arrows
+            # asserted a call direction the deployment plan does not record.
+            mermaid_lines.append("    DEPLOY --- PLATFORM")
+            plantuml_lines.append("Plan -- Platform")
+
         plantuml_lines.append("@enduml")
+
+        described = [f"{len(runtime_items)} deployable artifact(s)"]
+        if platform_items:
+            described.append(f"a target stack of {len(platform_items)} element(s)")
+        if properties:
+            described.append("confirmed region and replica settings as node properties")
         return DiagramArtifact(
             title="Deployment Diagram",
             description=(
-                "Shows only the current deployment model, selected runtime modules, target stack, "
-                "and user-confirmed region or replica settings."
+                f"The {self._diagram_text(plan.deployment_model)} node with "
+                + ", ".join(described)
+                + ". Nothing not present in the deployment plan is added."
             ),
             mermaid="\n".join(mermaid_lines),
             plantuml="\n".join(plantuml_lines),
@@ -1139,32 +1238,204 @@ class DiagramGenerator:
                 for index, actor in enumerate(requirements.actors):
                     if actor.name.casefold() == workflow.primary_actor.casefold():
                         return index
-        requirement_tokens = self._tokens(requirement)
+        requirement_tokens = self._stems(requirement)
         best_index = None
         best_score = 0.0
         for index, actor in enumerate(requirements.actors):
-            actor_tokens = self._tokens(f"{actor.name} {actor.description}")
-            score = len(requirement_tokens & actor_tokens) / max(len(requirement_tokens), 1)
-            if actor.name.casefold() in requirement.casefold():
-                score = max(score, 1.0)
+            # The actor's own name is the strongest signal and is checked
+            # first: a requirement that says "Operator controls ..." belongs to
+            # the Operator, whatever the descriptions say.
+            if self._names_actor(requirement, actor.name):
+                return index
+
+            # Name and responsibilities are statements about what this actor
+            # does. The free-text description is prose and is deliberately
+            # weighted down: including it at full weight is what let an actor
+            # with a longer description outscore every other actor and collect
+            # the payment, cancellation and refund use cases.
+            vocabulary = self._stems(actor.name) | self._stems(
+                " ".join(actor.responsibilities)
+            )
+            score = self._containment(requirement_tokens, vocabulary)
+            weak = self._containment(requirement_tokens, self._stems(actor.description))
+            score = max(score, weak * 0.5)
             if score > best_score:
                 best_score = score
                 best_index = index
         return best_index if best_score >= 0.2 else None
 
+    @staticmethod
+    def _containment(requirement_stems: set[str], actor_vocabulary: set[str]) -> float:
+        """How much of the requirement the actor's vocabulary accounts for.
+
+        Containment, not symmetric overlap: a short requirement matched against
+        a fuller vocabulary should still score well, and dividing by the union
+        instead dropped genuine associations (slot reservations, secure
+        payment) below the threshold. The length bias containment used to carry
+        is removed by scoring against name and responsibilities rather than
+        against prose.
+
+        A single shared stem is not evidence — "charging" appears in most
+        requirements of a charging project — so two are required.
+        """
+        if not requirement_stems or not actor_vocabulary:
+            return 0.0
+        shared = requirement_stems & actor_vocabulary
+        if len(shared) < 2:
+            return 0.0
+        return len(shared) / len(requirement_stems)
+
+    def _names_actor(self, requirement: str, actor_name: str) -> bool:
+        """Whether the requirement text actually names this actor.
+
+        Matched on word boundaries over stems, so "Operator controls" finds
+        "Operator" and "Admin analytics" finds "Admin", while "administration"
+        does not accidentally satisfy a differently named actor.
+        """
+        name_stems = self._stems(actor_name)
+        if not name_stems:
+            return False
+        return name_stems <= self._stems(requirement)
+
+    def _stems(self, value: str) -> set[str]:
+        """Tokens reduced to a crude stem so plurals and verb forms agree.
+
+        "Slot reservations" has to match an actor who "reserves slots"; without
+        stemming, `reservations`/`reserves` and `slot`/`slots` are four
+        different tokens and the association is missed, which sent the slot
+        reservation, cancellation and refund use cases to no actor at all.
+        """
+        stems: set[str] = set()
+        for token in self._tokens(value):
+            stems.add(self._stem(token))
+        return stems
+
+    # Longest first, so "reservations" loses "ations" rather than "s". Derived
+    # from the word pairs that were actually failing to match, not from a
+    # general-purpose stemmer: the goal is that two spellings of one idea agree,
+    # which matters more than producing a real English root.
+    _SUFFIXES = (
+        "abilities", "ability", "ations", "ation", "ements", "ement",
+        "ments", "ment", "ingly", "ings", "ing", "edly", "ables", "able",
+        "ibles", "ible", "ers", "er", "ors", "or", "ies", "ied", "ives",
+        "ive", "ances", "ance", "ences", "ence", "ities", "ity", "ally",
+        "ly", "ed", "ions", "ion", "ses", "es", "s", "y",
+    )
+
+    # English nominalizations that no suffix rule recovers: the noun and the
+    # verb do not share a spelling ("submission"/"submit",
+    # "verification"/"verify"). This is language, not domain vocabulary — it
+    # adds no facts about any project — and without it a requirement written
+    # as a noun never matches an actor described with the verb.
+    _IRREGULAR_STEMS = {
+        "submission": "submit", "submissions": "submit",
+        "permission": "permit", "permissions": "permit",
+        "transmission": "transmit", "transmissions": "transmit",
+        "verification": "verify", "verifications": "verify",
+        "notification": "notify", "notifications": "notify",
+        "classification": "classify", "classifications": "classify",
+        "modification": "modify", "modifications": "modify",
+        "specification": "specify", "specifications": "specify",
+        "identification": "identify",
+        "description": "describe", "descriptions": "describe",
+        "subscription": "subscribe", "subscriptions": "subscribe",
+        "prescription": "prescribe", "prescriptions": "prescribe",
+        "decision": "decide", "decisions": "decide",
+        "production": "produce", "consumption": "consume",
+        "reception": "receive", "conception": "conceive",
+        "analysis": "analyze", "analyses": "analyze", "analytics": "analyze",
+        "delivery": "deliver", "deliveries": "deliver",
+        "inventory": "inventory", "inventories": "inventory",
+    }
+
+    @classmethod
+    def _stem(cls, token: str) -> str:
+        """A crude stem, consistent across the spellings of one idea.
+
+        The previous version stripped "ing" and "ation" and nothing else, so
+        the same idea produced different stems and the association was missed:
+        "charging" became `charg` but "charger" stayed `charger`; "payment"
+        never met "pay"; "discovery" never met "discover"; and "cancellation",
+        "cancelled" and "cancel" produced three different stems. That is what
+        left the slot reservation, secure payment, session tracking and
+        cancellation use cases attached to no actor at all.
+
+        Each normalization below is bounded at four characters so the stems stay
+        distinctive. Over-stemming is worse than under-stemming here: a short
+        stem collides with unrelated words and invents an association, and an
+        invented association is a wrong diagram rather than an incomplete one.
+        """
+        token = cls._IRREGULAR_STEMS.get(token, token)
+        # Two passes, because a word can carry two suffixes: "discovery" needs
+        # to lose "y" and then "er" to reach the stem "discover" reduces to,
+        # and one pass left them as `discover` and `discov`.
+        for _ in range(2):
+            for suffix in cls._SUFFIXES:
+                if len(token) > len(suffix) + 2 and token.endswith(suffix):
+                    token = token[: -len(suffix)]
+                    break
+            else:
+                break
+        # "cancellation" -> "cancell" -> "cancel", which is also what
+        # "cancelled" and "cancel" reduce to.
+        if len(token) > 4 and token[-1] == token[-2] and token[-1].isalpha():
+            token = token[:-1]
+        # "reserve" -> "reserv", matching "reservations"; "manage" -> "manag",
+        # matching "management".
+        if len(token) > 4 and token.endswith("e"):
+            token = token[:-1]
+        # "operator" -> "operat" -> "oper", matching "operations".
+        if len(token) > 5 and token.endswith("at"):
+            token = token[:-2]
+        return token
+
     def _best_text_match(
-        self, text: str, items: list[T], key: Callable[[T], str]
+        self,
+        text: str,
+        items: list[T],
+        key: Callable[[T], str],
+        minimum_shared: int = 1,
     ) -> T | None:
-        text_tokens = self._tokens(text)
+        """The item whose vocabulary best overlaps `text`, or None.
+
+        `minimum_shared` guards against a match on one incidental word. With
+        the default of 1, a requirement mentioning "user" matched the platform's
+        `users` auth table and the sequence diagram drew it as this domain's
+        data store. Callers that need a substantive match pass 2.
+        """
+        # Stems, not raw tokens: "Prescription upload." has to reach the
+        # `prescriptions` entity, and "Slot booking." the `bookings` one.
+        # Matching on raw tokens missed every plural and every noun/verb pair,
+        # so most projects drew no data participant at all.
+        text_tokens = self._stems(text)
         best = None
         best_score = 0.0
         for item in items:
-            item_tokens = self._tokens(key(item))
-            score = len(text_tokens & item_tokens) / max(len(text_tokens), 1)
+            item_tokens = self._stems(key(item))
+            shared = text_tokens & item_tokens
+            if len(shared) < minimum_shared:
+                continue
+            score = len(shared) / max(len(text_tokens), 1)
             if score > best_score:
                 best = item
                 best_score = score
         return best if best_score > 0 else None
+
+    def _confirmed_actor_name(self, candidate: str, requirements: RequirementModel) -> str:
+        """A real actor name, never a placeholder the extractor wrote.
+
+        `primary_actor` carries strings like "Needs clarification" when the
+        analyser could not identify the actor. Drawing one as an actor name in a
+        sequence diagram asserts an actor the requirement model does not have.
+        """
+        label = self._diagram_text(candidate).strip()
+        if label and label.casefold() not in self._UNKNOWN_ACTOR_LABELS:
+            return label
+        for actor in requirements.actors:
+            fallback = self._diagram_text(actor.name).strip()
+            if fallback and fallback.casefold() not in self._UNKNOWN_ACTOR_LABELS:
+                return fallback
+        return "Actor (not confirmed)"
 
     def _text_overlap(self, left: str, right: str) -> float:
         left_tokens = self._tokens(left)
@@ -1254,60 +1525,36 @@ class DiagramGenerator:
         return "_".join(part.upper() for part in singular.split("_"))
 
     def _relationship_label(self, relation: DatabaseRelationship) -> str:
-        source = relation.source
-        target = relation.target
-        if source == "chargers" and target == "stations":
-            return "belongs to"
-        if source == "bookings" and target == "users":
-            return "made by"
-        if source == "bookings" and target == "stations":
-            return "at"
-        if source == "bookings" and target == "chargers":
-            return "uses"
-        if source == "charging_sessions" and target == "bookings":
-            return "linked to"
-        if source == "payments" and target == "bookings":
-            return "for"
-        if source == "payments" and target == "users":
-            return "made by"
-        if source == "inventory" and target == "products":
-            return "tracks"
-        if source == "prescriptions" and target == "users":
-            return "uploaded by"
-        if source == "orders" and target == "users":
-            return "placed by"
-        if source == "orders" and target == "prescriptions":
-            return "linked to"
-        if source == "payments" and target == "orders":
-            return "for"
-        if source == "shipments" and target == "orders":
-            return "fulfills"
-        if source == "shipments" and target == "users":
-            return "delivered to"
-        if source == "audit_logs":
-            return "tracks"
-        if source == "prescriptions":
-            return "references"
-        if source == "order_items" and target == "orders":
-            return "in"
-        if source == "order_items" and target == "products":
-            return "contains"
-        if source == "notifications":
-            return "sends to"
+        """A label derived from the model, not from a list of known domains.
+
+        This used to be forty hardcoded `source == "bookings" and target ==
+        "users"` pairs covering booking, pharmacy and retail schemas, with
+        everything else falling through to the word "references". That both
+        breaks the project's own rule against special-casing industries and
+        labels most real projects uninformatively.
+
+        The foreign key column is the most useful thing that can be said and is
+        always true: `chargers.station_id` reads as "via station_id", and the
+        reader can trace it. Where the recorded description carries a real verb
+        phrase, that is preferred, because a human wrote it.
+        """
         if relation.relationship == "flows-to":
             return "flows to"
-        desc_lower = relation.description.lower()
-        if "references" in desc_lower:
-            return "references"
-        if "belongs to" in desc_lower:
-            return "belongs to"
-        if "associated with" in desc_lower:
-            return "associated with"
-        if "tracks" in desc_lower:
-            return "tracks"
-        if "contains" in desc_lower:
-            return "contains"
-        target_clean = target.replace("_", " ").rstrip("s")
+
+        # A verb phrase the model already recorded beats anything derived.
+        description = clean_label_text(relation.description)
+        verb = extract_relationship_verb(description)
+        if verb:
+            return verb
+
+        # Otherwise name the column that implements the relationship.
+        if relation.foreign_key and "." in relation.foreign_key:
+            _, _, column = relation.foreign_key.partition(".")
+            column = column.strip()
+            if column:
+                return f"via {column}"
+
+        target_clean = relation.target.replace("_", " ").rstrip("s")
         return f"relates to {target_clean}"
 
     def _class_cardinality(self, relationship: str) -> tuple[str, str]:

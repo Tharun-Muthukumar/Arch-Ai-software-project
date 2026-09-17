@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { applyWorkspaceEdit, previewWorkspaceEdit, redoWorkspaceEdit, undoWorkspaceEdit } from '../lib/api'
+import { applyProjectAction, applyWorkspaceEdit, previewWorkspaceEdit, redoWorkspaceEdit, undoWorkspaceEdit } from '../lib/api'
 import { WORKSPACE_WRITE_KEY, syncWorkspaceResult } from '../lib/workspaceSync'
 import { getErrorMessage } from '../lib/utils'
 import type { Workspace, WorkspaceEditRequest, WorkspaceMutationResponse } from '../types/api'
@@ -53,5 +53,24 @@ export function useWorkspaceEditing(workspace: Workspace) {
     onError: (error) => showToast({ title: 'Redo failed', description: getErrorMessage(error), tone: 'danger' }),
   })
 
-  return { preview, apply, undo, redo }
+  // Removes extraction artifacts a project has carried since it was created.
+  // A requirement model is persisted and user-edited, so it is never
+  // re-derived on read and a fix to extraction cannot reach an existing
+  // project on its own; this is the explicit, undoable path for that.
+  const repairRequirementModel = useMutation({
+    mutationKey: [...WORKSPACE_WRITE_KEY, 'repair'],
+    mutationFn: () => applyProjectAction(
+      workspace.id,
+      { action: 'repair_requirement_model', rationale: 'Remove requirement extraction artifacts.' },
+      workspace.updated_at,
+    ),
+    onSuccess: acceptResult,
+    onError: (error) => showToast({
+      title: 'Repair failed',
+      description: getErrorMessage(error),
+      tone: 'danger',
+    }),
+  })
+
+  return { preview, apply, undo, redo, repairRequirementModel }
 }

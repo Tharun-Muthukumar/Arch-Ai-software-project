@@ -870,6 +870,155 @@ class DatabaseGenerator:
             return relationships, sorted(set(assumed))
         return relationships, []
 
+    def _promote_entity_named_columns(
+        self, entities: list[DatabaseEntity], singular_lookup: dict[str, str]
+    ) -> None:
+        """Turn a column named after another entity into a real foreign key.
+
+        Requirement extraction produces attribute names straight from the
+        source text, so an entity can arrive carrying a column literally named
+        after another entity: `charging.booking`, `charging.station`. Those were
+        created as VARCHAR(255) free text and, because the foreign key pass only
+        inspects columns already ending in `_id`, they were never linked. The
+        result was a class diagram showing `+booking : String` where a
+        reference belongs, and an entity floating with no edges.
+
+        A column whose name *is* another entity's name is a reference, not
+        prose. Renaming it to `<singular>_id` and typing it UUID lets the
+        existing foreign key pass do its job, which keeps one code path
+        responsible for relationships.
+
+        This can produce an edge opposite to one another inference path already
+        found; `_drop_contradictory_relationships` resolves that and reports it,
+        which is why this is safe to do.
+        """
+        for entity in entities:
+            taken = {field.name for field in entity.fields}
+            for field in entity.fields:
+                if field.name.endswith("_id") or field.name == "id":
+                    continue
+                target = singular_lookup.get(self._singular(field.name))
+                if target is None or target == entity.name:
+                    continue
+                promoted = f"{self._singular(field.name)}_id"
+                if promoted in taken:
+                    # The reference already exists as a proper column; the
+                    # free-text duplicate carries no extra information, but
+                    # dropping a column silently would be worse than leaving
+                    # it, so it is left alone.
+                    continue
+                taken.discard(field.name)
+                taken.add(promoted)
+                field.name = promoted
+                field.data_type = "UUID"
+                field.indexed = True
+                field.description = (
+                    f"References {target}.id "
+                    f"(extracted as the free-text attribute '{field.description}')."
+                )
+
+    def _align_relationship_endpoints(
+        self,
+        relationships: list[DatabaseRelationship],
+        entities: list[DatabaseEntity],
+    ) -> list[DatabaseRelationship]:
+        """Point every relationship at an entity that actually exists.
+
+        Some relationships are built from named blueprints that spell their
+        tables in the plural (`ledger_entries`, `accounts`) while the generic
+        extraction produces the singular (`ledger_entry`, `account`). When both
+        contribute, the singular entities win but the plural relationship
+        survives untouched, so the schema carried an edge between two tables it
+        does not contain — and the ER diagram drew them as phantom entities.
+        Worse, the dedupe below could not see that the plural edge and the
+        singular one were the same relationship, so a real edge was dropped as
+        a conflict with its own duplicate.
+
+        Renaming the endpoints onto the real entity names fixes both. A
+        relationship whose endpoint matches no entity under any spelling is
+        dropped: an edge to a table that does not exist is not a fact about
+        this schema.
+        """
+        # Keyed on the singular form, and endpoints are looked up the same way,
+        # so a plural endpoint finds a singular entity and vice versa.
+        by_name = {entity.name: entity.name for entity in entities}
+        by_singular: dict[str, str] = {}
+        for entity in entities:
+            by_singular.setdefault(self._singular(entity.name), entity.name)
+
+        def resolve(name: str) -> str | None:
+            return by_name.get(name) or by_singular.get(self._singular(name))
+
+        aligned: list[DatabaseRelationship] = []
+        for relation in relationships:
+            source = resolve(relation.source)
+            target = resolve(relation.target)
+            if source is None or target is None or source == target:
+                continue
+            if source == relation.source and target == relation.target:
+                aligned.append(relation)
+                continue
+            foreign_key = relation.foreign_key
+            if foreign_key and foreign_key.startswith(f"{relation.source}."):
+                foreign_key = f"{source}.{foreign_key.split('.', 1)[1]}"
+            aligned.append(
+                relation.model_copy(
+                    update={"source": source, "target": target, "foreign_key": foreign_key}
+                )
+            )
+        return aligned
+
+    def _drop_contradictory_relationships(
+        self, relationships: list[DatabaseRelationship]
+    ) -> tuple[list[DatabaseRelationship], list[str]]:
+        """Keep at most one many-to-one edge per entity pair.
+
+        Two inference paths can each produce a foreign key for the same pair of
+        entities in opposite directions — one from an explicit `<name>_id`
+        attribute on the hint, one from sentence inference. Both being present
+        says A owns many B *and* B owns many A, which cannot be true and draws
+        a cycle in the ER and class diagrams.
+
+        Which direction is right is a domain question, so this does not guess a
+        semantic answer. It keeps the edge whose owning table carries more
+        foreign keys, because a table that references several others is the
+        dependent one, and it returns a note per dropped edge so the ambiguity
+        can be surfaced rather than silently resolved.
+        """
+        fk_counts: dict[str, int] = {}
+        for relation in relationships:
+            if relation.foreign_key:
+                fk_counts[relation.source] = fk_counts.get(relation.source, 0) + 1
+
+        kept: dict[frozenset[str], DatabaseRelationship] = {}
+        notes: list[str] = []
+        ordered: list[DatabaseRelationship] = []
+        for relation in relationships:
+            pair = frozenset({relation.source, relation.target})
+            if relation.source == relation.target or pair not in kept:
+                kept[pair] = relation
+                ordered.append(relation)
+                continue
+            incumbent = kept[pair]
+            if (incumbent.source, incumbent.target) == (relation.source, relation.target):
+                continue  # exact duplicate
+            # Contradictory directions for the same pair.
+            challenger_weight = fk_counts.get(relation.source, 0)
+            incumbent_weight = fk_counts.get(incumbent.source, 0)
+            if challenger_weight > incumbent_weight:
+                ordered[ordered.index(incumbent)] = relation
+                kept[pair] = relation
+                dropped, winner = incumbent, relation
+            else:
+                dropped, winner = relation, incumbent
+            notes.append(
+                f"{dropped.source} and {dropped.target} were each inferred to reference the "
+                f"other. Kept {winner.source} -> {winner.target}"
+                f"{f' via {winner.foreign_key}' if winner.foreign_key else ''}; "
+                f"confirm which direction the domain actually requires."
+            )
+        return ordered, notes
+
     def _enumeration_sentences(self, requirements: RequirementModel) -> list[str]:
         """Source sentences enumerating 3+ domain entities in sequence."""
         sentences: list[str] = []
@@ -929,6 +1078,7 @@ class DatabaseGenerator:
         singular_lookup = {
             self._singular(entity_name): entity_name for entity_name in entity_names
         }
+        self._promote_entity_named_columns(entities, singular_lookup)
         for entity in entities:
             for field in entity.fields:
                 if not field.name.endswith("_id"):
@@ -969,6 +1119,8 @@ class DatabaseGenerator:
             if (relation.source, relation.target) not in existing_pairs
             and (relation.target, relation.source) not in existing_pairs
         )
+        relationships = self._align_relationship_endpoints(relationships, entities)
+        relationships, conflict_notes = self._drop_contradictory_relationships(relationships)
 
         contexts = cluster_entities([entity.name for entity in entities])
         for entity in entities:
@@ -1064,6 +1216,17 @@ class DatabaseGenerator:
             ])
         entities = [*platform_entities, *entities]
 
+        # Last, once `entities` is final: the ledger block above merges its
+        # fields into an existing singular entity but appends its relationship
+        # with the plural names it was written with, so the edge has to be
+        # re-pointed after every contributor has had its say. Left unaligned it
+        # was an edge between two tables the schema does not contain, and the
+        # dedupe could not see it was a duplicate of the singular edge, so a
+        # real relationship was dropped as a conflict with itself.
+        relationships = self._align_relationship_endpoints(relationships, entities)
+        relationships, extra_conflicts = self._drop_contradictory_relationships(relationships)
+        conflict_notes = [*conflict_notes, *extra_conflicts]
+
         return DatabaseDesign(
             database_engine="PostgreSQL (architecture recommendation)",
             entities=entities,
@@ -1077,6 +1240,9 @@ class DatabaseGenerator:
                     ["Some relationship cardinalities are inferred from workflow structure and should be confirmed."]
                     if assumed_relationships else []
                 ),
+                # Surfaced rather than silently resolved: the reader needs to
+                # know a direction was chosen for them.
+                *conflict_notes,
             ],
             sql_schema=self._render_sql(entities, relationships),
             sample_inserts="-- Sample records are intentionally omitted until domain values are confirmed.",

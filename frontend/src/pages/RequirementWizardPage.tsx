@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { RequirementRepairNotice } from '../components/workspace/RequirementRepairNotice'
 import { StatePanel } from '../components/workspace/StatePanel'
 import { WorkspaceEditDialog, type EditField } from '../components/workspace/WorkspaceEditDialog'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
@@ -52,6 +53,9 @@ export function RequirementWizardPage() {
   }
 
   const { requirements } = workspace
+  const otherIssues = workspace.consistency_issues.filter(
+    (issue) => issue.code !== 'requirement-extraction-artifact',
+  )
   const sourceLabel = requirements.analysis_source === 'ollama-pretrained'
     ? 'Interpreted from the raw brief by Ollama'
     : requirements.analysis_source === 'predefined-blueprint'
@@ -127,10 +131,15 @@ export function RequirementWizardPage() {
         <Metric label="Integrations" value={requirements.integrations.length} icon={<Link2 />} />
       </div>
 
-      {workspace.consistency_issues.length > 0 ? (
+      <RequirementRepairNotice workspace={workspace} />
+
+      {/* The artifact notice above carries its own repair action, so the
+          generic review below skips it rather than saying the same thing
+          twice without the button. */}
+      {otherIssues.length > 0 ? (
         <section className="notice notice-warning">
           <CircleAlert className="h-4 w-4 shrink-0" />
-          <div><strong>Consistency review</strong><p className="mt-1">{workspace.consistency_issues[0].message}</p></div>
+          <div><strong>Consistency review</strong><p className="mt-1">{otherIssues[0].message}</p></div>
         </section>
       ) : null}
 

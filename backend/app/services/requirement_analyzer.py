@@ -31,6 +31,7 @@ from app.services.domain_inference import (
     to_display_name,
     tokenize,
 )
+from app.utils.identifiers import next_identifier
 from app.services.project_signals import clarification_category, hydrate_project_signals
 
 
@@ -860,7 +861,7 @@ class RequirementAnalyzer:
 
             validated_actors.append(
                 Actor(
-                    id=f"ACT-{len(validated_actors) + 1:03d}",
+                    id=next_identifier("ACT", [item.id for item in validated_actors]),
                     name=normalized,
                     description=resp[0],
                     actor_type=candidate.actor_type,
@@ -902,7 +903,7 @@ class RequirementAnalyzer:
                 resp = [self._deterministic_actor_description(normalized, kind, functional_requirements, combined_source)]
                 validated_actors.append(
                     Actor(
-                        id=f"ACT-{len(validated_actors) + 1:03d}",
+                        id=next_identifier("ACT", [item.id for item in validated_actors]),
                         name=normalized,
                         description=resp[0],
                         actor_type=kind if kind in {"human", "organizational", "external-partner", "external-system", "device", "event-source", "machine", "unknown"} else "human",
@@ -1229,6 +1230,7 @@ class RequirementAnalyzer:
         existing requirement: deterministic items are already normalized.
         """
         from app.services.domain_inference import (
+            _is_product_title,
             _looks_like_capability,
             _normalize_capability,
             _normalize_enumerated_capability,
@@ -1237,9 +1239,18 @@ class RequirementAnalyzer:
 
         represented = " ".join(functional)
         extended = list(functional)
-        for sentence in split_sentences(
+        sentences = split_sentences(
             " ".join(part for part in (description, business_context or "") if part)
-        ):
+        )
+        for position, sentence in enumerate(sentences):
+            # This pass re-walks every sentence to recover anything the
+            # extractor missed, and it had no notion of position, so it put the
+            # brief's opening title sentence back ("EV charging booking
+            # platform.") after capability extraction had correctly skipped it.
+            # From there it became a workflow, an activity in the activity
+            # diagram, and a use case with no actor.
+            if position == 0 and len(sentences) > 1 and _is_product_title(sentence):
+                continue
             candidates = _split_enumeration(sentence)
             enumerated = len(candidates) > 1
             if not enumerated:
@@ -2824,6 +2835,20 @@ class RequirementAnalyzer:
                 rf"\b{re.escape(head)}\b(?:\s+\w+){{0,2}}\s+{action_pattern}\b",
                 normalized,
             ):
+                return True
+            # Subject position. The verb list above is a whitelist, so a
+            # requirement using a domain verb it does not contain dropped the
+            # actor entirely: "Graders score submissions." lost the Grader,
+            # which then reappeared as a database entity. A role head at the
+            # start of a requirement is its subject, which is what the verb
+            # list was approximating. The guard the verb list provided is kept:
+            # nothing before the head may be an action verb, so an actor named
+            # as somebody else's object ("operators support customers") is
+            # still rejected.
+            subject = re.match(
+                rf"^((?:\w+\s+){{0,2}}){re.escape(head)}\b\s+\w+", normalized
+            )
+            if subject and not re.search(rf"\b{action_pattern}\b", subject.group(1)):
                 return True
         return False
 

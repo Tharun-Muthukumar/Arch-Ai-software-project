@@ -283,6 +283,31 @@ class WorkspaceEditService:
                         related_ids=[node_id],
                     )
                 )
+        # Extraction artifacts left in an already-created project. A
+        # requirement model is persisted when the project is created and the
+        # user edits it, so a fix to extraction never reaches a project that
+        # already exists: the user sees an unchanged diagram and concludes
+        # nothing was fixed. Reported here so the project says what is wrong,
+        # and repaired only through the explicit, undoable
+        # `repair_requirement_model` action — never silently, because this is
+        # the user's own data.
+        from app.services.requirement_repair import detect_requirement_artifacts
+
+        found = detect_requirement_artifacts(requirements, workspace.original_prompt)
+        if found.count:
+            issues.append(
+                ConsistencyIssue(
+                    code="requirement-extraction-artifact",
+                    severity="warning",
+                    message=(
+                        f"{found.summary()}. These came from an earlier version of "
+                        "requirement extraction and can be repaired without affecting "
+                        "anything you added."
+                    ),
+                    related_ids=list(found.invalid_actor_ids),
+                )
+            )
+
         issues.extend(self._cross_artifact_warnings(workspace))
         return issues
 

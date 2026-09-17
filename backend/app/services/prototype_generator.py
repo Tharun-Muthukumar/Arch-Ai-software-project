@@ -74,10 +74,19 @@ class PrototypeGenerator:
             )
             for index, actor in enumerate(requirements.actors, start=1)
         ]
-        roles = [
-            PrototypeRole(actor_id=actor_id, name=name, description=description)
-            for actor_id, name, description, _ in actor_rows
-        ]
+        # One role per actor identifier. Upstream now allocates collision-free
+        # ids, but workspaces saved before that fix still hold duplicates, and a
+        # duplicate here makes the role filter ambiguous and React render the
+        # same key twice.
+        roles: list[PrototypeRole] = []
+        claimed_actor_ids: set[str] = set()
+        for actor_id, name, description, _ in actor_rows:
+            if actor_id in claimed_actor_ids:
+                continue
+            claimed_actor_ids.add(actor_id)
+            roles.append(
+                PrototypeRole(actor_id=actor_id, name=name, description=description)
+            )
         grouped: dict[str, list[tuple[str, str]]] = {}
         for req_id, text in requirement_rows:
             for group in self._groups_for(text):
@@ -94,6 +103,12 @@ class PrototypeGenerator:
                 min(int(req_id.split("-")[1]) for req_id, _ in item[1]),
             ),
         )
+        # NOTE: deduplicating screens by their requirement set was tried and
+        # reverted. A requirement legitimately belongs to several capability
+        # groups — a booking requirement is both the booking screen and the
+        # payment screen — so dropping the later group deleted real screens
+        # (Bookings and Payments both vanished from a seeded project). The
+        # occasional redundant screen is a smaller defect than a missing one.
         for group, rows in ordered_groups:
             screens.append(
                 self._requirement_screen(
@@ -256,6 +271,14 @@ class PrototypeGenerator:
             )
             for req_id, text in rows[:6]
         ]
+        # The first action is rendered as the screen's primary button, so a
+        # real capability has to come before a topic-shaped fallback. The
+        # fallback is the bare label "Open" — note that `_looks_actionable`
+        # cannot be used for this, because "open" is itself an action verb, so
+        # the fallback would test as actionable. A genuine open instruction
+        # ("Open a ticket") carries an object and is unaffected. Sort is stable,
+        # so requirement order is preserved within each bucket.
+        actions.sort(key=lambda action: 1 if action.label.strip() == self._FALLBACK_ACTION else 0)
         component = PrototypeComponent(
             id=f"PROTO-COMP-{self._slug(group)}",
             component_type=component_type,
@@ -269,6 +292,7 @@ class PrototypeGenerator:
         )
         if group == "search" and any("map" in text.casefold() or "nearby" in text.casefold() for text in texts):
             component.items.append("Map and list presentation derived from location-oriented requirements")
+        screen_states = self._states(requirements, texts)
         return PrototypeScreen(
             id=screen_id,
             name=name,
@@ -276,12 +300,131 @@ class PrototypeGenerator:
             purpose="Represents: " + " ".join(self._sentence(text, 150) for text in texts[:3]),
             layout=layout,
             actor_ids=actor_ids,
-            components=[component],
-            states=self._states(requirements, texts),
+            components=[
+                component,
+                *self._secondary_components(
+                    group=group,
+                    screen_name=name,
+                    texts=texts,
+                    req_ids=req_ids,
+                    entity_ids=entity_ids,
+                    entity_names=entity_names,
+                    database_design=database_design,
+                    states=screen_states,
+                ),
+            ],
+            states=screen_states,
             source_requirement_ids=req_ids,
             source_actor_ids=actor_ids,
             source_entity_ids=entity_ids,
         )
+
+    # What a screen needs beside its primary component to read as a real
+    # screen. A search box with no result list is a control, not a page; a
+    # booking form with nothing showing what is being booked and no sense of
+    # where the reservation is in its lifecycle is a form, not a booking
+    # experience. Each entry is (component_type, title suffix) in render order.
+    _SCREEN_COMPOSITION: dict[str, tuple[tuple[str, str], ...]] = {
+        "search": (("list", "Results"),),
+        "booking": (("details", "Reservation summary"), ("timeline", "Interface states")),
+        "payment": (("details", "Payment summary"),),
+        "monitoring": (("timeline", "Interface states"),),
+        "operations": (("metrics", "Operational totals"),),
+        "reports": (("table", "Underlying records"),),
+        "account": (("details", "Profile summary"),),
+    }
+
+    def _secondary_components(
+        self,
+        *,
+        group: str,
+        screen_name: str,
+        texts: list[str],
+        req_ids: list[str],
+        entity_ids: list[str],
+        entity_names: list[str],
+        database_design: DatabaseDesign,
+        states: list[str],
+    ) -> list[PrototypeComponent]:
+        """Compose the rest of the screen from recorded project data only.
+
+        Every item below is read from the requirement model, the entity model
+        or the screen's own states. Nothing here invents a record, a price, a
+        count or a status value the project does not already hold.
+        """
+        plan = self._SCREEN_COMPOSITION.get(
+            group, (("details", "Scope"),) if group.startswith("capability-") else ()
+        )
+        if not plan:
+            return []
+
+        displayable = self._fields_for(group, entity_names, database_design)
+        entity_label = ", ".join(entity_names[:3]) if entity_names else ""
+        components: list[PrototypeComponent] = []
+
+        for component_type, suffix in plan:
+            items: list[str]
+            description: str
+            if component_type == "list":
+                # A results preview describes the shape of a record, which the
+                # entity model really defines. It does not fabricate rows.
+                items = displayable[:6] or [self._sentence(text, 110) for text in texts[:4]]
+                description = (
+                    f"Each result is one {entity_label} record, shown with the columns the "
+                    f"data model defines."
+                    if entity_label
+                    else "Result rows follow the validated requirement scope."
+                )
+            elif component_type == "timeline":
+                items = list(states)
+                description = (
+                    "Interface states this screen is required to represent. Domain status "
+                    "values are not assumed."
+                )
+            elif component_type == "metrics":
+                items = self._model_counts(entity_names, req_ids, database_design)
+                description = "Counts taken from the current requirement and data model."
+            elif component_type == "table":
+                items = displayable[:6] or [self._sentence(text, 110) for text in texts[:4]]
+                description = f"Records behind {screen_name.lower()}."
+            else:  # details
+                items = [self._sentence(text, 130) for text in texts[:4]]
+                description = (
+                    f"What this screen covers, traced to {', '.join(req_ids[:4])}."
+                    if req_ids
+                    else "Validated scope for this screen."
+                )
+            if not items:
+                continue
+            components.append(
+                PrototypeComponent(
+                    id=f"PROTO-COMP-{self._slug(group)}-{self._slug(component_type)}",
+                    component_type=component_type,  # type: ignore[arg-type]
+                    title=suffix,
+                    description=description,
+                    fields=displayable[:6] if component_type in {"table"} else [],
+                    items=items,
+                    actions=[],
+                    source_requirement_ids=req_ids,
+                    source_entity_ids=entity_ids,
+                )
+            )
+        return components
+
+    def _model_counts(
+        self, entity_names: list[str], req_ids: list[str], database_design: DatabaseDesign
+    ) -> list[str]:
+        """Real counts from the model, phrased so they cannot read as live data."""
+        counts: list[str] = []
+        by_name = {entity.name: entity for entity in database_design.entities}
+        for name in entity_names[:3]:
+            entity = by_name.get(name)
+            if entity is None:
+                continue
+            counts.append(f"{name}: {len(entity.fields)} modelled attributes")
+        if req_ids:
+            counts.append(f"{len(req_ids)} requirement(s) traced to this screen")
+        return counts
 
     def _add_navigation_actions(self, screens: list[PrototypeScreen]) -> None:
         if not screens:
@@ -360,15 +503,41 @@ class PrototypeGenerator:
                 output.append(entity.id or f"ENT-{index:03d}")
         return output
 
+    # Columns that exist for the database's benefit, not the user's. A form
+    # asking someone to type an `Id` or an `Updated At` is not a form, and a
+    # search screen filtering on `Created At` is not a filter.
+    _SYSTEM_COLUMNS = {
+        "id", "created_at", "updated_at", "deleted_at", "created_by",
+        "updated_by", "version", "revision", "external_reference",
+    }
+    # Screens that show records rather than collect them can display audit
+    # columns; screens that collect input cannot.
+    _INPUT_GROUPS = {"account", "booking", "payment", "search"}
+
+    def _field_label(self, column: str) -> str:
+        """A user-facing label for a column.
+
+        A foreign key is chosen from a picker, so it reads as the thing being
+        chosen — `station_id` is offered as "Station", not "Station Id".
+        """
+        name = column[:-3] if column.endswith("_id") and column != "id" else column
+        return name.replace("_", " ").strip().title()
+
     def _fields_for(self, group: str, entity_names: list[str], database_design: DatabaseDesign) -> list[str]:
-        if group not in {"account", "booking", "payment", "operations"}:
-            return []
         entity_tokens = self._tokens(" ".join(entity_names))
+        if not entity_tokens:
+            return []
+        collects_input = group in self._INPUT_GROUPS or group.startswith("capability-")
         fields: list[str] = []
         for entity in database_design.entities:
-            if not entity_tokens or not (self._tokens(entity.name) & entity_tokens):
+            if not (self._tokens(entity.name) & entity_tokens):
                 continue
-            fields.extend(field.name.replace("_", " ").title() for field in entity.fields[:5])
+            for field in entity.fields:
+                if collects_input and field.name in self._SYSTEM_COLUMNS:
+                    continue
+                if field.name == "id":
+                    continue
+                fields.append(self._field_label(field.name))
         return list(dict.fromkeys(fields))[:8]
 
     def _states(self, requirements: RequirementModel, texts: list[str] | None = None) -> list[str]:
@@ -393,12 +562,56 @@ class PrototypeGenerator:
         words = [word for word in re.findall(r"[A-Za-z0-9]+", cleaned) if word.casefold() not in self._STOP_WORDS]
         return " ".join(words[:5]).title() or "Product workflow"
 
+    # The label used when a requirement names no action at all. Kept as a
+    # constant because the screen's action ordering has to recognise it.
+    _FALLBACK_ACTION = "Open"
+
     def _action_label(self, text: str) -> str:
-        cleaned = re.sub(r"^(?:the\s+)?[^.]{0,50}?\b(?:can|must|should(?:\s+be\s+able\s+to)?)\b\s*", "", text, flags=re.I)
+        """A button label: a verb phrase the user could act on.
+
+        "Drivers can reserve an available connector" is a requirement;
+        "Reserve an available connector" is a button. A requirement that names
+        no action at all — "EV charging booking platform" — cannot become a
+        sensible label by truncation, so it is not used as one.
+        """
+        cleaned = re.sub(
+            r"^(?:the\s+)?[^.]{0,50}?\b(?:can|must|should(?:\s+be\s+able\s+to)?)\b\s*",
+            "", text, flags=re.I)
+        # "Operators manage charger availability" has no modal verb, so strip a
+        # leading plural actor noun instead and keep the verb it governs.
+        cleaned = re.sub(
+            r"^(?:users?|customers?|clients?|admins?|administrators?|operators?|"
+            r"drivers?|staff|members?|managers?|owners?)\s+(?=[a-z])",
+            "", cleaned, flags=re.I)
         cleaned = re.sub(r"^(?:support|enable|allow|provide)\s+", "", cleaned, flags=re.I)
         words = re.findall(r"[A-Za-z0-9'-]+", cleaned)
         label = " ".join(words[:6]).strip()
-        return (label[:1].upper() + label[1:]) if label else "Continue"
+        if not label:
+            return "Continue"
+        # A label with no verb is a topic, not an action. Rather than print a
+        # noun phrase on a button, say what the screen actually offers.
+        if not self._looks_actionable(label):
+            return self._FALLBACK_ACTION
+        return label[:1].upper() + label[1:]
+
+    # Verbs that make a label an instruction. Kept deliberately generic.
+    _ACTION_VERBS = {
+        "add", "apply", "approve", "assign", "book", "browse", "cancel",
+        "change", "check", "choose", "complete", "confirm", "create",
+        "delete", "download", "edit", "enter", "explore", "export", "filter",
+        "find", "generate", "import", "invite", "list", "manage", "monitor",
+        "open", "pay", "print", "publish", "rate", "refund", "register",
+        "remove", "reschedule", "reserve", "review", "save", "search",
+        "select", "send", "share", "sign", "start", "stop", "submit",
+        "track", "update", "upload", "verify", "view",
+    }
+
+    def _looks_actionable(self, label: str) -> bool:
+        return any(
+            word.casefold().rstrip("s") in self._ACTION_VERBS
+            or word.casefold() in self._ACTION_VERBS
+            for word in re.findall(r"[A-Za-z]+", label)
+        )
 
     @staticmethod
     def _action_type(group: str, text: str) -> str:

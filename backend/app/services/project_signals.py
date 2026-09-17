@@ -21,6 +21,7 @@ from app.schemas.domain import (
     StructuredClarification,
     TechnicalCharacteristic,
 )
+from app.utils.identifiers import assign_missing_identifiers
 from app.services.decision_config import CONFIDENCE_THRESHOLDS, SCALE_THRESHOLDS
 from app.services.domain_inference import (
     cluster_entities,
@@ -764,9 +765,15 @@ def hydrate_project_signals(
             ))
             existing_actor_names.add(name.casefold())
 
+    # Allocate identifiers from what is free before anything reads them. A
+    # positional fallback collides: inserting an actor before an existing one
+    # hands the newcomer the index that actor already holds, which is how a
+    # project ended up with Driver and Operator both as ACT-001.
+    assign_missing_identifiers(updated.actors, "ACT")
+    assign_missing_identifiers(updated.domain_entities, "ENT")
+
     # Add source and useful role/entity metadata without overwriting manual detail.
     for index, actor in enumerate(updated.actors, start=1):
-        actor.id = actor.id or f"ACT-{index:03d}"
         actor_tokens = {token for token in tokenize(actor.name) if len(token) > 2}
         workflow_responsibilities = list(dict.fromkeys([
             workflow.description
@@ -780,14 +787,13 @@ def hydrate_project_signals(
         elif not actor.responsibilities:
             actor.responsibilities = [actor.description]
         actor.source_evidence = actor.source_evidence or [SourceEvidence(
-            source_id=f"ACT-{index:03d}",
+            source_id=actor.id,
             source="actor inferred during requirement extraction",
             status="inferred",
         )]
         actor.actor_type = classify_actor(actor, updated.integration_details)  # type: ignore[assignment]
-    for index, entity in enumerate(updated.domain_entities, start=1):
-        entity.id = entity.id or f"ENT-{index:03d}"
-        entity.source_evidence = entity.source_evidence or [SourceEvidence(source_id=f"ENT-{index:03d}", source="requirement extraction")]
+    for entity in updated.domain_entities:
+        entity.source_evidence = entity.source_evidence or [SourceEvidence(source_id=entity.id, source="requirement extraction")]
         evidence_text = " ".join([
             requirement_text,
             *(workflow.description for workflow in updated.domain_workflows),

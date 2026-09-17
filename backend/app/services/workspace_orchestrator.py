@@ -144,6 +144,33 @@ class WorkspaceOrchestrator:
         if workspace is None:
             return None
         self._check_expected_updated_at(workspace, request.expected_updated_at)
+        if request.action.action == "repair_requirement_model":
+            found = self._detect_requirement_artifacts(workspace)
+            return ProjectActionPreview(
+                action=request.action,
+                impact=WorkspaceEditImpact(
+                    items=[WorkspaceImpactItem(
+                        area="Requirements",
+                        level="major" if found.count else "minor",
+                        summary=(
+                            f"Will remove {found.summary()}, then regenerate every "
+                            "dependent artifact. Undo restores the current state."
+                            if found.count
+                            else "No extraction artifacts were found in this project."
+                        ),
+                    )],
+                    affected_artifacts=(
+                        [
+                            "requirements", "architectures", "comparison", "recommendation",
+                            "database", "api", "deployment", "diagrams", "prototype",
+                            "causal_graph", "documentation",
+                        ]
+                        if found.count
+                        else []
+                    ),
+                    requires_confirmation=bool(found.count),
+                ),
+            )
         if request.action.action in {"undo", "redo", "regenerate_affected"}:
             impact = WorkspaceEditImpact(
                 items=[WorkspaceImpactItem(
@@ -181,6 +208,8 @@ class WorkspaceOrchestrator:
             return self.undo_workspace_edit(workspace_id)
         if action.action == "redo":
             return self.redo_workspace_edit(workspace_id)
+        if action.action == "repair_requirement_model":
+            return self._repair_requirement_model(workspace_id, request)
         if action.action == "regenerate_affected":
             workspace = self.repository.get(workspace_id)
             if workspace is None:
@@ -211,6 +240,108 @@ class WorkspaceOrchestrator:
         if edit is None:
             raise ValueError("This project action cannot be applied.")
         return self.apply_workspace_edit(workspace_id, edit)
+
+    def _detect_requirement_artifacts(self, workspace: Workspace):
+        from app.services.requirement_repair import detect_requirement_artifacts
+
+        return detect_requirement_artifacts(
+            RequirementModel.model_validate(workspace.requirements_json),
+            workspace.original_prompt,
+        )
+
+    def _repair_requirement_model(
+        self, workspace_id: str, request: ProjectActionRequest
+    ) -> WorkspaceMutationResponse | None:
+        """Remove extraction artifacts from a project that already exists.
+
+        A requirement model is persisted at creation and edited by the user, so
+        it is never re-derived on read — which means a fix to requirement
+        extraction cannot reach a project created before it. That is why a user
+        applies an upgrade, reloads their project, and sees the same wrong
+        diagram.
+
+        This is the explicit path for that. It removes only what
+        `requirement_repair` can prove is an artifact (a requirement that is
+        verbatim the brief's own product-title sentence; an actor whose name is
+        an access-mechanism acronym or is not a role at all), takes a revision
+        snapshot first so undo restores everything, and regenerates the
+        dependent artifacts through the same path a requirement edit uses.
+        Nothing the user wrote is touched.
+        """
+        from app.services.requirement_repair import remove_requirement_artifacts
+
+        workspace = self.repository.get(workspace_id)
+        if workspace is None:
+            return None
+        self._check_expected_updated_at(workspace, request.expected_updated_at)
+
+        found = self._detect_requirement_artifacts(workspace)
+        if not found.count:
+            response = self._to_response(workspace)
+            return WorkspaceMutationResponse(
+                workspace=response,
+                impact=WorkspaceEditImpact(
+                    items=[WorkspaceImpactItem(
+                        area="Requirements",
+                        level="minor",
+                        summary="No extraction artifacts were found; nothing was changed.",
+                    )],
+                    affected_artifacts=[],
+                ),
+                consistency_issues=response.consistency_issues,
+                message="This project's requirement model has no extraction artifacts to repair.",
+            )
+
+        self._record_revision(workspace, "Repair requirement model")
+        repaired = remove_requirement_artifacts(
+            RequirementModel.model_validate(workspace.requirements_json), found
+        )
+        workspace.requirements_json = hydrate_project_signals(
+            repaired, workspace.answers_json or {}
+        ).model_dump()
+
+        sections = self._expand_regeneration_sections(["requirements"])
+        self._regenerate_sections(workspace, sections)
+        self._rebuild_graph_and_documentation(workspace)
+        response = self._to_response(self.repository.save(workspace))
+
+        items = [
+            WorkspaceImpactItem(
+                area="Requirements",
+                level="major",
+                summary=f"Removed {found.summary()}.",
+            )
+        ]
+        for requirement in found.title_requirements:
+            items.append(WorkspaceImpactItem(
+                area="Requirements",
+                level="moderate",
+                summary=(
+                    f"'{requirement[:90]}' repeated the project description and was "
+                    "not a requirement; every downstream artifact was rebuilt without it."
+                ),
+            ))
+        for name in found.invalid_actor_names:
+            items.append(WorkspaceImpactItem(
+                area="Actors",
+                level="moderate",
+                summary=(
+                    f"'{name}' was not a role. Workflows that named it keep their "
+                    "description and now report an unconfirmed actor, which is true."
+                ),
+            ))
+        return WorkspaceMutationResponse(
+            workspace=response,
+            impact=WorkspaceEditImpact(
+                items=items,
+                affected_artifacts=[*sections, "causal_graph", "documentation"],
+            ),
+            consistency_issues=response.consistency_issues,
+            message=(
+                f"Repaired {found.count} extraction artifact(s) and regenerated the "
+                "dependent artifacts. Undo restores the previous state."
+            ),
+        )
 
     def apply_architecture_proposal(
         self, workspace_id: str, proposal: ArchitectureChangeProposal
@@ -1405,16 +1536,38 @@ class WorkspaceOrchestrator:
                 setattr(workspace, field, copy.deepcopy(value))
         workspace.documentation_markdown = snapshot.get("documentation_markdown", "")
 
+    def _load_diagrams(
+        self, workspace: Workspace, requirements: RequirementModel
+    ) -> dict[str, DiagramArtifact]:
+        """Stored diagrams, repaired if they predate the current generator.
+
+        Diagrams are persisted per workspace in `diagrams_json` and only
+        rebuilt when the project is regenerated. A project created before the
+        use case diagram gained real UML notation therefore keeps serving the
+        old artifact indefinitely — its stored payload has no
+        `use_case_model`, so the client falls back to the flowchart and the
+        user sees no change at all after an upgrade.
+
+        Rather than requiring the project to be recreated, a stored use case
+        diagram with no structured model is regenerated on read from the
+        requirement model, which is the source of truth for it anyway.
+        """
+        diagrams = {
+            key: DiagramArtifact.model_validate(value)
+            for key, value in (workspace.diagrams_json or {}).items()
+        }
+        stored = diagrams.get("use_case")
+        if stored is not None and stored.use_case_model is None:
+            diagrams["use_case"] = self.diagram_generator.use_case_only(requirements)
+        return diagrams
+
     def _workspace_response_from_parts(self, workspace: Workspace) -> WorkspaceResponse:
         requirements = RequirementModel.model_validate(workspace.requirements_json)
         architectures = [
             ArchitectureOption.model_validate(item) for item in workspace.architectures_json
         ]
         recommendation = RecommendationResult.model_validate(workspace.recommendation_json)
-        diagrams = {
-            key: DiagramArtifact.model_validate(value)
-            for key, value in (workspace.diagrams_json or {}).items()
-        }
+        diagrams = self._load_diagrams(workspace, requirements)
         database_design = DatabaseDesign.model_validate(workspace.database_design_json)
         api_design = ApiDesign.model_validate(workspace.api_design_json)
         deployment_plan = DeploymentPlan.model_validate(workspace.deployment_plan_json)

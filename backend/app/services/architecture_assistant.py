@@ -23,6 +23,7 @@ from app.schemas.domain import (
     WorkspaceResponse,
 )
 from app.services.ai.client import OllamaStructuredClient
+from app.utils.identifiers import next_identifier
 from app.services.assistant_intel import (
     DeterministicAssistant,
     normalize_requirement_text,
@@ -1296,7 +1297,7 @@ class ArchitectureAssistantService:
             action = ProjectAction(
                 action="add_actor",
                 value={
-                    "id": f"ACT-{len(workspace.requirements.actors) + 1:03d}",
+                    "id": next_identifier("ACT", [item.id for item in workspace.requirements.actors]),
                     "name": name,
                     "description": "User-requested actor; responsibilities require confirmation.",
                     "actor_type": "unknown",

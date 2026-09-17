@@ -200,8 +200,37 @@ _ROLE_PATTERN = re.compile(
     r"manufacturers?|bottlers?|carriers?|brokers?|dealers?|resellers?|"
     r"technicians?|inspectors?|handlers?|marketers?|sellers?|merchants?|"
     r"buyers?|owners?|directors?|executives?|assistants?|teams?|users?|"
-    r"controllers?|devices?|sensors?|instruments?))\b",
+    r"controllers?|devices?|sensors?|instruments?|"
+    # Role nouns the pattern was missing, each observed as the subject of a
+    # clause in a real brief and each previously extracted as a database
+    # entity instead of an actor ("dispatcher", "grader").
+    r"dispatchers?|graders?|examiners?|moderators?|curators?|editors?|"
+    r"publishers?|schedulers?|receptionists?|cashiers?|tellers?|"
+    r"underwriters?|adjusters?|recruiters?|trainers?|mentors?|"
+    r"subscribers?|applicants?|candidates?|guests?|residents?|tenants?|"
+    r"landlords?|hosts?|riders?|shoppers?|borrowers?|lenders?|donors?|"
+    r"volunteers?|contractors?|installers?|pickers?|packers?|loaders?|"
+    r"stylists?|therapists?|dentists?|surgeons?|radiologists?|"
+    r"principals?|registrars?|librarians?|counsellors?|counselors?|"
+    r"providers?|payers?|claimants?|guardians?|parents?|"
+    r"developers?|testers?|designers?|architects?|"
+    r"approvers?|requesters?|submitters?|verifiers?|validators?|"
+    r"organizers?|organisers?|facilitators?))\b",
     flags=re.IGNORECASE,
+)
+
+
+# Authentication, authorization and protocol acronyms. These arrive from the
+# wizard's auth answer ("OAuth2/OIDC; SSO; MFA; RBAC") and were being read as
+# modifiers on the role noun that happened to follow, producing actors named
+# "Sso Admin" and "Rbac Admin". An access mechanism is not part of anybody's
+# job title; stripping it leaves the bare role, which is then judged on its own
+# merits like any other.
+_ACCESS_MECHANISM_TERMS = frozenset(
+    """
+    sso oauth oauth2 oidc saml ldap mfa 2fa totp rbac abac acl jwt
+    mtls tls ssl otp iam kerberos openid oauth1 pkce scim
+    """.split()
 )
 
 
@@ -308,10 +337,21 @@ _VALID_ROLE_PREFIXES = frozenset(
 )
 
 
+# Words that end the phrase preceding a role noun. Conjunctions were already
+# handled; the relative pronouns were not, so "learning management system where
+# instructors publish ..." produced the actor "System Where Instructor" — the
+# leading-word strip below stops at the first word it cannot remove ("system"),
+# so an invalid modifier sitting *inside* the phrase was never reached. A
+# relative pronoun always starts a new clause, so the role is what follows it.
+_ROLE_PHRASE_BOUNDARY = re.compile(
+    r"\b(?:and|while|but|where|which|who|whom|whose|that|when)\b", flags=re.I
+)
+
+
 def _normalize_role(raw: str) -> str:
     # Regex look-behind can capture preceding clause objects ("samples and reviewers").
-    if re.search(r"\b(?:and|while|but)\b", raw, flags=re.I):
-        raw = re.split(r"\b(?:and|while|but)\b", raw, flags=re.I)[-1]
+    if _ROLE_PHRASE_BOUNDARY.search(raw):
+        raw = _ROLE_PHRASE_BOUNDARY.split(raw)[-1]
     # Keep hyphens between words for compound titles like "customer-service"
     raw_cleaned = raw.replace("-", " ")
     words = [word.strip("/-.,;:'\"") for word in raw_cleaned.strip().split() if word.strip("/-.,;:'\"")]
@@ -328,6 +368,8 @@ def _normalize_role(raw: str) -> str:
             or w0_base in _INVALID_ACTOR_MODIFIERS
             or w0 in _ENGLISH_STOPWORDS
             or w0 in _PREPOSITIONS
+            or w0 in _ACCESS_MECHANISM_TERMS
+            or w0 in {name.casefold() for name in TECHNOLOGY_NAMES}
         ):
             # Do not strip if it is an explicitly recognized domain role prefix
             if w0 not in _VALID_ROLE_PREFIXES and w0_stem not in _VALID_ROLE_PREFIXES:
@@ -752,13 +794,92 @@ def _looks_like_capability(clause: str, entity_tokens: set[str], actor_tokens: s
         return False
     if not any(
         word in _CAPABILITY_VERBS or word in _CAPABILITY_NOUNS for word in words
-    ):
+    ) and not _reads_like_clause(clause):
+        # The verb list is a whitelist, so a sentence using a domain verb it
+        # does not contain was thrown away entirely: "Drivers find stations and
+        # reserve connectors." lists neither "find" nor "reserve", and that
+        # requirement never reached the model. A clause with a subject and a
+        # verb is a capability whatever the verb is. The grounding check below
+        # still applies, so this cannot admit anything the brief did not say.
         return False
     content = {word.rstrip("s") for word in words if word not in _ENGLISH_STOPWORDS}
     grounding = {word.rstrip("s") for word in (entity_tokens | actor_tokens)}
     if not (content & grounding):
         return False
     return True
+
+
+# Verbs a brief opens an instruction with. A sentence starting with one of
+# these is telling the reader what to make, so whatever follows is a
+# requirement list, never the product's name.
+_IMPERATIVE_OPENERS = frozenset(
+    """
+    build create develop design implement make deliver produce launch ship
+    add allow enable ensure expose extend generate integrate introduce
+    let offer provide rebuild refactor replace set setup support
+    """.split()
+)
+
+
+# Nouns that head a phrase naming the product rather than describing what it
+# does. "EV charging booking platform." is a title.
+_PRODUCT_HEAD_NOUNS = frozenset(
+    """
+    platform system application app portal tool product service suite
+    solution dashboard website site marketplace software
+    """.split()
+)
+
+
+def _is_product_title(sentence: str) -> bool:
+    """Whether a sentence names the product instead of stating a requirement.
+
+    A brief nearly always opens by saying what the thing *is* — "EV charging
+    station booking platform for fast-growing metro cities in India." — and
+    that sentence was becoming FR-001, then a workflow, then an activity in the
+    activity diagram, and a use case with no actor. It passed the capability
+    test because "booking" is in the capability verb list as a verb, even
+    though here it is part of a noun phrase.
+
+    The test is structural rather than length-based. An earlier version
+    required six words or fewer and a final word heading a product name, which
+    only caught the terse form ("Freight logistics platform.") and missed the
+    common one, where the product noun sits mid-sentence and prepositional
+    phrases follow it.
+
+    A title is a **noun phrase naming a product**: it contains a product head
+    noun, no role noun is its subject, and it has no finite verb. Each of the
+    three is required, so a sentence that says what someone does
+    ("Drivers discover nearby stations.") or what the product must do
+    ("The platform should support refunds.") is never mistaken for one. Applied
+    only to a brief's opening sentence, and never when it is the only one.
+    """
+    words = tokenize(sentence)
+    if not words or len(words) > 24:
+        return False
+    if not (set(words) & _PRODUCT_HEAD_NOUNS):
+        return False
+    # An imperative opening is an instruction, not a name — whether it is
+    # "Integrate with the partner platform." or "Build a slot coordination tool
+    # with depot discovery, ...". Checking only the capability verb list missed
+    # "build", which is how most briefs begin, so the entire opening sentence
+    # was discarded as a title and its capability list went with it.
+    if words[0] in _IMPERATIVE_OPENERS or words[0] in _CAPABILITY_VERBS:
+        return False
+    # A role noun means somebody is the subject, so the sentence is about what
+    # they do, not about what the product is called.
+    if _ROLE_PATTERN.search(sentence):
+        return False
+    # A finite verb — a modal, a copula, or an explicit action marker — means
+    # the sentence states behavior rather than a name.
+    return not re.search(
+        r"\b(?:must|should|shall|will|would|can|could|may|might|needs?|need|"
+        r"allows?|allow|enables?|enable|supports?|support|provides?|provide|"
+        r"handles?|handle|lets?|let|is|are|was|were|be|being|been|has|have|had|"
+        r"does|do|did|tracks?|track|manages?|manage|shows?|show)\b",
+        sentence,
+        flags=re.IGNORECASE,
+    )
 
 
 def _normalize_capability(clause: str) -> str:
@@ -806,6 +927,15 @@ def _normalize_enumerated_capability(
     grounding = {word.rstrip("s") for word in (entity_tokens | actor_tokens)}
     if not (content & grounding):
         return ""
+    if _reads_like_clause(phrase):
+        # An item from a "where A does X, B does Y" list is already a full
+        # clause with its own subject and verb. Prefixing "Support" produced
+        # "Support instructors publish courses and lessons." — ungrammatical,
+        # and it buried the subject, so the actor matcher no longer recognised
+        # the clause as belonging to that actor. The verb is a domain verb the
+        # module has no vocabulary for ("publish", "enroll", "score"), which is
+        # why `_looks_like_capability` did not accept it above.
+        return f"{phrase[:1].upper()}{phrase[1:]}."
     return f"Support {phrase[:1].lower() + phrase[1:]}."
 
 
@@ -835,8 +965,147 @@ _BASE_ACTION_VERBS = frozenset(
 )
 
 
+# "Build a <something> where ..." / "... in which ...". Everything after the
+# relative pronoun is a list of actor clauses; everything before it is framing.
+_WHERE_CLAUSE_LEAD = re.compile(
+    r"^\s*(?:build|create|develop|design|implement)\b[^,.]{0,90}?\b(?:where|in which)\s+",
+    flags=re.IGNORECASE,
+)
+
+# Tokens that can never be the verb of a clause. Used to tell a real actor
+# clause ("administrators manage cohorts") from a fragment of a nested list
+# ("certificates and progress reports"), which is the second half of
+# "... manage cohorts, certificates and progress reports". In English a clause
+# whose subject is plural takes a bare verb in second position, so a segment
+# whose second token is a conjunction, preposition or determiner is a
+# continuation of the previous clause rather than a new one. This needs no verb
+# vocabulary, so it holds for domain verbs the module has never seen
+# ("publish", "enroll", "score", "assign").
+_NON_VERB_SECOND_TOKEN = frozenset(
+    """
+    and or of the a an with to for in on at by from into onto per plus
+    including include also as but nor so yet than then
+    """.split()
+)
+
+
+def _reads_like_clause(segment: str) -> bool:
+    words = tokenize(segment)
+    if len(words) < 3:
+        return False
+    return words[1] not in _NON_VERB_SECOND_TOKEN
+
+
+def _split_where_clauses(sentence: str) -> list[str] | None:
+    """Split "Build an X where A does P, B does Q, and C does R" into clauses.
+
+    This is the commonest shape a project brief takes and it was not handled at
+    all, which had two downstream consequences: the whole sentence — framing
+    noun and every clause — became FR-001, and the actors named as the subject
+    of each clause ("dispatchers", "graders") were never extracted as actors,
+    turning up as database entities instead.
+    """
+    lead = _WHERE_CLAUSE_LEAD.match(sentence)
+    if not lead:
+        return None
+    segments = [
+        re.sub(r"^\s*(?:and|or)\s+", "", part.strip(), flags=re.IGNORECASE)
+        for part in re.split(r",\s+", sentence[lead.end():])
+    ]
+    clauses: list[str] = []
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+        if _reads_like_clause(segment) or not clauses:
+            clauses.append(segment)
+        else:
+            # A nested list tail belongs to the clause it qualifies; re-joining
+            # keeps "manage cohorts, certificates and progress reports" whole
+            # instead of emitting "certificates and progress reports" as a
+            # requirement of its own.
+            clauses[-1] = f"{clauses[-1].rstrip('.')}, {segment}"
+    # Two clauses is the minimum that makes this a list rather than one
+    # sentence that happens to contain a comma.
+    if len([clause for clause in clauses if _reads_like_clause(clause)]) < 2:
+        return None
+    return clauses
+
+
+def _looks_like_predicate(segment: str) -> bool:
+    """Whether a list segment is a verb phrase rather than a noun phrase.
+
+    Used to tell "reserve charging slots" (something the subject does) from
+    "cards" or "proof of delivery" (more objects of the previous verb). There
+    is no verb lexicon wide enough for real briefs — "reserve", "pay",
+    "request" and "discover" are all absent from the capability verb list — so
+    this is structural: a base-form verb is not plural, is not a function word,
+    and is not immediately followed by a noun-phrase marker.
+    """
+    words = tokenize(segment)
+    if not words:
+        return False
+    if words[0] in _CAPABILITY_VERBS:
+        return True
+    if len(words) < 2:
+        return False
+    if words[0].endswith("s") and not words[0].endswith("ss"):
+        return False  # a plural noun heads a noun phrase, not a predicate
+    if words[0] in _ENGLISH_STOPWORDS or words[0] in _PREPOSITIONS:
+        return False
+    # "proof of delivery" is a noun phrase; "pay securely" is not.
+    return words[1] not in {"of", "and", "or", "for", "in", "on", "with"}
+
+
+def _split_subject_verb_list(sentence: str) -> list[str] | None:
+    """Split "Drivers discover stations, reserve slots, and pay securely".
+
+    One subject with a list of things it does. Left whole, the entire sentence
+    became a single functional requirement, so five distinct driver
+    capabilities were recorded as one — and the use case diagram drew one
+    ellipse carrying the full sentence as its label. The subject is repeated
+    onto each predicate so every requirement keeps its actor, which is what the
+    workflow and use case builders match on.
+    """
+    role = _ROLE_PATTERN.match(sentence.strip())
+    if not role:
+        return None
+    subject = sentence.strip()[: role.end()].strip()
+    predicate = sentence.strip()[role.end():].strip()
+    if not predicate:
+        return None
+
+    segments = [part.strip() for part in re.split(r",\s+", predicate) if part.strip()]
+    # Three or more segments means a list, not a sentence with an aside.
+    if len(segments) < 3:
+        return None
+    # Only the final segment is split on "and": elsewhere "and" joins the parts
+    # of one object ("station and charger availability").
+    tail = segments.pop()
+    tail_parts = [
+        re.sub(r"^\s*(?:and|or)\s+", "", part.strip(), flags=re.IGNORECASE)
+        for part in re.split(r"\s+(?:and|or)\s+", tail)
+    ]
+    segments.extend(part for part in tail_parts if part)
+
+    # The first segment carries the sentence's own verb; every other one has to
+    # look like a predicate, or this is a list of objects rather than of
+    # actions and must be left alone.
+    if not all(_looks_like_predicate(segment) for segment in segments[1:]):
+        return None
+    if len(segments) < 3:
+        return None
+    return [f"{subject} {segment.rstrip('.')}" for segment in segments]
+
+
 def _split_enumeration(sentence: str) -> list[str]:
     """Split 'Key capabilities include A, B, and C' into item clauses."""
+    where_clauses = _split_where_clauses(sentence)
+    if where_clauses:
+        return where_clauses
+    subject_verb_list = _split_subject_verb_list(sentence)
+    if subject_verb_list:
+        return subject_verb_list
     if re.search(r"\binclud", sentence, flags=re.IGNORECASE):
         list_source = sentence
     elif re.match(r"^(?:build|create|develop)\b", sentence, flags=re.I) and re.search(
@@ -845,7 +1114,15 @@ def _split_enumeration(sentence: str) -> list[str]:
         # "Build a product with search, upload, verification, ..." is a
         # capability list. Keeping it as one FR causes diagrams to truncate
         # the actual behavior to the framing noun ("Online pharmacy").
-        list_source = re.split(r"\bwith\b", sentence, maxsplit=1, flags=re.I)[1]
+        tail = re.split(r"\bwith\b", sentence, maxsplit=1, flags=re.I)[1]
+        # Only when the tail actually enumerates. "... and customers track
+        # consignments with proof of delivery" ends in a prepositional phrase,
+        # and treating that as the list reduced the whole brief to "proof of
+        # delivery" — so the framing sentence was accepted whole and became
+        # FR-001.
+        if len(re.split(r",\s+", tail)) < 3:
+            return [sentence]
+        list_source = tail
     else:
         return [sentence]
     items: list[str] = []
@@ -889,7 +1166,13 @@ def extract_capabilities(
             return True
         return False
 
-    for sentence in split_sentences(" ".join(part for part in (description, business_context or "") if part)):
+    sentences = split_sentences(
+        " ".join(part for part in (description, business_context or "") if part)
+    )
+    for position, sentence in enumerate(sentences):
+        # The opening sentence is often the product's name, not a requirement.
+        if position == 0 and len(sentences) > 1 and _is_product_title(sentence):
+            continue
         # Enumerations ("Key capabilities include A, B, and C") become crisp
         # items; the framing sentence itself is skipped when items land.
         items = _split_enumeration(sentence)

@@ -2,6 +2,7 @@ import { Edit3, ExternalLink, StickyNote } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { MermaidDiagram } from '../components/diagrams/MermaidDiagram'
+import { UseCaseDiagram } from '../components/diagrams/UseCaseDiagram'
 import { StatePanel } from '../components/workspace/StatePanel'
 import { useWorkspacesQuery } from '../hooks/useWorkspaces'
 import { getActiveWorkspace, getErrorMessage } from '../lib/utils'
@@ -112,7 +113,18 @@ export function DiagramsPage() {
 
       {note ? <div className="diagram-note"><StickyNote className="h-4 w-4" /><span>{note}</span><button type="button" className="icon-button ml-auto" title="Edit note" aria-label="Edit visual note" onClick={() => setEditingNote(true)}><Edit3 className="h-3.5 w-3.5" /></button></div> : null}
 
-      {activeDiagram ? <MermaidDiagram artifact={activeDiagram} /> : null}
+      {/* A use case diagram is drawn in real UML notation rather than through
+          Mermaid, which has no use case diagram type and cannot draw a stick
+          figure. Every other diagram kind Mermaid expresses correctly. */}
+      {activeDiagram?.use_case_model ? (
+        <section className="panel">
+          <h3 className="panel-title">{activeDiagram.title}</h3>
+          <p className="panel-description">{activeDiagram.description}</p>
+          <UseCaseDiagram model={activeDiagram.use_case_model} />
+        </section>
+      ) : activeDiagram ? (
+        <MermaidDiagram artifact={activeDiagram} />
+      ) : null}
 
       {editingNote ? (
         <WorkspaceEditDialog
