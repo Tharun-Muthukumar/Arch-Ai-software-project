@@ -748,39 +748,6 @@ class RequirementAnalyzer:
                             except Exception:
                                 pass
 
-        # Short requirement headings often carry an explicit role without a
-        # full subject/verb sentence: "Operator controls", "Admin analytics",
-        # "Driver history".  They are still direct evidence of a participant,
-        # but the semantic call used to miss them whenever it had already
-        # returned at least one actor.  Add only role phrases found in the
-        # requirement itself; this supplies no domain knowledge or invented
-        # participant.
-        for requirement in functional_requirements:
-            heading = re.sub(
-                r"^(?:(?:the\s+)?system\s+(?:must|should|shall|can)\s+)?"
-                r"(?:support|enable|allow|provide)\s+",
-                "",
-                requirement.strip(),
-                flags=re.IGNORECASE,
-            )
-            for name, kind in extract_actors(heading):
-                normalized = _normalize_role(name)
-                if not normalized or not (
-                    self._actor_named_as_capability_owner(normalized, heading)
-                    or self._actor_grounded_in_requirements(
-                        normalized, [requirement], requirement
-                    )
-                ):
-                    continue
-                candidates.append(
-                    SemanticActorItem(
-                        name=normalized,
-                        actor_type=kind,
-                        responsibilities=[requirement],
-                        source_evidence=[requirement],
-                    )
-                )
-
         action_prefixes = frozenset(
             """
             coordinate manage create place deliver perform provide ensure track
@@ -827,10 +794,6 @@ class RequirementAnalyzer:
             normalized = _normalize_role(raw_name)
             if not normalized:
                 continue
-            explicitly_owns_heading = any(
-                self._actor_named_as_capability_owner(normalized, requirement)
-                for requirement in functional_requirements
-            )
             words = normalized.split()
             if len(words) > 4:
                 continue
@@ -849,13 +812,9 @@ class RequirementAnalyzer:
                 continue
 
             # 5. Generic noun rejection
-            generic_name = normalized.casefold()
-            if (
-                generic_name in GENERIC_ACTOR_NAMES
-                or generic_name in {
-                    "user", "users", "admin", "actor", "stakeholder", "person", "core"
-                }
-            ) and not (generic_name == "admin" and explicitly_owns_heading):
+            if normalized.casefold() in GENERIC_ACTOR_NAMES or normalized.casefold() in {
+                "user", "users", "admin", "actor", "stakeholder", "person", "core"
+            }:
                 continue
 
             # 6. Tech name rejection
@@ -870,7 +829,6 @@ class RequirementAnalyzer:
             if not (
                 self._actor_is_active(normalized, actor_source)
                 or self._actor_grounded_in_requirements(normalized, functional_requirements, actor_source)
-                or explicitly_owns_heading
                 or self._external_party_is_integration_boundary(normalized, actor_source)
                 or candidate.actor_type in {"device", "machine", "external-system", "external-partner"}
             ):
@@ -1090,7 +1048,22 @@ class RequirementAnalyzer:
         # their human owners.  Preserve its domain model and record the actor
         # boundary as needing clarification instead of collapsing the entire
         # project to the generic fallback.
-        if len(entity_ids) < 2 or len(capabilities) < 1:
+        #
+        # The entity bar used to be two, as an OR, so one entity discarded
+        # everything else the extractor had found. "A tool where users submit
+        # forms and reviewers approve them." yields one entity (form) but two
+        # clean capabilities and two actors, and all of it was thrown away for
+        # the conservative fallback — whose entire output is the brief verbatim
+        # as FR-001 with no actors at all. That is strictly worse than the
+        # model it replaced, and it is what made a one-entity brief look
+        # unanalysed.
+        #
+        # The fallback is now for briefs with genuinely nothing to model: no
+        # capability at all, or a capability with neither an entity nor an
+        # actor to attach it to.
+        if len(capabilities) < 1:
+            return None
+        if len(entity_ids) < 1 and len(grounded_actors) < 1:
             return None
 
         warnings: list[str] = list(prior_warnings or [])
@@ -1109,16 +1082,29 @@ class RequirementAnalyzer:
                 flags=re.I,
             )
             title_domain = " ".join(title_domain.split()).strip(" -")
-            domain = (
-                f"{title_domain} Platform"
-                if len(tokenize(title_domain)) >= 2
-                else f"{to_display_name(entity_ids[0])} Management Platform"
-            )
+            # `entity_ids` can be empty: a brief may name actors and actions
+            # without naming a single business object ("A tool where users
+            # submit forms and reviewers approve them."), and since the
+            # fallback gate stopped requiring two entities that case reaches
+            # here. Indexing it unconditionally raised IndexError and the
+            # whole request 500'd.
+            concept = to_display_name(entity_ids[0]) if entity_ids else ""
+            if len(tokenize(title_domain)) >= 2:
+                domain = f"{title_domain} Platform"
+                basis = f"the project title ('{title_domain}')"
+            elif concept:
+                domain = f"{concept} Management Platform"
+                basis = f"the most frequent business concept ('{entity_ids[0]}')"
+            else:
+                # Nothing to name it after. "Unknown domain" is the label the
+                # rest of the pipeline already treats as unclassified, and the
+                # diagrams render it as "System" rather than printing it.
+                domain = "Unknown domain"
+                basis = "no dominant business concept"
             confidence = 0.35
             warnings.append(
                 "No dominant domain vocabulary detected; domain label derived "
-                f"from the most frequent business concept ('{entity_ids[0]}'). "
-                "Confirm during review."
+                f"from {basis}. Confirm during review."
             )
 
         deterministic_integrations = extract_integrations(description, business_context, " ".join(constraints))
@@ -1284,14 +1270,18 @@ class RequirementAnalyzer:
         sentences = split_sentences(
             " ".join(part for part in (description, business_context or "") if part)
         )
-        for position, sentence in enumerate(sentences):
-            # This pass re-walks every sentence to recover anything the
-            # extractor missed, and it had no notion of position, so it put the
-            # brief's opening title sentence back ("EV charging booking
-            # platform.") after capability extraction had correctly skipped it.
-            # From there it became a workflow, an activity in the activity
-            # diagram, and a use case with no actor.
-            if position == 0 and len(sentences) > 1 and _is_product_title(sentence):
+        # This pass re-walks every sentence to recover anything the extractor
+        # missed, and it had no notion of position, so it put the brief's
+        # opening title sentence back ("EV charging booking platform.") after
+        # capability extraction had correctly skipped it. From there it became
+        # a workflow, an activity in the activity diagram, and a use case with
+        # no actor. Matched by text, not position, so a repeated title is
+        # skipped everywhere it appears.
+        title_key = ""
+        if len(sentences) > 1 and _is_product_title(sentences[0]):
+            title_key = " ".join(sentences[0].casefold().split()).rstrip(".")
+        for sentence in sentences:
+            if title_key and " ".join(sentence.casefold().split()).rstrip(".") == title_key:
                 continue
             candidates = _split_enumeration(sentence)
             enumerated = len(candidates) > 1
@@ -1347,6 +1337,18 @@ class RequirementAnalyzer:
                 hits += 1
             return hits
 
+        # Adverbs that turn a placement marker into a schedule. "Must run" is
+        # in SOLUTION_CONSTRAINT_MARKERS because "must run on Kubernetes" is a
+        # deployment constraint, but the marker is a substring match, so
+        # "Backups must run nightly with verified restores." matched it too and
+        # a recoverability quality was filed as a solution constraint.
+        schedule_adverbs = (
+            "nightly", "daily", "hourly", "weekly", "monthly", "quarterly",
+            "yearly", "continuously", "periodically", "automatically",
+            "on a schedule", "in the background", "out of hours", "overnight",
+            "every hour", "every day", "every night", "each night",
+        )
+
         def _solution_constraint(value: str) -> bool:
             lower = f" {value.casefold()} "
             hard = any(marker in lower for marker in (
@@ -1354,9 +1356,22 @@ class RequirementAnalyzer:
                 " required ", " require ", " requires ", " shall ",
                 " user-specified ", " confirmed clarification ",
             ))
-            return hard and any(
-                marker in lower for marker in SOLUTION_CONSTRAINT_MARKERS
-            )
+            if not hard:
+                return False
+            matched = [
+                marker for marker in SOLUTION_CONSTRAINT_MARKERS if marker in lower
+            ]
+            if not matched:
+                return False
+            # A placement marker followed only by a cadence is about when the
+            # work happens, not where it runs.
+            placement = {"must run", "must host", "must deploy", "only run",
+                         "only host", "only deploy"}
+            if set(matched) <= placement and any(
+                adverb in lower for adverb in schedule_adverbs
+            ):
+                return False
+            return True
 
         def _domain_actions(value: str) -> int:
             lower = value.casefold()
@@ -1408,7 +1423,20 @@ class RequirementAnalyzer:
                 r"\b\d+(?:\.\d+)?\s*(?:%|ms|milliseconds?|seconds?)\b",
                 item.casefold(),
             ))
-            if quality_hits and _solution_constraint(item):
+            # A solution constraint has to be recognised whether or not it
+            # also carries a quality word. Requiring `quality_hits` first meant
+            # "Must use PostgreSQL as the primary datastore." — no quality
+            # word in it at all — stayed a functional requirement forever,
+            # along with every other mandated technology, region or platform
+            # the extractor happened to label functional. Constraint recall on
+            # a labelled set was 2/8 because of this one condition.
+            #
+            # Widening it is safe because `_solution_constraint` is already an
+            # AND of two independent signals: a hard modal AND a
+            # solution-space marker. A domain action with a modal
+            # ("Operators must approve refunds.") matches no solution marker,
+            # so it stays functional.
+            if _solution_constraint(item):
                 moved_constraints.append(item)
             elif quality_hits and not _resource_availability_capability(item) and (
                 numeric_quality
@@ -2893,39 +2921,6 @@ class RequirementAnalyzer:
             if subject and not re.search(rf"\b{action_pattern}\b", subject.group(1)):
                 return True
         return False
-
-    def _actor_named_as_capability_owner(
-        self, name: str, requirement: str
-    ) -> bool:
-        """Whether a terse requirement starts with an explicit role.
-
-        Generated and user-written requirements are often noun headings rather
-        than complete sentences ("Operator controls", "Admin analytics").
-        The first role phrase is the owner of that named capability.  Requiring
-        it at the beginning avoids promoting an object mentioned later in a
-        requirement into an actor.
-        """
-        heading = re.sub(
-            r"^(?:(?:the\s+)?system\s+(?:must|should|shall|can)\s+)?"
-            r"(?:support|enable|allow|provide)\s+",
-            "",
-            requirement.strip(),
-            flags=re.IGNORECASE,
-        )
-        role_tokens = [
-            self._normalize_token(token)
-            for token in re.findall(r"[a-z][a-z0-9-]+", name.casefold())
-        ]
-        heading_tokens = [
-            self._normalize_token(token)
-            for token in re.findall(r"[a-z][a-z0-9-]+", heading.casefold())
-        ]
-        if not role_tokens or len(heading_tokens) <= len(role_tokens):
-            return False
-        return all(
-            self._role_head_matches(expected, actual)
-            for expected, actual in zip(role_tokens, heading_tokens)
-        )
 
     @staticmethod
     def _role_head_matches(head: str, candidate: str) -> bool:

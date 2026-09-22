@@ -12,6 +12,21 @@ CATALOG_IDS = [
 ]
 
 
+# Labels the requirement analyser writes when it could not classify the domain.
+# `RequirementModel.domain` has to keep them — the signal layer and the
+# clarification engine branch on them — but naming a component after one
+# produces "Unknown domain Core", which then shows up as a participant in the
+# sequence diagram and a box called UNKNOWN_DOMAIN_CORE in the component
+# diagram. "System" is true whatever the domain turns out to be.
+_UNCLASSIFIED_DOMAIN_LABELS = frozenset({"unknown", "unknown domain", "", "n/a", "tbd"})
+
+
+def domain_label(domain: str) -> str:
+    """A display name for the domain that never asserts an unknown one."""
+    label = " ".join(str(domain or "").split())
+    return "System" if label.casefold() in _UNCLASSIFIED_DOMAIN_LABELS else label
+
+
 class ArchitectureGenerator:
     def generate(
         self,
@@ -359,7 +374,7 @@ class ArchitectureGenerator:
                 ] or ["Routes validated operations", "Coordinates integration boundaries"],
             ),
             ArchitectureComponent(
-                name=f"{requirements.domain} Core",
+                name=f"{domain_label(requirements.domain)} Core",
                 responsibility=requirements.summary,
                 technologies=["Domain services (recommendation)"],
                 interactions=[workflow.name for workflow in requirements.domain_workflows[:3]],
@@ -392,7 +407,7 @@ class ArchitectureGenerator:
             [
                 ArchitectureComponent(
                     name="PostgreSQL",
-                    responsibility=f"Stores transactional records for {requirements.domain}.",
+                    responsibility=f"Stores transactional records for {domain_label(requirements.domain)}.",
                     technologies=["PostgreSQL", "JSONB"],
                     interactions=["Receives transactional writes from the domain core"],
                 ),
@@ -412,7 +427,7 @@ class ArchitectureGenerator:
             id="modular-monolith",
             name="Modular Monolith",
             style="Layered / Clean Architecture",
-            overview=f"A cohesive {requirements.domain} application with modules aligned to the extracted entities and workflows.",
+            overview=f"A cohesive {domain_label(requirements.domain)} application with modules aligned to the extracted entities and workflows.",
             components=components,
             data_flow=self._data_flow(requirements),
             technology_stack=["Client appropriate to confirmed actors", "Domain API", "PostgreSQL"],
@@ -445,7 +460,7 @@ class ArchitectureGenerator:
             id="service-based",
             name="Service-Based Architecture",
             style="Service-Based / Coarse Services",
-            overview=f"Groups {requirements.domain} capabilities into a small number of coarse, independently deployable services sharing governed contracts.",
+            overview=f"Groups {domain_label(requirements.domain)} capabilities into a small number of coarse, independently deployable services sharing governed contracts.",
             components=[
                 ArchitectureComponent(
                     name="Client Application",
@@ -509,7 +524,7 @@ class ArchitectureGenerator:
             id="event-driven-microservices",
             name="Event-Driven Microservices",
             style="Microservices / Event Driven",
-            overview=f"Separates {requirements.domain} workflows into independently operated services connected by durable events.",
+            overview=f"Separates {domain_label(requirements.domain)} workflows into independently operated services connected by durable events.",
             components=[
                 ArchitectureComponent(
                     name="API Gateway",
@@ -581,7 +596,7 @@ class ArchitectureGenerator:
             id="serverless-platform",
             name="Serverless Platform",
             style="Serverless / Managed Services",
-            overview=f"Implements bounded {requirements.domain} operations with managed compute and workflow services.",
+            overview=f"Implements bounded {domain_label(requirements.domain)} operations with managed compute and workflow services.",
             components=[
                 ArchitectureComponent(
                     name="Static Web App",
@@ -642,7 +657,7 @@ class ArchitectureGenerator:
             [
                 ArchitectureComponent(
                     name="PostgreSQL Core",
-                    responsibility=f"Stores transactional records for {requirements.domain} inside the cohesive core.",
+                    responsibility=f"Stores transactional records for {domain_label(requirements.domain)} inside the cohesive core.",
                     technologies=["PostgreSQL", "JSONB"],
                     interactions=["Receives transactional writes from the domain core"],
                 ),
@@ -658,7 +673,7 @@ class ArchitectureGenerator:
             id="hybrid-modular-serverless",
             name="Hybrid: Modular Core + Serverless Edge",
             style="Hybrid / Modular Monolith + Serverless",
-            overview=f"Keeps a cohesive {requirements.domain} core for transactional workflows while offloading variable or asynchronous slices to serverless handlers.",
+            overview=f"Keeps a cohesive {domain_label(requirements.domain)} core for transactional workflows while offloading variable or asynchronous slices to serverless handlers.",
             components=components,
             data_flow=[*self._data_flow(requirements), "Variable slices publish events that serverless handlers process independently."],
             technology_stack=["Modular core service", "PostgreSQL", "Serverless functions", "Managed queue"],
@@ -691,7 +706,7 @@ class ArchitectureGenerator:
             id="hybrid-event-serverless",
             name="Hybrid: Event-Driven Services + Serverless",
             style="Hybrid / Event-Driven + Serverless",
-            overview=f"Combines coarse {requirements.domain} services for stable domains with serverless consumers for event-heavy or variable workloads.",
+            overview=f"Combines coarse {domain_label(requirements.domain)} services for stable domains with serverless consumers for event-heavy or variable workloads.",
             components=[
                 ArchitectureComponent(
                     name="API Gateway",

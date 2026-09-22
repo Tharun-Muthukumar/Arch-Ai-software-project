@@ -965,10 +965,19 @@ _BASE_ACTION_VERBS = frozenset(
 )
 
 
-# "Build a <something> where ..." / "... in which ...". Everything after the
-# relative pronoun is a list of actor clauses; everything before it is framing.
+# "Build a <something> where ..." / "A tool where ..." / "... in which ...".
+# Everything after the relative pronoun is a list of actor clauses; everything
+# before it is framing.
+#
+# The lead-in used to require an imperative opener, so only "Build a X where
+# ..." split. A brief that names the product as a noun phrase instead — "A tool
+# where users submit forms and reviewers approve them." — was left whole, which
+# made the entire brief FR-001 and cost every actor in it.
 _WHERE_CLAUSE_LEAD = re.compile(
-    r"^\s*(?:build|create|develop|design|implement)\b[^,.]{0,90}?\b(?:where|in which)\s+",
+    r"^\s*(?:"
+    r"(?:build|create|develop|design|implement)\b[^,.]{0,90}?"
+    r"|(?:an?|the)\s+[^,.]{0,60}?"
+    r")\b(?:where|in which)\s+",
     flags=re.IGNORECASE,
 )
 
@@ -996,6 +1005,22 @@ def _reads_like_clause(segment: str) -> bool:
     return words[1] not in _NON_VERB_SECOND_TOKEN
 
 
+def _has_plural_subject(segment: str) -> bool:
+    """Whether a segment is a clause of its own: plural subject, then a verb.
+
+    Used only to decide whether "and" is joining two clauses or two parts of
+    one object. A plural noun followed by a bare verb is a sentence; a bare
+    noun ("charger availability") is not.
+    """
+    words = tokenize(segment)
+    if len(words) < 3:
+        return False
+    subject = words[0]
+    if not (subject.endswith("s") and not subject.endswith("ss")):
+        return False
+    return _looks_like_predicate(" ".join(words[1:]))
+
+
 def _split_where_clauses(sentence: str) -> list[str] | None:
     """Split "Build an X where A does P, B does Q, and C does R" into clauses.
 
@@ -1008,10 +1033,22 @@ def _split_where_clauses(sentence: str) -> list[str] | None:
     lead = _WHERE_CLAUSE_LEAD.match(sentence)
     if not lead:
         return None
+    tail = sentence[lead.end():]
     segments = [
         re.sub(r"^\s*(?:and|or)\s+", "", part.strip(), flags=re.IGNORECASE)
-        for part in re.split(r",\s+", sentence[lead.end():])
+        for part in re.split(r",\s+", tail)
     ]
+    if len(segments) < 2:
+        # No commas at all. "users submit forms and reviewers approve them" is
+        # still two actor clauses, so try "and" — but only when both sides are
+        # independent clauses with their own plural subject, because "and"
+        # much more often joins the parts of one object ("station and charger
+        # availability").
+        candidates = [part.strip() for part in re.split(r"\s+and\s+", tail) if part.strip()]
+        if len(candidates) >= 2 and all(
+            _has_plural_subject(candidate) for candidate in candidates
+        ):
+            segments = candidates
     clauses: list[str] = []
     for segment in segments:
         segment = segment.strip()
@@ -1169,9 +1206,15 @@ def extract_capabilities(
     sentences = split_sentences(
         " ".join(part for part in (description, business_context or "") if part)
     )
-    for position, sentence in enumerate(sentences):
-        # The opening sentence is often the product's name, not a requirement.
-        if position == 0 and len(sentences) > 1 and _is_product_title(sentence):
+    # The opening sentence is often the product's name, not a requirement. A
+    # brief that repeats it ("Fleet telemetry platform. Fleet telemetry
+    # platform.") would otherwise smuggle it back in as sentence two, so the
+    # title is matched by text rather than only by position.
+    title_key = ""
+    if len(sentences) > 1 and _is_product_title(sentences[0]):
+        title_key = " ".join(sentences[0].casefold().split()).rstrip(".")
+    for _position, sentence in enumerate(sentences):
+        if title_key and " ".join(sentence.casefold().split()).rstrip(".") == title_key:
             continue
         # Enumerations ("Key capabilities include A, B, and C") become crisp
         # items; the framing sentence itself is skipped when items land.

@@ -205,6 +205,17 @@ def test_activity_diagram_forks_and_joins_rather_than_inventing_an_order(project
     assert lanes >= 1
 
 
+def test_activity_plantuml_export_does_not_invent_workflow_order(project):
+    activity = mermaid(project, "activity")
+    export = plantuml(project, "activity")
+    if "FORK" in activity:
+        branch_count = activity.count("FORK --> A")
+        control_lines = [line.strip() for line in export.splitlines()]
+        assert control_lines.count("fork") == 1
+        assert control_lines.count("fork again") == branch_count - 1
+        assert control_lines.count("end fork") == 1
+
+
 def test_activity_partitions_are_named_for_actors_not_requirements(project):
     """A partition title is a role. It used to be able to be the string
     "Needs clarification" straight from the extractor."""
@@ -366,6 +377,12 @@ def test_er_diagram_draws_only_declared_entities(project):
 def test_component_diagram_groups_components_into_tiers(project):
     component = mermaid(project, "component")
     assert "subgraph" in component
+
+
+def test_component_diagram_contains_only_runtime_components(project):
+    component = mermaid(project, "component")
+    assert 'Architecture["' not in component
+    assert '"contains"' not in component
 
 
 # ----------------------------------------------------------------- deployment

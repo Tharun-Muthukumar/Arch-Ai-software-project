@@ -526,11 +526,6 @@ class DiagramGenerator:
                 )
             )
 
-        # An actor with no association communicates nothing and is normally an
-        # extraction artifact or a role whose requirements are outside this
-        # deliberately bounded view.  Do not draw decorative stick figures:
-        # every actor shown in the diagram participates in at least one shown
-        # use case.
         used_actor_ids = {
             actor_id
             for use_case in use_case_nodes
@@ -538,7 +533,7 @@ class DiagramGenerator:
         }
         actor_nodes = [actor for actor in actor_nodes if actor.id in used_actor_ids]
 
-        system_name = self._diagram_text(requirements.domain or "System")
+        system_name = self._system_label(requirements.domain)
         model = UseCaseModel(
             system_name=system_name,
             actors=actor_nodes,
@@ -733,12 +728,29 @@ class DiagramGenerator:
                 )
                 mermaid_lines.append(f'        A{index}["{activity_label}"]:::action')
             mermaid_lines.append("    end")
-            plantuml_lines.append(f'partition "{actor_label}" {{')
-            for _, activity in items:
-                plantuml_lines.append(
-                    f'  :{self._diagram_text(self._wrap_label(activity, 42))};'
+
+        # The requirement model records the workflows but not their relative
+        # execution order. Keep the PlantUML export faithful to the Mermaid
+        # view by expressing each workflow as a branch between a fork and join
+        # instead of silently inventing a sequential flow.
+        for index, (actor, activity) in enumerate(activities):
+            actor_label = self._diagram_text(actor).strip()
+            if not actor_label or actor_label.casefold() in self._UNKNOWN_ACTOR_LABELS:
+                matched = self._actor_for_requirement(requirements, activity)
+                actor_label = (
+                    self._diagram_text(requirements.actors[matched].name)
+                    if matched is not None
+                    else "Actor not confirmed"
                 )
+            if concurrent:
+                plantuml_lines.append("fork" if index == 0 else "fork again")
+            plantuml_lines.append(f'partition "{actor_label}" {{')
+            plantuml_lines.append(
+                f'  :{self._diagram_text(self._wrap_label(activity, 42))};'
+            )
             plantuml_lines.append("}")
+        if concurrent:
+            plantuml_lines.append("end fork")
 
         mermaid_lines.append('    JOIN[" "]:::bar' if concurrent else "")
         mermaid_lines.append('    FINAL((("&nbsp;"))):::final')
@@ -868,7 +880,8 @@ class DiagramGenerator:
         return DiagramArtifact(
             title="Sequence Diagram",
             description=(
-                f"Traces one confirmed {requirements.domain} workflow through the closest matching "
+                f"Traces one confirmed {self._system_label(requirements.domain)} workflow "
+                "through the closest matching "
                 "architecture component"
                 + (f" and the {self._diagram_text(entity.name)} entity." if entity else
                    ", with no data entity drawn because none matches the workflow closely enough.")
@@ -1058,10 +1071,7 @@ class DiagramGenerator:
             tier = self._component_tier(component.name)
             grouped_components[tier].append(component)
 
-        mermaid_lines = [
-            "flowchart LR",
-            f'    Architecture["{self._diagram_text(architecture.name)}"]',
-        ]
+        mermaid_lines = ["flowchart LR"]
         for group_name, components in grouped_components.items():
             if not components:
                 continue
@@ -1076,11 +1086,6 @@ class DiagramGenerator:
                 mermaid_lines.append(f'        {component_id}["{label}"]')
             mermaid_lines.append("    end")
 
-        for component in architecture.components:
-            mermaid_lines.append(
-                f'    Architecture -. "contains" .-> {self._component_id(component.name)}'
-            )
-
         connections = self._component_connections(architecture)
         for left, right, reason in connections:
             mermaid_lines.append(
@@ -1088,6 +1093,9 @@ class DiagramGenerator:
             )
 
         plantuml_lines = ["@startuml", "skinparam componentStyle rectangle"]
+        if not architecture.components:
+            mermaid_lines.append('    Empty["No runtime components are confirmed"]')
+            plantuml_lines.append('note "No runtime components are confirmed" as Empty')
         for group_name, components in grouped_components.items():
             if not components:
                 continue
@@ -1254,15 +1262,12 @@ class DiagramGenerator:
     def _use_case_actor_profiles(
         self, requirements: RequirementModel
     ) -> list[tuple[Actor, set[str]]]:
-        """Actors suitable for a use-case view, with traceable aliases.
+        """Return clean, traceable actor profiles for a use-case diagram.
 
-        Authentication mechanisms prefixed to a role (``SSO Admin``) are not
-        separate actors.  They collapse to the underlying role and merge with
-        an already confirmed ``Admin``.  Generic names explicitly chosen by a
-        user are preserved, while unconfirmed generic extraction artifacts are
-        left out of the diagram.  Aliases retain the role that existed before
-        a rename, so changing ``Driver`` to ``User`` does not orphan every
-        requirement that still says "driver".
+        Authentication mechanisms such as SSO are not actors. They are removed
+        from role labels and merged into an existing canonical role. Explicit
+        user renames retain the old role as an alias, allowing requirements
+        that still use the previous wording to remain connected.
         """
         grouped: dict[str, tuple[Actor, set[str], bool]] = {}
         order: list[str] = []
@@ -1281,7 +1286,9 @@ class DiagramGenerator:
                 continue
             display_name = canonical or raw_name
             if display_name.isupper() or display_name.islower():
-                display_name = " ".join(word.capitalize() for word in display_name.split())
+                display_name = " ".join(
+                    word.capitalize() for word in display_name.split()
+                )
             key = display_name.casefold()
             aliases = self._actor_aliases(source) | {raw_name, display_name}
             candidate = source.model_copy(deep=True)
@@ -1293,9 +1300,9 @@ class DiagramGenerator:
                 continue
 
             current, current_aliases, current_has_access = grouped[key]
-            # Prefer the clean role name over an authentication-prefixed copy,
-            # then merge the useful evidence from both records.
-            preferred = candidate if current_has_access and not has_access_prefix else current
+            preferred = (
+                candidate if current_has_access and not has_access_prefix else current
+            )
             other = current if preferred is candidate else candidate
             preferred.responsibilities = list(dict.fromkeys([
                 *preferred.responsibilities,
@@ -1327,14 +1334,7 @@ class DiagramGenerator:
         requirement: str,
         profiles: list[tuple[Actor, set[str]]],
     ) -> list[int]:
-        """All confirmed participants for one actor goal.
-
-        Explicit role names and workflow ownership win.  A vocabulary score is
-        used only when it has at least two independent matching stems.  Finally
-        a single non-operational human role may own an otherwise unqualified
-        end-user goal; with two plausible primary roles the relationship stays
-        unknown rather than being fabricated.
-        """
+        """Find every confirmed participant in one actor goal."""
         matched: list[int] = []
 
         def add(index: int) -> None:
@@ -1351,8 +1351,6 @@ class DiagramGenerator:
                 if any(alias.casefold() == owner.casefold() for alias in aliases):
                     add(index)
 
-        # A requirement may legitimately name more than one external role.
-        # Keep every explicit participant instead of forcing a single owner.
         for index, (_, aliases) in enumerate(profiles):
             if any(self._names_actor(requirement, alias) for alias in aliases):
                 add(index)
@@ -1378,10 +1376,6 @@ class DiagramGenerator:
         if best_index is not None and best_score >= 0.2:
             return [best_index]
 
-        # If the text itself names a role that is absent from the canonical
-        # actor model, leave the use case unassigned.  Attaching "Operator
-        # controls" to a general User would hide a missing actor rather than
-        # fix it.
         heading = re.sub(
             r"^(?:support|enable|allow|provide)\s+",
             "",
@@ -1648,6 +1642,23 @@ class DiagramGenerator:
             token for token in re.findall(r"[a-z][a-z0-9_-]+", value.casefold())
             if token not in stop and len(token) > 2
         }
+
+    # Labels the requirement analyser writes when it could not classify the
+    # domain. `RequirementModel.domain` has to keep them — the signal layer and
+    # the clarification engine both branch on them — but a diagram must not
+    # print one as the system's name. The use case boundary read
+    # `Unknown domain`, the sequence diagram named a participant
+    # `Unknown domain Core`, and the component diagram created a component
+    # called `UNKNOWN_DOMAIN_CORE`, all of which assert a domain called
+    # "Unknown".
+    _UNCLASSIFIED_DOMAIN_LABELS = {"unknown", "unknown domain", "", "n/a", "tbd"}
+
+    def _system_label(self, domain: str) -> str:
+        """A name for the system that is true even when the domain is unknown."""
+        label = self._diagram_text(domain or "")
+        if label.casefold() in self._UNCLASSIFIED_DOMAIN_LABELS:
+            return "System"
+        return label
 
     def _diagram_text(self, value: str) -> str:
         return " ".join(value.replace('"', "'").replace(";", ",").split())
